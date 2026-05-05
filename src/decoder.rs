@@ -1,20 +1,21 @@
 //! PCX decode. Always normalises to packed `Rgba` (top-left origin).
 //!
-//! Round-1 supports the four (depth, planes) combinations called out
-//! by the spec §4.1:
+//! Supports the (depth, planes) combinations called out by spec §4.1:
 //!
 //! * 1 bpp × 1 plane — monochrome (each bit = one pixel).
 //! * 1 bpp × 4 planes — 16-colour EGA. Each plane carries the matching
 //!   bit-position of an EGA colour index; planes are read in BGR-IRGB
 //!   order per the spec table.
+//! * 2 bpp × 1 plane — 4-colour CGA, packed (4 pixels/byte). Palette is
+//!   the legacy CGA palette selected from `ega_palette[16]` (palette
+//!   number bit) + `ega_palette[19]` (foreground intensity / palette
+//!   selector).
+//! * 4 bpp × 1 plane — 16-colour packed-bits (2 pixels/byte). Palette
+//!   is the in-header `ega_palette` (or default EGA fallback).
 //! * 8 bpp × 1 plane — 256-colour palette. Palette is the 768-byte
 //!   block at end-of-file when the byte 769 from EOF is `0x0C`; if
 //!   absent, the decoder produces a grayscale ramp as a fallback.
 //! * 8 bpp × 3 planes — 24-bit truecolour. Plane order is R, G, B.
-//!
-//! 2 bpp / 4 bpp inputs are not in scope for round 1 (real-world files
-//! at those depths are rare; both fold trivially into the round-2
-//! `bits_per_pixel × n_planes ≤ 8` packed-bits path).
 //!
 //! With the default `registry` feature on, the gated `PcxDecoder`
 //! trait impl wraps [`parse_pcx`] for the `oxideav_core::Decoder`
@@ -160,11 +161,13 @@ pub fn parse_pcx(input: &[u8]) -> Result<PcxImage> {
     let data = match (header.bits_per_pixel, header.n_planes) {
         (1, 1) => unpack_1bpp_1plane(&header, &pixels_planar),
         (1, 4) => unpack_1bpp_4planes(&header, &pixels_planar),
+        (2, 1) => unpack_2bpp_1plane_cga(&header, &pixels_planar),
+        (4, 1) => unpack_4bpp_1plane(&header, &pixels_planar),
         (8, 1) => unpack_8bpp_1plane(&header, &pixels_planar, vga_palette)?,
         (8, 3) => unpack_8bpp_3planes(&header, &pixels_planar),
         (bpp, n) => {
             return Err(Error::unsupported(format!(
-                "PCX: (bits_per_pixel={bpp}, n_planes={n}) combination not supported in round 1"
+                "PCX: (bits_per_pixel={bpp}, n_planes={n}) combination not supported"
             )))
         }
     };
@@ -292,6 +295,147 @@ fn unpack_8bpp_3planes(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
     out
 }
 
+fn unpack_2bpp_1plane_cga(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
+    // 2 bpp packed: 4 pixels per byte, MSB first. CGA 4-colour palette
+    // is selected from `ega_palette[16]` and `ega_palette[19]` per
+    // CGA hardware: bit 5 of byte 16 is "palette" (0/1, magenta/cyan
+    // family), and the high nibble of byte 16 is the background colour
+    // (used as palette index 0). Background defaults to black (0).
+    let w = header.width() as usize;
+    let h = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+    let palette = cga_palette_from_header(&header.ega_palette);
+    let mut out = vec![0u8; w * h * 4];
+    for y in 0..h {
+        let row = &planar[y * bpl..y * bpl + bpl];
+        for x in 0..w {
+            let byte_off = x / 4;
+            let pix_in_byte = x % 4;
+            // Top two bits = pixel 0, then 2/3, etc.
+            let shift = 6 - 2 * pix_in_byte;
+            let idx = ((row[byte_off] >> shift) & 0b11) as usize;
+            let p = palette[idx];
+            let off = (y * w + x) * 4;
+            out[off] = p[0];
+            out[off + 1] = p[1];
+            out[off + 2] = p[2];
+            out[off + 3] = 0xFF;
+        }
+    }
+    out
+}
+
+fn unpack_4bpp_1plane(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
+    // 4 bpp packed: 2 pixels per byte, high nibble first.
+    let w = header.width() as usize;
+    let h = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+    let palette = ega_palette_or_default(&header.ega_palette);
+    let mut out = vec![0u8; w * h * 4];
+    for y in 0..h {
+        let row = &planar[y * bpl..y * bpl + bpl];
+        for x in 0..w {
+            let byte_off = x / 2;
+            let nib = if x % 2 == 0 {
+                (row[byte_off] >> 4) & 0x0F
+            } else {
+                row[byte_off] & 0x0F
+            };
+            let p = palette[nib as usize];
+            let off = (y * w + x) * 4;
+            out[off] = p[0];
+            out[off + 1] = p[1];
+            out[off + 2] = p[2];
+            out[off + 3] = 0xFF;
+        }
+    }
+    out
+}
+
+/// Standard CGA 4-colour palettes per the IBM CGA hardware reference.
+/// Each is `[background, c1, c2, c3]`. Background is overridden by the
+/// header byte 16 high nibble (the "border/background" register).
+///
+/// Palette 0 = green / red / brown.
+/// Palette 1 = cyan / magenta / white.
+/// Both come in low- and high-intensity flavours.
+const CGA_PALETTE_0_LOW: [[u8; 3]; 4] = [
+    [0x00, 0x00, 0x00], // background (overridden)
+    [0x00, 0xAA, 0x00], // green
+    [0xAA, 0x00, 0x00], // red
+    [0xAA, 0x55, 0x00], // brown
+];
+const CGA_PALETTE_0_HIGH: [[u8; 3]; 4] = [
+    [0x00, 0x00, 0x00],
+    [0x55, 0xFF, 0x55], // light green
+    [0xFF, 0x55, 0x55], // light red
+    [0xFF, 0xFF, 0x55], // yellow
+];
+const CGA_PALETTE_1_LOW: [[u8; 3]; 4] = [
+    [0x00, 0x00, 0x00],
+    [0x00, 0xAA, 0xAA], // cyan
+    [0xAA, 0x00, 0xAA], // magenta
+    [0xAA, 0xAA, 0xAA], // light gray
+];
+const CGA_PALETTE_1_HIGH: [[u8; 3]; 4] = [
+    [0x00, 0x00, 0x00],
+    [0x55, 0xFF, 0xFF], // light cyan
+    [0xFF, 0x55, 0xFF], // light magenta
+    [0xFF, 0xFF, 0xFF], // white
+];
+
+/// Standard 16-entry EGA hardware palette (the one returned by
+/// `ega_palette_or_default` when the header field is all zeros).
+const EGA_DEFAULT_PALETTE: [[u8; 3]; 16] = [
+    [0x00, 0x00, 0x00],
+    [0x00, 0x00, 0xAA],
+    [0x00, 0xAA, 0x00],
+    [0x00, 0xAA, 0xAA],
+    [0xAA, 0x00, 0x00],
+    [0xAA, 0x00, 0xAA],
+    [0xAA, 0x55, 0x00],
+    [0xAA, 0xAA, 0xAA],
+    [0x55, 0x55, 0x55],
+    [0x55, 0x55, 0xFF],
+    [0x55, 0xFF, 0x55],
+    [0x55, 0xFF, 0xFF],
+    [0xFF, 0x55, 0x55],
+    [0xFF, 0x55, 0xFF],
+    [0xFF, 0xFF, 0x55],
+    [0xFF, 0xFF, 0xFF],
+];
+
+/// Resolve a CGA 4-colour palette from the in-header bytes.
+///
+/// PCX repurposes the EGA palette region for CGA mode (see
+/// [`crate::encode_pcx_2bpp_cga`] for the matching writer):
+/// * `ega_palette[16]` — high nibble = background colour (EGA index
+///   0..15 used as palette entry 0).
+/// * `ega_palette[19]` — bit 7 = palette select (0 = palette 1
+///   cyan/magenta/white, 1 = palette 0 green/red/brown); bit 6 =
+///   intensity (0 = high / bright, 1 = low / dim).
+///
+/// When `ega_palette[19]` is zero (PCX 3.0+ files commonly leave it
+/// blank), the decoder lands on palette 1 high-intensity
+/// (cyan/magenta/white) — the most common CGA palette for game
+/// screenshots of the era — because both bits being clear maps to
+/// `palette_select = 0` (palette 1) and `intensity = high` per the
+/// encoding above.
+pub(crate) fn cga_palette_from_header(raw: &[u8; 48]) -> [[u8; 3]; 4] {
+    let bg_idx = (raw[16] >> 4) as usize;
+    let selector = raw[19];
+    let palette_zero = selector & 0x80 != 0;
+    let low_intensity = selector & 0x40 != 0;
+    let mut p = match (palette_zero, low_intensity) {
+        (false, false) => CGA_PALETTE_1_HIGH,
+        (false, true) => CGA_PALETTE_1_LOW,
+        (true, false) => CGA_PALETTE_0_HIGH,
+        (true, true) => CGA_PALETTE_0_LOW,
+    };
+    p[0] = EGA_DEFAULT_PALETTE[bg_idx];
+    p
+}
+
 /// Extract a 16-entry RGB palette from the 48-byte `ega_palette`
 /// header field. If the field is all zeros (which PCX 3.0+ files may
 /// emit even for EGA data), fall back to the standard EGA hardware
@@ -303,24 +447,7 @@ fn ega_palette_or_default(raw: &[u8; 48]) -> [[u8; 3]; 16] {
         // Black, blue, green, cyan, red, magenta, brown, light gray,
         // dark gray, light blue, light green, light cyan, light red,
         // light magenta, yellow, white.
-        return [
-            [0x00, 0x00, 0x00],
-            [0x00, 0x00, 0xAA],
-            [0x00, 0xAA, 0x00],
-            [0x00, 0xAA, 0xAA],
-            [0xAA, 0x00, 0x00],
-            [0xAA, 0x00, 0xAA],
-            [0xAA, 0x55, 0x00],
-            [0xAA, 0xAA, 0xAA],
-            [0x55, 0x55, 0x55],
-            [0x55, 0x55, 0xFF],
-            [0x55, 0xFF, 0x55],
-            [0x55, 0xFF, 0xFF],
-            [0xFF, 0x55, 0x55],
-            [0xFF, 0x55, 0xFF],
-            [0xFF, 0xFF, 0x55],
-            [0xFF, 0xFF, 0xFF],
-        ];
+        return EGA_DEFAULT_PALETTE;
     }
     let mut out = [[0u8; 3]; 16];
     for (i, e) in out.iter_mut().enumerate() {

@@ -1,12 +1,20 @@
 //! PCX encode. Always emits PCX 5.0.
 //!
-//! Round-1 ships two write paths:
+//! Write paths:
 //!
 //! * [`encode_pcx_8bpp_indexed`] — 8 bpp × 1 plane, palette index data
 //!   plus a 768-byte VGA palette appended after the pixel block (with
 //!   the leading `0x0C` marker).
 //! * [`encode_pcx_24bpp`] — 8 bpp × 3 planes, planar RGB. No tail
 //!   palette.
+//! * [`encode_pcx_1bpp_mono`] — 1 bpp × 1 plane monochrome. Bit 1 =
+//!   white, bit 0 = black per spec §4.1.
+//! * [`encode_pcx_4bpp_packed`] — 4 bpp × 1 plane packed-bits with a
+//!   16-entry EGA palette in the header.
+//! * [`encode_pcx_2bpp_cga`] — 2 bpp × 1 plane CGA packed-bits using
+//!   the legacy 4-colour palette selector (header byte 16 / 19).
+//! * [`encode_pcx_1bpp_4planes_ega`] — 1 bpp × 4 planes EGA with a
+//!   16-entry palette in the header.
 //!
 //! The RLE encoder coalesces runs of identical bytes (≤ 63 each) and
 //! escapes any singleton byte ≥ `0xC0` into a length-1 packet so the
@@ -245,6 +253,26 @@ fn write_header(
     n_planes: u8,
     bytes_per_line: u16,
 ) {
+    write_header_with_palette(
+        out,
+        width,
+        height,
+        bits_per_pixel,
+        n_planes,
+        bytes_per_line,
+        &[0u8; 48],
+    );
+}
+
+fn write_header_with_palette(
+    out: &mut Vec<u8>,
+    width: u16,
+    height: u16,
+    bits_per_pixel: u8,
+    n_planes: u8,
+    bytes_per_line: u16,
+    ega_palette: &[u8; 48],
+) {
     let start = out.len();
     out.push(PCX_MANUFACTURER); // 0
     out.push(5); // version 5 (PCX 5.0) — 1
@@ -256,7 +284,7 @@ fn write_header(
     out.extend_from_slice(&(height - 1).to_le_bytes()); // y_max 10
     out.extend_from_slice(&72u16.to_le_bytes()); // h_dpi  12 (typical default)
     out.extend_from_slice(&72u16.to_le_bytes()); // v_dpi  14
-    out.extend_from_slice(&[0u8; 48]); // ega_palette  16..64
+    out.extend_from_slice(ega_palette); // ega_palette  16..64
     out.push(0); // reserved 64
     out.push(n_planes); // n_planes 65
     out.extend_from_slice(&bytes_per_line.to_le_bytes()); // bytes_per_line 66
@@ -265,6 +293,197 @@ fn write_header(
     out.extend_from_slice(&0u16.to_le_bytes()); // v_screen_size 72
     out.extend_from_slice(&[0u8; 54]); // filler 74..128
     debug_assert_eq!(out.len() - start, PCX_HEADER_SIZE);
+}
+
+/// Encode `width × height` 1-bit pixels (one byte per pixel, value 0 or
+/// 1, row-major, top-down) into a PCX 5.0 monochrome file.
+///
+/// Bit 1 = white, bit 0 = black per spec §4.1. `bytes_per_line` is the
+/// natural ceil(width / 8) rounded up to the next even count.
+pub fn encode_pcx_1bpp_mono(width: u16, height: u16, pixels: &[u8]) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if pixels.len() < width as usize * height as usize {
+        return Err(Error::invalid(
+            "PCX encoder: 1bpp input shorter than width × height",
+        ));
+    }
+    let bytes_per_line = round_up_to_even(width.div_ceil(8));
+    let mut out = Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * height as usize);
+    write_header(&mut out, width, height, 1, 1, bytes_per_line);
+    let mut row = vec![0u8; bytes_per_line as usize];
+    for y in 0..height as usize {
+        for v in row.iter_mut() {
+            *v = 0;
+        }
+        for x in 0..width as usize {
+            let v = pixels[y * width as usize + x];
+            if v != 0 {
+                row[x / 8] |= 1 << (7 - (x % 8));
+            }
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
+/// Encode `width × height` 4-bit-index pixels (one byte per pixel, low
+/// nibble = palette index 0..15, row-major, top-down) into a PCX 5.0
+/// 4 bpp packed file.
+///
+/// `palette` is a 16-entry RGB triplet (48 bytes) written into the
+/// header `ega_palette` field.
+pub fn encode_pcx_4bpp_packed(
+    width: u16,
+    height: u16,
+    indices: &[u8],
+    palette: &[u8],
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if indices.len() < width as usize * height as usize {
+        return Err(Error::invalid(
+            "PCX encoder: 4bpp input shorter than width × height",
+        ));
+    }
+    if palette.len() != 48 {
+        return Err(Error::invalid(format!(
+            "PCX encoder: 4bpp palette must be exactly 48 bytes (16 RGB triplets), got {}",
+            palette.len()
+        )));
+    }
+    let bytes_per_line = round_up_to_even(width.div_ceil(2));
+    let mut ega = [0u8; 48];
+    ega.copy_from_slice(palette);
+    let mut out = Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * height as usize);
+    write_header_with_palette(&mut out, width, height, 4, 1, bytes_per_line, &ega);
+    let mut row = vec![0u8; bytes_per_line as usize];
+    for y in 0..height as usize {
+        for v in row.iter_mut() {
+            *v = 0;
+        }
+        for x in 0..width as usize {
+            let v = indices[y * width as usize + x] & 0x0F;
+            let byte_off = x / 2;
+            if x % 2 == 0 {
+                row[byte_off] |= v << 4;
+            } else {
+                row[byte_off] |= v;
+            }
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
+/// Encode `width × height` 2-bit-index pixels (low 2 bits = palette
+/// index 0..3, row-major, top-down) into a PCX 5.0 2 bpp CGA file.
+///
+/// `palette_selector` selects the CGA palette in the header byte 19:
+/// * `0x00` → palette 1 high-intensity (cyan/magenta/white) — the
+///   default the decoder also assumes for legacy zero-filled headers.
+/// * `0x40` → palette 1 low-intensity.
+/// * `0x80` → palette 0 high-intensity.
+/// * `0xC0` → palette 0 low-intensity.
+///
+/// `background_index` is the EGA index used for palette entry 0; the
+/// high nibble of header byte 16.
+pub fn encode_pcx_2bpp_cga(
+    width: u16,
+    height: u16,
+    indices: &[u8],
+    palette_selector: u8,
+    background_index: u8,
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if indices.len() < width as usize * height as usize {
+        return Err(Error::invalid(
+            "PCX encoder: 2bpp input shorter than width × height",
+        ));
+    }
+    if background_index > 0x0F {
+        return Err(Error::invalid(format!(
+            "PCX encoder: CGA background_index must be 0..15, got {background_index}"
+        )));
+    }
+    let bytes_per_line = round_up_to_even(width.div_ceil(4));
+    let mut ega = [0u8; 48];
+    ega[16] = background_index << 4;
+    ega[19] = palette_selector;
+    let mut out = Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * height as usize);
+    write_header_with_palette(&mut out, width, height, 2, 1, bytes_per_line, &ega);
+    let mut row = vec![0u8; bytes_per_line as usize];
+    for y in 0..height as usize {
+        for v in row.iter_mut() {
+            *v = 0;
+        }
+        for x in 0..width as usize {
+            let v = indices[y * width as usize + x] & 0b11;
+            let byte_off = x / 4;
+            let pix_in_byte = x % 4;
+            let shift = 6 - 2 * pix_in_byte;
+            row[byte_off] |= v << shift;
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
+/// Encode `width × height` 4-bit-index pixels (low nibble = palette
+/// index 0..15, row-major, top-down) into a PCX 5.0 1 bpp × 4-plane
+/// EGA file.
+///
+/// `palette` is 16 RGB triplets (48 bytes) written into the header
+/// `ega_palette` field. Plane 0 carries bit 0, plane 1 bit 1, plane 2
+/// bit 2, plane 3 bit 3 of the index — matching the BGR-IRGB layout
+/// the decoder reads (spec table §3.1).
+pub fn encode_pcx_1bpp_4planes_ega(
+    width: u16,
+    height: u16,
+    indices: &[u8],
+    palette: &[u8],
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if indices.len() < width as usize * height as usize {
+        return Err(Error::invalid(
+            "PCX encoder: EGA input shorter than width × height",
+        ));
+    }
+    if palette.len() != 48 {
+        return Err(Error::invalid(format!(
+            "PCX encoder: EGA palette must be exactly 48 bytes (16 RGB triplets), got {}",
+            palette.len()
+        )));
+    }
+    let bytes_per_line = round_up_to_even(width.div_ceil(8));
+    let mut ega = [0u8; 48];
+    ega.copy_from_slice(palette);
+    let mut out =
+        Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * 4 * height as usize);
+    write_header_with_palette(&mut out, width, height, 1, 4, bytes_per_line, &ega);
+    let mut row = vec![0u8; bytes_per_line as usize * 4];
+    for y in 0..height as usize {
+        for v in row.iter_mut() {
+            *v = 0;
+        }
+        for x in 0..width as usize {
+            let idx = indices[y * width as usize + x] & 0x0F;
+            for plane in 0..4 {
+                let bit = (idx >> plane) & 1;
+                if bit != 0 {
+                    row[plane * bytes_per_line as usize + x / 8] |= 1 << (7 - (x % 8));
+                }
+            }
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
 }
 
 /// Wrapper so callers with a [`PcxImage`] don't need to flatten by

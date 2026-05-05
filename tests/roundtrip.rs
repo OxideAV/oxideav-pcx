@@ -362,10 +362,12 @@ fn rejects_unknown_encoding() {
 
 #[test]
 fn rejects_unsupported_combo() {
-    // 4 bpp × 1 plane is not in the round-1 set.
+    // 8 bpp × 4 planes is not implemented (planar CMYK isn't in the
+    // PCX spec — 4 planes is only valid at 1 bpp for EGA).
     let mut bytes = Vec::new();
-    write_pcx_header_raw(&mut bytes, 1, 1, 4, 1, 2, &[0u8; 48]);
-    rle::encode(&[0u8, 0u8], &mut bytes);
+    write_pcx_header_raw(&mut bytes, 1, 1, 8, 4, 2, &[0u8; 48]);
+    // 4 planes × 2 bytes_per_line = 8 bytes per scanline.
+    rle::encode(&[0u8; 8], &mut bytes);
     assert!(matches!(parse_pcx(&bytes), Err(PcxError::Unsupported(_))));
 }
 

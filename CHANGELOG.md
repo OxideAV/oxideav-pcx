@@ -15,6 +15,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 2 decoder: **2 bpp × 1 plane** packed-bits with the legacy
+  CGA 4-colour palette (selected via header bytes 16 / 19 per the
+  CGA hardware register layout); **4 bpp × 1 plane** packed-bits
+  with the in-header EGA palette (or default fallback). 4 pixels
+  per byte for 2 bpp; 2 pixels per byte for 4 bpp.
+- Round 2 encoder: indexed/EGA/CGA/mono write paths.
+  `encode_pcx_1bpp_mono` (1 bpp × 1 plane), `encode_pcx_4bpp_packed`
+  (16-colour packed), `encode_pcx_2bpp_cga` (CGA), and
+  `encode_pcx_1bpp_4planes_ega` (EGA 4-plane). All write PCX 5.0
+  with `bytes_per_line` rounded up to even per spec §1.
+- DCX multi-page container: `parse_dcx` + `encode_dcx` handle the
+  Microsoft FAX `0x3ADE_68B1`-magic wrapper (up to 1023 PCX pages
+  with a u32 LE offset table terminated by a zero sentinel).
+- Cross-validation against `magick identify` for every new write
+  path (1 bpp mono, 4 bpp packed, 2 bpp CGA, 1 bpp × 4 EGA, 8 bpp
+  indexed) plus a magick-decodes-our-4bpp-to-PPM pixel check.
 - Round 1: clean-room ZSoft PCX (PC Paintbrush) reader/writer per the
   public **ZSoft PCX File Format Technical Reference Manual**,
   Revision 5 (1991).
