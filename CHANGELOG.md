@@ -7,12 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.0.2](https://github.com/OxideAV/oxideav-pcx/compare/v0.0.1...v0.0.2) - 2026-05-05
-
-### Other
-
-- clippy 1.95 — drop identity_op + erasing_op from row-index arithmetic
-
 ### Added
 
 - Round 2 decoder: **2 bpp × 1 plane** packed-bits with the legacy
@@ -31,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cross-validation against `magick identify` for every new write
   path (1 bpp mono, 4 bpp packed, 2 bpp CGA, 1 bpp × 4 EGA, 8 bpp
   indexed) plus a magick-decodes-our-4bpp-to-PPM pixel check.
+
+## [0.0.2](https://github.com/OxideAV/oxideav-pcx/compare/v0.0.1...v0.0.2) - 2026-05-05
+
+### Other
+
+- clippy 1.95 — drop identity_op + erasing_op from row-index arithmetic
+
+### Added
+
 - Round 1: clean-room ZSoft PCX (PC Paintbrush) reader/writer per the
   public **ZSoft PCX File Format Technical Reference Manual**,
   Revision 5 (1991).
