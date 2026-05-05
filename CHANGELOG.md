@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2](https://github.com/OxideAV/oxideav-pcx/compare/v0.0.1...v0.0.2) - 2026-05-05
+
+### Other
+
+- clippy 1.95 — drop identity_op + erasing_op from row-index arithmetic
+
 ### Added
 
 - Round 1: clean-room ZSoft PCX (PC Paintbrush) reader/writer per the
