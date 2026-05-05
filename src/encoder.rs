@@ -1,0 +1,297 @@
+//! PCX encode. Always emits PCX 5.0.
+//!
+//! Round-1 ships two write paths:
+//!
+//! * [`encode_pcx_8bpp_indexed`] — 8 bpp × 1 plane, palette index data
+//!   plus a 768-byte VGA palette appended after the pixel block (with
+//!   the leading `0x0C` marker).
+//! * [`encode_pcx_24bpp`] — 8 bpp × 3 planes, planar RGB. No tail
+//!   palette.
+//!
+//! The RLE encoder coalesces runs of identical bytes (≤ 63 each) and
+//! escapes any singleton byte ≥ `0xC0` into a length-1 packet so the
+//! decoder won't mistake it for a run header.
+
+use crate::error::{PcxError as Error, Result};
+use crate::image::{PcxImage, PcxPixelFormat};
+use crate::rle;
+use crate::types::*;
+
+#[cfg(feature = "registry")]
+use oxideav_core::Encoder;
+#[cfg(feature = "registry")]
+use oxideav_core::{CodecId, CodecParameters, Frame, Packet, PixelFormat, TimeBase};
+
+#[cfg(feature = "registry")]
+pub fn make_encoder(params: &CodecParameters) -> oxideav_core::Result<Box<dyn Encoder>> {
+    let mut out_params = CodecParameters::video(CodecId::new(crate::CODEC_ID_STR));
+    out_params.width = params.width;
+    out_params.height = params.height;
+    out_params.pixel_format = params.pixel_format;
+    Ok(Box::new(PcxEncoder {
+        codec_id: CodecId::new(crate::CODEC_ID_STR),
+        out_params,
+        pending: None,
+        eof: false,
+    }))
+}
+
+#[cfg(feature = "registry")]
+struct PcxEncoder {
+    codec_id: CodecId,
+    out_params: CodecParameters,
+    pending: Option<Vec<u8>>,
+    eof: bool,
+}
+
+#[cfg(feature = "registry")]
+impl Encoder for PcxEncoder {
+    fn codec_id(&self) -> &CodecId {
+        &self.codec_id
+    }
+    fn output_params(&self) -> &CodecParameters {
+        &self.out_params
+    }
+    fn send_frame(&mut self, frame: &Frame) -> oxideav_core::Result<()> {
+        let vf = match frame {
+            Frame::Video(v) => v,
+            _ => {
+                return Err(oxideav_core::Error::invalid(
+                    "PCX encoder: expected video frame",
+                ))
+            }
+        };
+        let format = self.out_params.pixel_format.ok_or_else(|| {
+            oxideav_core::Error::invalid("PCX encoder: pixel_format missing in CodecParameters")
+        })?;
+        let width = self.out_params.width.ok_or_else(|| {
+            oxideav_core::Error::invalid("PCX encoder: width missing in CodecParameters")
+        })?;
+        let height = self.out_params.height.ok_or_else(|| {
+            oxideav_core::Error::invalid("PCX encoder: height missing in CodecParameters")
+        })?;
+        if vf.planes.is_empty() {
+            return Err(oxideav_core::Error::invalid(
+                "PCX encoder: empty frame plane",
+            ));
+        }
+        let bpp = match format {
+            PixelFormat::Rgba => 4,
+            PixelFormat::Rgb24 => 3,
+            other => {
+                return Err(oxideav_core::Error::invalid(format!(
+                    "PCX encoder: unsupported pixel format {other:?}"
+                )))
+            }
+        };
+        let want = width as usize * bpp;
+        let plane = &vf.planes[0];
+        let mut tight = Vec::with_capacity(want * height as usize);
+        for y in 0..height as usize {
+            let off = y * plane.stride;
+            tight.extend_from_slice(&plane.data[off..off + want]);
+        }
+        let w16: u16 = width
+            .try_into()
+            .map_err(|_| oxideav_core::Error::invalid("PCX encoder: width exceeds 65535"))?;
+        let h16: u16 = height
+            .try_into()
+            .map_err(|_| oxideav_core::Error::invalid("PCX encoder: height exceeds 65535"))?;
+        let bytes = match format {
+            PixelFormat::Rgba => {
+                // Drop alpha — PCX has no alpha channel.
+                let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
+                for c in tight.chunks_exact(4) {
+                    rgb.extend_from_slice(&c[..3]);
+                }
+                encode_pcx_24bpp(w16, h16, &rgb)?
+            }
+            PixelFormat::Rgb24 => encode_pcx_24bpp(w16, h16, &tight)?,
+            other => {
+                return Err(oxideav_core::Error::invalid(format!(
+                    "PCX encoder: unsupported pixel format {other:?}"
+                )))
+            }
+        };
+        self.pending = Some(bytes);
+        Ok(())
+    }
+    fn receive_packet(&mut self) -> oxideav_core::Result<Packet> {
+        match self.pending.take() {
+            Some(bytes) => {
+                let mut pkt = Packet::new(0, TimeBase::new(1, 1), bytes);
+                pkt.flags.keyframe = true;
+                Ok(pkt)
+            }
+            None => {
+                if self.eof {
+                    Err(oxideav_core::Error::Eof)
+                } else {
+                    Err(oxideav_core::Error::NeedMore)
+                }
+            }
+        }
+    }
+    fn flush(&mut self) -> oxideav_core::Result<()> {
+        self.eof = true;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public standalone API
+// ---------------------------------------------------------------------------
+
+/// Encode `width × height` indexed pixels (one byte per pixel,
+/// row-major, top-down) into a PCX 5.0 file with an appended 256-entry
+/// VGA palette.
+///
+/// `palette` must be exactly 256 RGB triplets (768 bytes). The
+/// returned buffer carries a single-plane 8 bpp image followed by the
+/// `0x0C` palette marker and the 768 palette bytes.
+pub fn encode_pcx_8bpp_indexed(
+    width: u16,
+    height: u16,
+    indices: &[u8],
+    palette: &[u8],
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if indices.len() < width as usize * height as usize {
+        return Err(Error::invalid(
+            "PCX encoder: indexed input shorter than width × height",
+        ));
+    }
+    if palette.len() != PCX_VGA_PALETTE_BYTES {
+        return Err(Error::invalid(format!(
+            "PCX encoder: 256-colour palette must be exactly {PCX_VGA_PALETTE_BYTES} bytes (got {})",
+            palette.len()
+        )));
+    }
+    // Bytes-per-line is the on-disk per-plane row width, rounded up to
+    // an even number per spec §1 ("the value must be even"). For
+    // 8-bpp single-plane data the natural row width is `width`; we
+    // round up if it's odd.
+    let bytes_per_line = round_up_to_even(width);
+    let mut out = Vec::with_capacity(PCX_HEADER_SIZE + indices.len() / 2 + PCX_VGA_PALETTE_BYTES);
+    write_header(&mut out, width, height, 8, 1, bytes_per_line);
+    // RLE-encode each scanline. If `bytes_per_line > width`, pad with
+    // zero bytes so the decoded scanline length matches.
+    let mut row = Vec::with_capacity(bytes_per_line as usize);
+    for y in 0..height as usize {
+        row.clear();
+        row.extend_from_slice(&indices[y * width as usize..y * width as usize + width as usize]);
+        row.resize(bytes_per_line as usize, 0);
+        rle::encode(&row, &mut out);
+    }
+    // Tail VGA palette block.
+    out.push(PCX_VGA_PALETTE_MARKER);
+    out.extend_from_slice(palette);
+    Ok(out)
+}
+
+/// Encode `width × height` packed RGB bytes (3 bytes per pixel,
+/// row-major, top-down) into a PCX 5.0 file with three planes (R, G,
+/// B) at 8 bpp each. No tail palette is appended.
+pub fn encode_pcx_24bpp(width: u16, height: u16, rgb: &[u8]) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if rgb.len() < width as usize * height as usize * 3 {
+        return Err(Error::invalid(
+            "PCX encoder: rgb input shorter than width × height × 3",
+        ));
+    }
+    let bytes_per_line = round_up_to_even(width);
+    let mut out = Vec::with_capacity(PCX_HEADER_SIZE + rgb.len() / 2);
+    write_header(&mut out, width, height, 8, 3, bytes_per_line);
+    let mut row = Vec::with_capacity(bytes_per_line as usize * 3);
+    for y in 0..height as usize {
+        row.clear();
+        // Plane R, then plane G, then plane B (each `bytes_per_line`
+        // bytes long).
+        for plane in 0..3 {
+            for x in 0..width as usize {
+                let off = (y * width as usize + x) * 3 + plane;
+                row.push(rgb[off]);
+            }
+            // Pad this plane out to `bytes_per_line` bytes.
+            row.resize((plane + 1) * bytes_per_line as usize, 0);
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Internals
+// ---------------------------------------------------------------------------
+
+#[inline]
+fn round_up_to_even(v: u16) -> u16 {
+    if v % 2 == 0 {
+        v
+    } else {
+        v + 1
+    }
+}
+
+fn write_header(
+    out: &mut Vec<u8>,
+    width: u16,
+    height: u16,
+    bits_per_pixel: u8,
+    n_planes: u8,
+    bytes_per_line: u16,
+) {
+    let start = out.len();
+    out.push(PCX_MANUFACTURER); // 0
+    out.push(5); // version 5 (PCX 5.0) — 1
+    out.push(PCX_ENCODING_RLE); // 2
+    out.push(bits_per_pixel); // 3
+    out.extend_from_slice(&0u16.to_le_bytes()); // x_min  4
+    out.extend_from_slice(&0u16.to_le_bytes()); // y_min  6
+    out.extend_from_slice(&(width - 1).to_le_bytes()); // x_max  8
+    out.extend_from_slice(&(height - 1).to_le_bytes()); // y_max 10
+    out.extend_from_slice(&72u16.to_le_bytes()); // h_dpi  12 (typical default)
+    out.extend_from_slice(&72u16.to_le_bytes()); // v_dpi  14
+    out.extend_from_slice(&[0u8; 48]); // ega_palette  16..64
+    out.push(0); // reserved 64
+    out.push(n_planes); // n_planes 65
+    out.extend_from_slice(&bytes_per_line.to_le_bytes()); // bytes_per_line 66
+    out.extend_from_slice(&1u16.to_le_bytes()); // palette_info: 1 = colour 68
+    out.extend_from_slice(&0u16.to_le_bytes()); // h_screen_size 70
+    out.extend_from_slice(&0u16.to_le_bytes()); // v_screen_size 72
+    out.extend_from_slice(&[0u8; 54]); // filler 74..128
+    debug_assert_eq!(out.len() - start, PCX_HEADER_SIZE);
+}
+
+/// Wrapper so callers with a [`PcxImage`] don't need to flatten by
+/// hand. Picks `encode_pcx_24bpp` for `Rgba` (alpha is dropped) and
+/// `Rgb24` inputs; rejects `Indexed8` (which needs an explicit
+/// palette argument).
+pub fn encode_pcx_24bpp_image(image: &PcxImage) -> Result<Vec<u8>> {
+    let w: u16 = image
+        .width
+        .try_into()
+        .map_err(|_| Error::invalid("PCX encoder: width exceeds 65535"))?;
+    let h: u16 = image
+        .height
+        .try_into()
+        .map_err(|_| Error::invalid("PCX encoder: height exceeds 65535"))?;
+    match image.pixel_format {
+        PcxPixelFormat::Rgba => {
+            let mut rgb = Vec::with_capacity(image.data.len() / 4 * 3);
+            for c in image.data.chunks_exact(4) {
+                rgb.extend_from_slice(&c[..3]);
+            }
+            encode_pcx_24bpp(w, h, &rgb)
+        }
+        PcxPixelFormat::Rgb24 => encode_pcx_24bpp(w, h, &image.data),
+        PcxPixelFormat::Indexed8 => Err(Error::unsupported(
+            "PCX encoder: Indexed8 input needs explicit palette \
+             (use encode_pcx_8bpp_indexed)",
+        )),
+    }
+}
