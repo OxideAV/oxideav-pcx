@@ -156,7 +156,7 @@ fn roundtrip_8bpp_indexed_with_vga_palette() {
     // Spot-check: pixel (3, 0) → index 39 → palette[39] = (39, 216, 39^0xAA).
     let idx39 = 3u8 * 13;
     assert_eq!(
-        img.data[(0 * 16 + 3) * 4..][..4],
+        img.data[3 * 4..][..4],
         [idx39, 255 - idx39, idx39 ^ 0xAA, 0xFF]
     );
 }
@@ -263,14 +263,14 @@ fn parse_1bpp_monochrome_8x2() {
         } else {
             0x00
         };
-        assert_eq!(img.data[(0 * 8 + x) * 4 + 0], exp);
+        assert_eq!(img.data[x * 4], exp);
     }
     // Row 1: 4 white then 4 black.
     for x in 0..4usize {
-        assert_eq!(img.data[(1 * 8 + x) * 4 + 0], 0xFF);
+        assert_eq!(img.data[(8 + x) * 4], 0xFF);
     }
     for x in 4..8usize {
-        assert_eq!(img.data[(1 * 8 + x) * 4 + 0], 0x00);
+        assert_eq!(img.data[(8 + x) * 4], 0x00);
     }
 }
 
