@@ -62,6 +62,8 @@
 #[cfg(feature = "registry")]
 pub mod container;
 pub mod dcx;
+#[cfg(feature = "registry")]
+pub mod dcx_container;
 pub mod decoder;
 pub mod encoder;
 pub mod error;

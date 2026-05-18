@@ -18,6 +18,7 @@ use oxideav_core::{CodecCapabilities, CodecId, PixelFormat};
 use oxideav_core::{CodecInfo, CodecRegistry};
 
 use crate::container;
+use crate::dcx_container;
 use crate::error::PcxError;
 
 /// Convert a [`PcxError`] into the framework-shared `oxideav_core::Error`
@@ -49,8 +50,12 @@ pub fn register_codecs(reg: &mut CodecRegistry) {
 
 /// Register the PCX container demuxer + muxer + extension + probe
 /// into the supplied [`ContainerRegistry`].
+///
+/// Also registers the DCX multi-page bundle (Microsoft FAX container)
+/// alongside, since both formats share the PCX codec on the codec side.
 pub fn register_containers(reg: &mut ContainerRegistry) {
     container::register(reg);
+    dcx_container::register(reg);
 }
 
 /// Combined registration for callers that just want everything wired up
