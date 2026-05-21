@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 88 encoder: framework `oxideav_core::Encoder` now accepts
+  `PixelFormat::Gray8` video frames and routes them through the
+  round-82 `encode_pcx_8bpp_grayscale` writer (8 bpp × 1 plane,
+  `palette_info = 2` per spec §3, no VGA tail palette). The
+  `pcx_sw` codec capabilities advertise `Gray8` alongside the
+  existing `Rgba` / `Rgb24` so pipeline pickers see the format
+  before construction.
 - Round 82 decoder: honour the spec §3 `palette_info = 2` grayscale
   flag for 8 bpp × 1 plane images — the decoder emits a grayscale
   triple `(g, g, g, 0xFF)` per pixel regardless of any 256-colour

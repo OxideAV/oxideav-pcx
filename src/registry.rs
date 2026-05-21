@@ -39,7 +39,11 @@ pub fn register_codecs(reg: &mut CodecRegistry) {
         .with_intra_only(true)
         .with_lossless(true)
         .with_max_size(65535, 65535)
-        .with_pixel_formats(vec![PixelFormat::Rgba, PixelFormat::Rgb24]);
+        .with_pixel_formats(vec![
+            PixelFormat::Rgba,
+            PixelFormat::Rgb24,
+            PixelFormat::Gray8,
+        ]);
     reg.register(
         CodecInfo::new(CodecId::new(crate::CODEC_ID_STR))
             .capabilities(caps)

@@ -16,6 +16,13 @@
 //! * [`encode_pcx_1bpp_4planes_ega`] — 1 bpp × 4 planes EGA with a
 //!   16-entry palette in the header.
 //!
+//! The framework-side `Encoder` constructed via [`make_encoder`]
+//! accepts video frames whose [`oxideav_core::PixelFormat`] is
+//! `Rgba`, `Rgb24`, or `Gray8`: `Rgba`/`Rgb24` route to
+//! [`encode_pcx_24bpp`] (alpha dropped), and `Gray8` routes to
+//! [`encode_pcx_8bpp_grayscale`] (8 bpp × 1 plane, `palette_info =
+//! 2`, no VGA tail palette per spec §3).
+//!
 //! The RLE encoder coalesces runs of identical bytes (≤ 63 each) and
 //! escapes any singleton byte ≥ `0xC0` into a length-1 packet so the
 //! decoder won't mistake it for a run header.
@@ -86,6 +93,7 @@ impl Encoder for PcxEncoder {
         let bpp = match format {
             PixelFormat::Rgba => 4,
             PixelFormat::Rgb24 => 3,
+            PixelFormat::Gray8 => 1,
             other => {
                 return Err(oxideav_core::Error::invalid(format!(
                     "PCX encoder: unsupported pixel format {other:?}"
@@ -115,6 +123,11 @@ impl Encoder for PcxEncoder {
                 encode_pcx_24bpp(w16, h16, &rgb)?
             }
             PixelFormat::Rgb24 => encode_pcx_24bpp(w16, h16, &tight)?,
+            // 8 bpp × 1 plane PCX 5.0 with `palette_info = 2` (spec §3
+            // grayscale flag); no VGA tail palette is appended. The
+            // crate's decoder honours the flag and emits `(g, g, g,
+            // 0xFF)` per pixel regardless of any tail palette.
+            PixelFormat::Gray8 => encode_pcx_8bpp_grayscale(w16, h16, &tight)?,
             other => {
                 return Err(oxideav_core::Error::invalid(format!(
                     "PCX encoder: unsupported pixel format {other:?}"

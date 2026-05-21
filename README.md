@@ -45,6 +45,16 @@ consulted, paraphrased, or cross-checked.
 
 ## Encode
 
+The framework-side [`Encoder`] (`make_encoder`) accepts `Rgba` /
+`Rgb24` / `Gray8` video frames; `Gray8` is routed through
+`encode_pcx_8bpp_grayscale` so the resulting PCX carries
+`palette_info = 2` (spec §3) and no VGA tail palette. The codec
+capabilities advertise the same three pixel formats so a pipeline
+that picks formats from `accepted_pixel_formats` can hand PCX a
+grayscale frame directly.
+
+Standalone helpers:
+
 * `encode_pcx_8bpp_indexed(w, h, &indices, &palette)` — 8 bpp × 1
   plane plus a 768-byte VGA tail palette.
 * `encode_pcx_24bpp(w, h, &rgb)` — 8 bpp × 3 planes, planar RGB.
@@ -127,9 +137,12 @@ oxideav_pcx::register(&mut codecs, &mut containers);
 
 * 4 bpp × 4 planes (16-colour planar — overlapping with 1 bpp × 4
   EGA at finer depth). Real-world files at this depth are
-  vanishingly rare; the existing 1 bpp × 4 / 4 bpp × 1 paths cover
-  every EGA/VGA fixture we've seen in the wild.
-* DCX container muxer/demuxer integration with the framework
-  `ContainerRegistry` (the DCX read+write API is exposed but not
-  wired into the registry yet — single-image PCX is what the
-  registry container layer probes).
+  vanishingly rare and the spec only formally enumerates the (bpp,
+  planes) tuples already handled; the existing 1 bpp × 4 / 4 bpp × 1
+  paths cover every EGA/VGA fixture we've seen in the wild.
+* `PixelFormat::Pal8` / `PixelFormat::MonoBlack` / `Bgr24` / `Bgra`
+  inputs to the framework `Encoder`. Standalone callers can still
+  reach `encode_pcx_8bpp_indexed` / `encode_pcx_1bpp_mono` /
+  `encode_pcx_4bpp_packed` / `encode_pcx_2bpp_cga` /
+  `encode_pcx_1bpp_4planes_ega` directly; the framework path
+  accepts `Rgba` / `Rgb24` / `Gray8` for now.
