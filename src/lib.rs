@@ -37,6 +37,11 @@
 //!   1 plane.
 //! * [`encode_pcx_2bpp_cga`] — 4-colour CGA packed-bits at 2 bpp ×
 //!   1 plane.
+//! * [`encode_pcx_8bpp_grayscale`] — 8 bpp × 1 plane grayscale with
+//!   spec §3 `palette_info = 2` flag set, no tail palette appended.
+//! * [`encode_pcx_24bpp_window`] — like [`encode_pcx_24bpp`] but lets
+//!   the caller set a non-zero `(x_min, y_min)` window origin for the
+//!   PCX 3.0+ pixel-region edge case.
 //!
 //! All writers emit PCX 5.0 with `bytes_per_line` rounded up to even
 //! per spec §1; RLE escapes any literal byte ≥ `0xC0` even when its
@@ -80,7 +85,8 @@ pub use dcx::{encode_dcx, parse_dcx, DcxImage, DCX_MAGIC, DCX_MAX_PAGES};
 pub use decoder::parse_pcx;
 pub use encoder::{
     encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono, encode_pcx_24bpp, encode_pcx_24bpp_image,
-    encode_pcx_2bpp_cga, encode_pcx_4bpp_packed, encode_pcx_8bpp_indexed,
+    encode_pcx_24bpp_window, encode_pcx_2bpp_cga, encode_pcx_4bpp_packed,
+    encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed,
 };
 pub use error::{PcxError, Result};
 pub use image::{PcxImage, PcxPixelFormat};

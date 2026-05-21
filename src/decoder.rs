@@ -133,6 +133,27 @@ pub fn parse_pcx(input: &[u8]) -> Result<PcxImage> {
     if header.n_planes == 0 {
         return Err(Error::invalid("PCX: n_planes == 0"));
     }
+    // `bytes_per_line` is the per-plane on-disk row width. Per spec §1
+    // it MUST be wide enough to carry every pixel of the visible row;
+    // some malformed writers under-set this field and the result would
+    // silently mis-frame planar→packed reconstruction. Reject up front.
+    let min_bpl: u32 = match header.bits_per_pixel {
+        1 => width.div_ceil(8),
+        2 => width.div_ceil(4),
+        4 => width.div_ceil(2),
+        8 => width,
+        bpp => {
+            return Err(Error::unsupported(format!(
+                "PCX: bits_per_pixel={bpp} not in the {{1,2,4,8}} set the spec defines"
+            )))
+        }
+    };
+    if (header.bytes_per_line as u32) < min_bpl {
+        return Err(Error::invalid(format!(
+            "PCX: bytes_per_line={} too small for width={} at {} bpp (need ≥ {})",
+            header.bytes_per_line, width, header.bits_per_pixel, min_bpl
+        )));
+    }
 
     // Decode RLE: scanline-by-scanline so we can spot truncation.
     let scanline = header.scanline_bytes();
@@ -163,7 +184,20 @@ pub fn parse_pcx(input: &[u8]) -> Result<PcxImage> {
         (1, 4) => unpack_1bpp_4planes(&header, &pixels_planar),
         (2, 1) => unpack_2bpp_1plane_cga(&header, &pixels_planar),
         (4, 1) => unpack_4bpp_1plane(&header, &pixels_planar),
-        (8, 1) => unpack_8bpp_1plane(&header, &pixels_planar, vga_palette)?,
+        (8, 1) => {
+            // `palette_info == 2` (spec §3) forces the grayscale
+            // interpretation regardless of whether a tail palette is
+            // present. Some scanner / FAX-era tools emit a grayscale
+            // PCX with `palette_info=2` and no VGA tail; some emit
+            // the flag AND a redundant tail palette. We honour the
+            // flag in both cases.
+            let palette = if header.palette_info == 2 {
+                None
+            } else {
+                vga_palette
+            };
+            unpack_8bpp_1plane(&header, &pixels_planar, palette)?
+        }
         (8, 3) => unpack_8bpp_3planes(&header, &pixels_planar),
         (bpp, n) => {
             return Err(Error::unsupported(format!(

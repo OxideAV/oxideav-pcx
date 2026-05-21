@@ -26,6 +26,14 @@ consulted, paraphrased, or cross-checked.
 * The 256-colour VGA tail palette (PCX 3.0+, leading `0x0C` marker
   769 bytes from EOF) is honoured for 8 bpp × 1 plane images. When
   absent, an 8-bit grayscale ramp is used as a fallback.
+* Header field `palette_info` (spec §3): value `2` is the grayscale
+  flag — the decoder honours it for 8 bpp × 1 plane images and
+  produces a grayscale ramp regardless of any tail palette. The
+  default is `1` (colour / BW).
+* Header field `bytes_per_line` is range-checked against the visible
+  width × `bits_per_pixel`: a value smaller than the per-plane row
+  width required by the spec is rejected up front rather than
+  silently mis-framing the planar→packed reconstruction.
 * The 16-entry header EGA palette is used for `1 bpp × 4 planes`
   and `4 bpp × 1 plane`; if the header field is all zeros (which
   PCX 3.0+ files often emit) the standard hardware EGA palette per
@@ -49,6 +57,13 @@ consulted, paraphrased, or cross-checked.
   packed-bits at 4 bpp × 1 plane (2 pixels/byte).
 * `encode_pcx_2bpp_cga(w, h, &indices, palette_selector,
   background_index)` — 4-colour CGA packed-bits.
+* `encode_pcx_8bpp_grayscale(w, h, &pixels)` — 8 bpp × 1 plane
+  grayscale with spec §3 `palette_info = 2` flag set and no tail
+  palette appended. The decoder honours the flag and emits
+  `(g, g, g, 0xFF)` per pixel regardless of any tail palette.
+* `encode_pcx_24bpp_window(x_min, y_min, w, h, &rgb)` — like
+  `encode_pcx_24bpp` but sets a non-zero `(x_min, y_min)` window
+  origin for the PCX 3.0+ pixel-region edge case.
 
 All writers emit **PCX 5.0** with `bytes_per_line` rounded up to
 even per spec §1. The RLE encoder coalesces runs of ≤ 63 identical

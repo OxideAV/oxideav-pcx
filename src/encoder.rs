@@ -253,14 +253,17 @@ fn write_header(
     n_planes: u8,
     bytes_per_line: u16,
 ) {
-    write_header_with_palette(
+    write_header_full(
         out,
+        0,
+        0,
         width,
         height,
         bits_per_pixel,
         n_planes,
         bytes_per_line,
         &[0u8; 48],
+        1,
     );
 }
 
@@ -273,22 +276,56 @@ fn write_header_with_palette(
     bytes_per_line: u16,
     ega_palette: &[u8; 48],
 ) {
+    write_header_full(
+        out,
+        0,
+        0,
+        width,
+        height,
+        bits_per_pixel,
+        n_planes,
+        bytes_per_line,
+        ega_palette,
+        1,
+    );
+}
+
+/// Full-control header writer. Used by the specialised helpers that
+/// need to set a non-zero window origin (PCX 3.0+ pixel-region edge
+/// case) or override `palette_info` (1 = colour / BW, 2 = grayscale —
+/// per spec §3 the latter forces the decoder onto a grayscale
+/// interpretation regardless of any tail palette).
+#[allow(clippy::too_many_arguments)]
+fn write_header_full(
+    out: &mut Vec<u8>,
+    x_min: u16,
+    y_min: u16,
+    width: u16,
+    height: u16,
+    bits_per_pixel: u8,
+    n_planes: u8,
+    bytes_per_line: u16,
+    ega_palette: &[u8; 48],
+    palette_info: u16,
+) {
     let start = out.len();
+    let x_max = x_min + width - 1;
+    let y_max = y_min + height - 1;
     out.push(PCX_MANUFACTURER); // 0
     out.push(5); // version 5 (PCX 5.0) — 1
     out.push(PCX_ENCODING_RLE); // 2
     out.push(bits_per_pixel); // 3
-    out.extend_from_slice(&0u16.to_le_bytes()); // x_min  4
-    out.extend_from_slice(&0u16.to_le_bytes()); // y_min  6
-    out.extend_from_slice(&(width - 1).to_le_bytes()); // x_max  8
-    out.extend_from_slice(&(height - 1).to_le_bytes()); // y_max 10
+    out.extend_from_slice(&x_min.to_le_bytes()); // x_min  4
+    out.extend_from_slice(&y_min.to_le_bytes()); // y_min  6
+    out.extend_from_slice(&x_max.to_le_bytes()); // x_max  8
+    out.extend_from_slice(&y_max.to_le_bytes()); // y_max 10
     out.extend_from_slice(&72u16.to_le_bytes()); // h_dpi  12 (typical default)
     out.extend_from_slice(&72u16.to_le_bytes()); // v_dpi  14
     out.extend_from_slice(ega_palette); // ega_palette  16..64
     out.push(0); // reserved 64
     out.push(n_planes); // n_planes 65
     out.extend_from_slice(&bytes_per_line.to_le_bytes()); // bytes_per_line 66
-    out.extend_from_slice(&1u16.to_le_bytes()); // palette_info: 1 = colour 68
+    out.extend_from_slice(&palette_info.to_le_bytes()); // palette_info 68
     out.extend_from_slice(&0u16.to_le_bytes()); // h_screen_size 70
     out.extend_from_slice(&0u16.to_le_bytes()); // v_screen_size 72
     out.extend_from_slice(&[0u8; 54]); // filler 74..128
@@ -480,6 +517,115 @@ pub fn encode_pcx_1bpp_4planes_ega(
                     row[plane * bytes_per_line as usize + x / 8] |= 1 << (7 - (x % 8));
                 }
             }
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
+/// Encode an 8 bpp × 1 plane grayscale PCX with `palette_info = 2`
+/// (the spec §3 grayscale flag) and no tail palette.
+///
+/// `pixels` is one byte per pixel (the grayscale intensity, 0..255),
+/// row-major, top-down. The decoder honours `palette_info = 2` by
+/// emitting `(g, g, g, 0xFF)` per pixel regardless of any tail
+/// palette, so this writer omits the 768-byte VGA block and the file
+/// stays compact.
+pub fn encode_pcx_8bpp_grayscale(width: u16, height: u16, pixels: &[u8]) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if pixels.len() < width as usize * height as usize {
+        return Err(Error::invalid(
+            "PCX encoder: grayscale input shorter than width × height",
+        ));
+    }
+    let bytes_per_line = round_up_to_even(width);
+    let mut out = Vec::with_capacity(PCX_HEADER_SIZE + bytes_per_line as usize * height as usize);
+    write_header_full(
+        &mut out,
+        0,
+        0,
+        width,
+        height,
+        8,
+        1,
+        bytes_per_line,
+        &[0u8; 48],
+        2, // palette_info = 2 → grayscale per spec §3
+    );
+    let mut row = Vec::with_capacity(bytes_per_line as usize);
+    for y in 0..height as usize {
+        row.clear();
+        row.extend_from_slice(&pixels[y * width as usize..y * width as usize + width as usize]);
+        row.resize(bytes_per_line as usize, 0);
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
+/// Encode a 24-bit PCX with a non-zero window origin.
+///
+/// PCX 3.0+ pixel-region semantics put the origin at `(x_min, y_min)`
+/// and the bottom-right at `(x_max, y_max)`; per spec §3 the visible
+/// `width / height` are computed as `x_max - x_min + 1` and `y_max -
+/// y_min + 1`. The standard [`encode_pcx_24bpp`] always writes
+/// `(x_min, y_min) = (0, 0)`. Callers that want to mirror an editor's
+/// non-zero crop window — e.g. for round-tripping a windowed PCX —
+/// use this helper.
+///
+/// Pixels are top-down packed RGB (`width × height × 3` bytes); the
+/// `x_min` / `y_min` values are header metadata only and do NOT shift
+/// the pixel buffer.
+pub fn encode_pcx_24bpp_window(
+    x_min: u16,
+    y_min: u16,
+    width: u16,
+    height: u16,
+    rgb: &[u8],
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if rgb.len() < width as usize * height as usize * 3 {
+        return Err(Error::invalid(
+            "PCX encoder: rgb input shorter than width × height × 3",
+        ));
+    }
+    // u16 overflow on x_max / y_max: x_min + width - 1 must fit in u16.
+    if (x_min as u32 + width as u32) > u16::MAX as u32 + 1 {
+        return Err(Error::invalid(
+            "PCX encoder: x_min + width exceeds u16::MAX + 1",
+        ));
+    }
+    if (y_min as u32 + height as u32) > u16::MAX as u32 + 1 {
+        return Err(Error::invalid(
+            "PCX encoder: y_min + height exceeds u16::MAX + 1",
+        ));
+    }
+    let bytes_per_line = round_up_to_even(width);
+    let mut out = Vec::with_capacity(PCX_HEADER_SIZE + rgb.len() / 2);
+    write_header_full(
+        &mut out,
+        x_min,
+        y_min,
+        width,
+        height,
+        8,
+        3,
+        bytes_per_line,
+        &[0u8; 48],
+        1,
+    );
+    let mut row = Vec::with_capacity(bytes_per_line as usize * 3);
+    for y in 0..height as usize {
+        row.clear();
+        for plane in 0..3 {
+            for x in 0..width as usize {
+                let off = (y * width as usize + x) * 3 + plane;
+                row.push(rgb[off]);
+            }
+            row.resize((plane + 1) * bytes_per_line as usize, 0);
         }
         rle::encode(&row, &mut out);
     }

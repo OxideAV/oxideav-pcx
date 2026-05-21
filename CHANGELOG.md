@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 82 decoder: honour the spec §3 `palette_info = 2` grayscale
+  flag for 8 bpp × 1 plane images — the decoder emits a grayscale
+  triple `(g, g, g, 0xFF)` per pixel regardless of any 256-colour
+  VGA tail palette in the file. Some scanner / FAX-era PCX writers
+  emit the flag without a tail palette; some emit both.
+- Round 82 decoder: range-check `bytes_per_line` against the visible
+  width × `bits_per_pixel` and reject under-set values up front
+  (previously the decoder would silently mis-frame planar→packed
+  reconstruction on malformed inputs).
+- Round 82 encoder: `encode_pcx_8bpp_grayscale(w, h, &pixels)` —
+  8 bpp × 1 plane PCX 5.0 with `palette_info = 2` set and no
+  tail palette appended.
+- Round 82 encoder: `encode_pcx_24bpp_window(x_min, y_min, w, h,
+  &rgb)` — 8 bpp × 3 planes PCX with a non-zero `(x_min, y_min)`
+  window origin for the PCX 3.0+ pixel-region edge case.
 - Round 2 decoder: **2 bpp × 1 plane** packed-bits with the legacy
   CGA 4-colour palette (selected via header bytes 16 / 19 per the
   CGA hardware register layout); **4 bpp × 1 plane** packed-bits
