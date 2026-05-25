@@ -88,12 +88,22 @@ pub struct PcxHeader {
 
 impl PcxHeader {
     /// Picture width in pixels, computed from `x_max - x_min + 1`.
+    ///
+    /// Saturating: a malformed header with `x_max < x_min` yields `0`
+    /// rather than underflowing. This accessor is public and may be
+    /// called on an unvalidated header straight out of [`parse_header`],
+    /// so it must never panic; `parse_pcx` separately rejects the
+    /// `x_max < x_min` and zero-dimension cases with a typed error.
     pub fn width(&self) -> u32 {
-        self.x_max as u32 + 1 - self.x_min as u32
+        (self.x_max as u32 + 1).saturating_sub(self.x_min as u32)
     }
     /// Picture height in pixels, computed from `y_max - y_min + 1`.
+    ///
+    /// Saturating for the same reason as [`PcxHeader::width`]: an
+    /// unvalidated `y_max < y_min` header yields `0` instead of an
+    /// integer-underflow panic.
     pub fn height(&self) -> u32 {
-        self.y_max as u32 + 1 - self.y_min as u32
+        (self.y_max as u32 + 1).saturating_sub(self.y_min as u32)
     }
     /// On-disk total bytes for one full scanline:
     /// `n_planes × bytes_per_line`. Independent of pixel-width

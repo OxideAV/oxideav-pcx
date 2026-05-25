@@ -1,0 +1,26 @@
+name: Fuzz
+
+# Daily fuzz run for the cargo-fuzz harness under fuzz/. PCX's decoder is
+# the rich attack surface: a fixed 128-byte header whose bits_per_pixel /
+# n_planes / window / bytes_per_line / palette_info fields are all
+# attacker-controlled and feed scanline, allocation, and planar->packed
+# reconstruction maths, an RLE-compressed planar pixel stream, and an
+# optional trailing 769-byte VGA palette block located by a scan back
+# from EOF. The DCX multi-page wrapper adds a u32 LE offset table that
+# slices the bundle into stand-alone PCX pages. There is no external
+# system library worth pulling in as a cross-decode oracle (and the
+# clean-room wall bars the reference sources anyway), so this is a
+# decode-only panic-free harness: one target gets the whole 30-minute
+# budget.
+
+on:
+  schedule:
+    - cron: "47 6 * * *"   # daily 06:47 UTC, jittered off the hour
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    uses: OxideAV/.github/.github/workflows/crate-fuzz.yml@master
+    with:
+      time_budget_seconds: 1800
+    secrets: inherit

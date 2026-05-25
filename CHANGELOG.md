@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 136: `fuzz/` cargo-fuzz harness (`decode_pcx` target) driving
+  `parse_pcx` + `parse_dcx` on arbitrary byte buffers, with a 12-entry
+  seed corpus covering all six (depth, planes) combinations, grayscale,
+  a windowed-origin file, a DCX bundle, and degenerate inputs. 40M
+  executions, zero crashes after the fixes below. Daily 30-minute CI
+  fuzz workflow.
+
+### Fixed
+
+- Round 136 (fuzz): `PcxHeader::width()` / `height()` no longer panic
+  with an integer-underflow on a malformed header where `x_max < x_min`
+  (or `y_max < y_min`). The accessors are public and may be called on an
+  unvalidated header straight out of `parse_header`, so they now use
+  saturating subtraction (yielding `0`); `parse_pcx` still rejects such
+  headers with a typed error.
+- Round 136 (fuzz): decompression-bomb guard in `parse_pcx`. A header
+  claiming enormous dimensions backed by only a few RLE bytes used to
+  eagerly `Vec::with_capacity(scanline × height)` and OOM-abort (a
+  ~398 GB reservation for a tiny input was observed). The decoder now
+  computes `scanline × height` with `checked_mul` and rejects any claim
+  exceeding what the available pixel bytes could decode (PCX RLE expands
+  at most ~31.5:1), so the initial reservation is bounded by the actual
+  input size.
+
+### Added (prior rounds)
+
 - Round 88 encoder: framework `oxideav_core::Encoder` now accepts
   `PixelFormat::Gray8` video frames and routes them through the
   round-82 `encode_pcx_8bpp_grayscale` writer (8 bpp × 1 plane,

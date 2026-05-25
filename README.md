@@ -110,6 +110,29 @@ assert_eq!(img.width as usize * img.height as usize * 4, img.data.len());
 # Ok::<(), oxideav_pcx::PcxError>(())
 ```
 
+## Fuzzing
+
+A [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) harness lives
+under `fuzz/`. The `decode_pcx` target feeds arbitrary bytes to both
+`parse_pcx` and `parse_dcx` and asserts they always return a `Result`
+rather than panicking, integer-overflowing, indexing out of bounds, or
+allocating an attacker-claimed pixel buffer. It is built with
+`default-features = false` so it exercises the framework-free decode
+path. A 12-entry seed corpus covers all six (depth, planes)
+combinations, grayscale, a windowed-origin file, a DCX bundle, and
+degenerate inputs.
+
+```sh
+cd fuzz && cargo +nightly fuzz run decode_pcx -- -max_total_time=60
+```
+
+The current baseline runs 40M+ executions with zero crashes. Two
+hardening fixes came out of the initial run: the public
+`PcxHeader::width()` / `height()` accessors now saturate instead of
+underflow-panicking on an `x_max < x_min` header, and `parse_pcx` has a
+decompression-bomb guard that rejects a tiny file claiming enormous
+dimensions before it can reserve hundreds of gigabytes.
+
 ## Standalone vs registry-integrated
 
 The crate's default `registry` Cargo feature pulls in `oxideav-core`

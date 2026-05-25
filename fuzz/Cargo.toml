@@ -1,0 +1,47 @@
+[package]
+name = "oxideav-pcx-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# PCX's decoder is the rich fuzz surface: a fixed 128-byte header whose
+# bits_per_pixel / n_planes / x_min..y_max window / bytes_per_line /
+# palette_info fields are all attacker-controlled and feed scanline,
+# allocation, and planar->packed reconstruction maths, followed by an
+# RLE-compressed planar pixel stream and an optional trailing 769-byte
+# VGA palette block located by a scan back from EOF. Six (depth, planes)
+# combinations are reconstructed (1bpp mono / 1bpp×4 EGA / 2bpp CGA /
+# 4bpp packed / 8bpp palette / 8bpp×3 RGB). The DCX multi-page wrapper
+# adds a second surface: a 4-byte magic + up-to-1024-entry u32 LE offset
+# table whose entries slice the bundle into stand-alone PCX pages. There
+# is no external system library worth pulling in as a cross-decode oracle
+# (and the clean-room wall bars the reference sources anyway), so this
+# fuzz crate is **decode-only**: feed arbitrary bytes to the two public
+# decode entry points and assert they always return a `Result` rather
+# than panicking / aborting / OOMing.
+#
+# Built with `default-features = false` so the harness exercises the
+# framework-free standalone decode path (crate-local `PcxError`), with no
+# `oxideav-core` in the dependency tree.
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.oxideav-pcx]
+path = ".."
+default-features = false
+
+# Prevent this from interfering with the umbrella workspace.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "decode_pcx"
+path = "fuzz_targets/decode_pcx.rs"
+test = false
+doc = false

@@ -157,7 +157,13 @@ pub fn parse_pcx(input: &[u8]) -> Result<PcxImage> {
 
     // Decode RLE: scanline-by-scanline so we can spot truncation.
     let scanline = header.scanline_bytes();
-    let mut pixels_planar = Vec::with_capacity(scanline * height as usize);
+    // Total decoded planar size = scanline × height. Both factors are
+    // attacker-controlled (up to 255 × 65535 per scanline, 65536 rows),
+    // so compute the product with `checked_mul` to avoid a debug-build
+    // multiply overflow before it is used as an allocation hint / bound.
+    let total_planar = scanline
+        .checked_mul(height as usize)
+        .ok_or_else(|| Error::invalid("PCX: scanline × height overflows usize"))?;
     let mut cursor = PCX_HEADER_SIZE;
     // The RLE pixel data ends either at end-of-file (no VGA palette)
     // or 769 bytes before EOF (VGA palette block present). Limit
@@ -172,6 +178,26 @@ pub fn parse_pcx(input: &[u8]) -> Result<PcxImage> {
     if rle_end < cursor {
         return Err(Error::invalid("PCX: pixel data section is empty"));
     }
+    // Decompression-bomb guard. A header can claim arbitrarily large
+    // dimensions while the file carries only a few RLE bytes; eagerly
+    // reserving `scanline × height` would then try to allocate hundreds
+    // of gigabytes for a tiny input. PCX RLE expands at most ~31.5:1
+    // (a 2-byte packet yields up to 63 output bytes), so the largest
+    // output the available pixel bytes could legitimately produce is
+    // bounded by `available × 63`. Reject any claim that exceeds that
+    // bound up front, and cap the initial reservation so a borderline
+    // (but in-range) claim still grows the buffer lazily as the RLE
+    // decoder actually produces bytes.
+    let available = rle_end - cursor;
+    let max_plausible_output = available.saturating_mul(63);
+    if total_planar > max_plausible_output {
+        return Err(Error::invalid(format!(
+            "PCX: claimed pixel data ({total_planar} bytes) exceeds what {available} RLE bytes can decode"
+        )));
+    }
+    // `total_planar ≤ max_plausible_output ≤ available × 63`, so this
+    // reservation is now bounded by the actual input size.
+    let mut pixels_planar = Vec::with_capacity(total_planar);
     for _ in 0..height as usize {
         let consumed = rle::decode(&input[cursor..rle_end], &mut pixels_planar, scanline)?;
         cursor += consumed;
