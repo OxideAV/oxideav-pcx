@@ -42,7 +42,11 @@ pub fn register_codecs(reg: &mut CodecRegistry) {
         .with_pixel_formats(vec![
             PixelFormat::Rgba,
             PixelFormat::Rgb24,
+            PixelFormat::Bgr24,
+            PixelFormat::Bgra,
             PixelFormat::Gray8,
+            PixelFormat::MonoBlack,
+            PixelFormat::MonoWhite,
         ]);
     reg.register(
         CodecInfo::new(CodecId::new(crate::CODEC_ID_STR))

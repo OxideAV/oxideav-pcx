@@ -54,6 +54,18 @@
 //! u32 LE page offsets terminated by a zero sentinel + concatenated
 //! stand-alone PCX 5.0 streams.
 //!
+//! ## Framework `Encoder` accepted pixel formats
+//!
+//! The default-on `registry` feature's `make_encoder` accepts seven
+//! `oxideav_core::PixelFormat` variants. `Rgba` / `Rgb24` / `Bgr24` /
+//! `Bgra` route to [`encode_pcx_24bpp`] (with per-pixel byte swap for
+//! the `Bgr*` variants, and alpha dropped from `Rgba` / `Bgra`).
+//! `Gray8` routes to [`encode_pcx_8bpp_grayscale`]. `MonoBlack` and
+//! `MonoWhite` unpack the MSB-first 1-bit stride into one byte per
+//! pixel and route to [`encode_pcx_1bpp_mono`]; `MonoWhite` is
+//! bit-inverted on the way in so the on-disk PCX always carries the
+//! spec §4.1 bit-1 = white polarity.
+//!
 //! ## Standalone vs registry-integrated
 //!
 //! The crate's default `registry` Cargo feature pulls in `oxideav-core`

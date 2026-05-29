@@ -17,11 +17,15 @@
 //!   16-entry palette in the header.
 //!
 //! The framework-side `Encoder` constructed via [`make_encoder`]
-//! accepts video frames whose [`oxideav_core::PixelFormat`] is
-//! `Rgba`, `Rgb24`, or `Gray8`: `Rgba`/`Rgb24` route to
-//! [`encode_pcx_24bpp`] (alpha dropped), and `Gray8` routes to
+//! accepts video frames in seven [`oxideav_core::PixelFormat`]
+//! variants: `Rgba` / `Rgb24` / `Bgr24` / `Bgra` route to
+//! [`encode_pcx_24bpp`] (`Bgr*` per-pixel byte-swapped to RGB,
+//! alpha dropped from `Rgba` / `Bgra`); `Gray8` routes to
 //! [`encode_pcx_8bpp_grayscale`] (8 bpp × 1 plane, `palette_info =
-//! 2`, no VGA tail palette per spec §3).
+//! 2`, no VGA tail palette per spec §3); `MonoBlack` / `MonoWhite`
+//! unpack the MSB-first 1-bit stride into one byte per pixel and
+//! route to [`encode_pcx_1bpp_mono`] (with `MonoWhite` bit-inverted
+//! so the on-disk PCX retains the spec §4.1 bit-1 = white polarity).
 //!
 //! The RLE encoder coalesces runs of identical bytes (≤ 63 each) and
 //! escapes any singleton byte ≥ `0xC0` into a length-1 packet so the
@@ -90,31 +94,20 @@ impl Encoder for PcxEncoder {
                 "PCX encoder: empty frame plane",
             ));
         }
-        let bpp = match format {
-            PixelFormat::Rgba => 4,
-            PixelFormat::Rgb24 => 3,
-            PixelFormat::Gray8 => 1,
-            other => {
-                return Err(oxideav_core::Error::invalid(format!(
-                    "PCX encoder: unsupported pixel format {other:?}"
-                )))
-            }
-        };
-        let want = width as usize * bpp;
         let plane = &vf.planes[0];
-        let mut tight = Vec::with_capacity(want * height as usize);
-        for y in 0..height as usize {
-            let off = y * plane.stride;
-            tight.extend_from_slice(&plane.data[off..off + want]);
-        }
         let w16: u16 = width
             .try_into()
             .map_err(|_| oxideav_core::Error::invalid("PCX encoder: width exceeds 65535"))?;
         let h16: u16 = height
             .try_into()
             .map_err(|_| oxideav_core::Error::invalid("PCX encoder: height exceeds 65535"))?;
+        // The byte-per-pixel formats (`Rgb*`, `Bgr*`, `Gray8`) and the
+        // packed 1-bit formats (`Mono*`) need different row-tightening
+        // strategies. Compute a tight row buffer with stride collapsed
+        // for each format, then dispatch to the matching writer.
         let bytes = match format {
             PixelFormat::Rgba => {
+                let tight = tighten_packed(plane, width as usize, height as usize, 4)?;
                 // Drop alpha — PCX has no alpha channel.
                 let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
                 for c in tight.chunks_exact(4) {
@@ -122,12 +115,60 @@ impl Encoder for PcxEncoder {
                 }
                 encode_pcx_24bpp(w16, h16, &rgb)?
             }
-            PixelFormat::Rgb24 => encode_pcx_24bpp(w16, h16, &tight)?,
+            PixelFormat::Rgb24 => {
+                let tight = tighten_packed(plane, width as usize, height as usize, 3)?;
+                encode_pcx_24bpp(w16, h16, &tight)?
+            }
+            PixelFormat::Bgr24 => {
+                // BGR -> swap to RGB before handing off. The frame is
+                // 3 bytes/pixel packed; reorder per pixel.
+                let tight = tighten_packed(plane, width as usize, height as usize, 3)?;
+                let mut rgb = Vec::with_capacity(tight.len());
+                for c in tight.chunks_exact(3) {
+                    rgb.extend_from_slice(&[c[2], c[1], c[0]]);
+                }
+                encode_pcx_24bpp(w16, h16, &rgb)?
+            }
+            PixelFormat::Bgra => {
+                // BGRA -> swap to RGB and drop alpha.
+                let tight = tighten_packed(plane, width as usize, height as usize, 4)?;
+                let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
+                for c in tight.chunks_exact(4) {
+                    rgb.extend_from_slice(&[c[2], c[1], c[0]]);
+                }
+                encode_pcx_24bpp(w16, h16, &rgb)?
+            }
             // 8 bpp × 1 plane PCX 5.0 with `palette_info = 2` (spec §3
             // grayscale flag); no VGA tail palette is appended. The
             // crate's decoder honours the flag and emits `(g, g, g,
             // 0xFF)` per pixel regardless of any tail palette.
-            PixelFormat::Gray8 => encode_pcx_8bpp_grayscale(w16, h16, &tight)?,
+            PixelFormat::Gray8 => {
+                let tight = tighten_packed(plane, width as usize, height as usize, 1)?;
+                encode_pcx_8bpp_grayscale(w16, h16, &tight)?
+            }
+            // 1-bit monochrome packed MSB-first per `oxideav-core`'s
+            // `MonoBlack` (0 = black, 1 = white) / `MonoWhite` (0 =
+            // white, 1 = black) convention. PCX spec §4.1 monochrome
+            // uses bit-1 = white, so `MonoBlack` is a direct map and
+            // `MonoWhite` requires bit inversion.
+            PixelFormat::MonoBlack => {
+                let pixels = unpack_msb_mono(
+                    plane,
+                    width as usize,
+                    height as usize,
+                    /*invert=*/ false,
+                )?;
+                encode_pcx_1bpp_mono(w16, h16, &pixels)?
+            }
+            PixelFormat::MonoWhite => {
+                let pixels = unpack_msb_mono(
+                    plane,
+                    width as usize,
+                    height as usize,
+                    /*invert=*/ true,
+                )?;
+                encode_pcx_1bpp_mono(w16, h16, &pixels)?
+            }
             other => {
                 return Err(oxideav_core::Error::invalid(format!(
                     "PCX encoder: unsupported pixel format {other:?}"
@@ -157,6 +198,71 @@ impl Encoder for PcxEncoder {
         self.eof = true;
         Ok(())
     }
+}
+
+#[cfg(feature = "registry")]
+fn tighten_packed(
+    plane: &oxideav_core::VideoPlane,
+    width: usize,
+    height: usize,
+    bytes_per_pixel: usize,
+) -> oxideav_core::Result<Vec<u8>> {
+    let want = width * bytes_per_pixel;
+    if plane.stride < want {
+        return Err(oxideav_core::Error::invalid(format!(
+            "PCX encoder: plane stride {} smaller than width × bytes-per-pixel {}",
+            plane.stride, want
+        )));
+    }
+    if plane.data.len() < plane.stride * height {
+        return Err(oxideav_core::Error::invalid(
+            "PCX encoder: plane data shorter than stride × height",
+        ));
+    }
+    let mut tight = Vec::with_capacity(want * height);
+    for y in 0..height {
+        let off = y * plane.stride;
+        tight.extend_from_slice(&plane.data[off..off + want]);
+    }
+    Ok(tight)
+}
+
+#[cfg(feature = "registry")]
+fn unpack_msb_mono(
+    plane: &oxideav_core::VideoPlane,
+    width: usize,
+    height: usize,
+    invert: bool,
+) -> oxideav_core::Result<Vec<u8>> {
+    // Per `oxideav_core::PixelFormat::MonoBlack` / `MonoWhite`: 1 bit
+    // per pixel packed MSB-first; rows are padded to a byte boundary
+    // (and stride may be larger than `ceil(width / 8)`).
+    let row_bytes = width.div_ceil(8);
+    if plane.stride < row_bytes {
+        return Err(oxideav_core::Error::invalid(format!(
+            "PCX encoder: mono plane stride {} smaller than width's row-byte count {}",
+            plane.stride, row_bytes
+        )));
+    }
+    if plane.data.len() < plane.stride * height {
+        return Err(oxideav_core::Error::invalid(
+            "PCX encoder: mono plane data shorter than stride × height",
+        ));
+    }
+    let mut out = Vec::with_capacity(width * height);
+    for y in 0..height {
+        let row = &plane.data[y * plane.stride..y * plane.stride + row_bytes];
+        for x in 0..width {
+            // bit 0 in MonoBlack source = black per core docs; the
+            // round-2 `encode_pcx_1bpp_mono` writer treats input value 1
+            // as white and 0 as black (per spec §4.1, bit 1 = white).
+            // MonoBlack thus maps straight through; MonoWhite inverts.
+            let bit = (row[x / 8] >> (7 - (x % 8))) & 1;
+            let v = if invert { 1 - bit } else { bit };
+            out.push(v);
+        }
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------

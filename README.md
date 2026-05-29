@@ -45,13 +45,27 @@ consulted, paraphrased, or cross-checked.
 
 ## Encode
 
-The framework-side [`Encoder`] (`make_encoder`) accepts `Rgba` /
-`Rgb24` / `Gray8` video frames; `Gray8` is routed through
-`encode_pcx_8bpp_grayscale` so the resulting PCX carries
-`palette_info = 2` (spec §3) and no VGA tail palette. The codec
-capabilities advertise the same three pixel formats so a pipeline
-that picks formats from `accepted_pixel_formats` can hand PCX a
-grayscale frame directly.
+The framework-side [`Encoder`] (`make_encoder`) accepts seven
+`oxideav_core::PixelFormat` variants — `Rgba`, `Rgb24`, `Bgr24`,
+`Bgra`, `Gray8`, `MonoBlack`, and `MonoWhite`:
+
+* `Rgba` / `Rgb24` / `Bgr24` / `Bgra` route to the 24-bit RGB writer
+  (`encode_pcx_24bpp`). The `Bgr*` variants are per-pixel byte-swapped
+  to RGB before encode; alpha is dropped from `Rgba` / `Bgra` (PCX
+  has no alpha channel).
+* `Gray8` routes through `encode_pcx_8bpp_grayscale` so the
+  resulting PCX carries `palette_info = 2` (spec §3) and no VGA tail
+  palette.
+* `MonoBlack` and `MonoWhite` route through `encode_pcx_1bpp_mono`
+  after unpacking the MSB-first packed-bit stride into one byte per
+  pixel. The `MonoBlack` convention (0 = black, 1 = white) is a
+  direct map onto the spec §4.1 monochrome writer; `MonoWhite`
+  (0 = white, 1 = black) inverts the bit before emission so the
+  decoder still sees bit 1 = white.
+
+The codec capabilities advertise the same seven pixel formats so a
+pipeline that picks formats from `accepted_pixel_formats` can hand
+PCX whichever variant matches its source frame directly.
 
 Standalone helpers:
 
@@ -163,9 +177,9 @@ oxideav_pcx::register(&mut codecs, &mut containers);
   vanishingly rare and the spec only formally enumerates the (bpp,
   planes) tuples already handled; the existing 1 bpp × 4 / 4 bpp × 1
   paths cover every EGA/VGA fixture we've seen in the wild.
-* `PixelFormat::Pal8` / `PixelFormat::MonoBlack` / `Bgr24` / `Bgra`
-  inputs to the framework `Encoder`. Standalone callers can still
-  reach `encode_pcx_8bpp_indexed` / `encode_pcx_1bpp_mono` /
-  `encode_pcx_4bpp_packed` / `encode_pcx_2bpp_cga` /
-  `encode_pcx_1bpp_4planes_ega` directly; the framework path
-  accepts `Rgba` / `Rgb24` / `Gray8` for now.
+* `PixelFormat::Pal8` input to the framework `Encoder`. The
+  out-of-band palette companion needed by `Pal8` isn't currently
+  carried by `VideoFrame`; standalone callers can still reach
+  `encode_pcx_8bpp_indexed` / `encode_pcx_4bpp_packed` /
+  `encode_pcx_2bpp_cga` / `encode_pcx_1bpp_4planes_ega` directly
+  with an explicit palette argument.

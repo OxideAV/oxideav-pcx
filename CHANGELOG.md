@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 185: framework `oxideav_core::Encoder` accepts four new
+  `PixelFormat` variants on top of the round-88 `Rgba` / `Rgb24` /
+  `Gray8` surface — `Bgr24`, `Bgra`, `MonoBlack`, and `MonoWhite`.
+  `Bgr*` variants are per-pixel byte-swapped to RGB before encode
+  (alpha dropped from `Bgra`); `Mono*` variants unpack the MSB-first
+  1-bit stride into one byte per pixel and route to
+  `encode_pcx_1bpp_mono`, with `MonoWhite` inverted so the on-disk
+  PCX still carries the spec §4.1 bit-1 = white polarity. The codec
+  capabilities advertise all seven accepted formats so pipeline
+  pickers see them before construction. New `tests/round185.rs`
+  covers byte-swap, alpha-drop, both monochrome polarities,
+  non-tight strides on mono input, undersized-data refusal, and the
+  capability advertisement.
 - Round 136: `fuzz/` cargo-fuzz harness (`decode_pcx` target) driving
   `parse_pcx` + `parse_dcx` on arbitrary byte buffers, with a 12-entry
   seed corpus covering all six (depth, planes) combinations, grayscale,
