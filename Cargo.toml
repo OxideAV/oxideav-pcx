@@ -31,3 +31,23 @@ default = ["registry"]
 # image-library use-cases that just want the standalone `parse_pcx`
 # API.
 registry = ["dep:oxideav-core"]
+
+[dev-dependencies]
+# Round 197 (depth-mode benchmarks): Criterion drives the three bench
+# harnesses (`decode`, `encode`, `roundtrip`) that future PCX decoder /
+# encoder rounds can use to A/B their changes. Pinned to the same 0.5
+# line the other OxideAV crates with benches (png / bmp / gif / tiff /
+# tta / flac) already track.
+criterion = "0.5"
+
+[[bench]]
+name = "decode"
+harness = false
+
+[[bench]]
+name = "encode"
+harness = false
+
+[[bench]]
+name = "roundtrip"
+harness = false

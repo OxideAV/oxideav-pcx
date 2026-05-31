@@ -124,6 +124,33 @@ assert_eq!(img.width as usize * img.height as usize * 4, img.data.len());
 # Ok::<(), oxideav_pcx::PcxError>(())
 ```
 
+## Benchmarks
+
+Round 197 (depth-mode benchmarks) adds three Criterion harnesses under
+`benches/` so future optimisation rounds can A/B-test changes to the
+decoder + encoder hot paths against a stable baseline:
+
+* `decode` — drives [`parse_pcx`] / [`parse_dcx`] across every spec §4.1
+  (depth, planes) tuple at 320×240 / 640×480 / 512×512 / 1920×1080
+  scales plus a 4-page DCX bundle.
+* `encode` — drives the eight standalone write paths
+  (`encode_pcx_24bpp` / `encode_pcx_8bpp_indexed` /
+  `encode_pcx_8bpp_grayscale` / `encode_pcx_1bpp_mono` /
+  `encode_pcx_4bpp_packed` / `encode_pcx_2bpp_cga` /
+  `encode_pcx_1bpp_4planes_ega` / `encode_dcx`).
+* `roundtrip` — pairs each encode path with its matching decode so a
+  perf regression that quietly mis-encodes surfaces as a panic rather
+  than a silently-cheaper benchmark number.
+
+Bench inputs are synthesised on the fly via a deterministic xorshift32
+fill; no fixture files are committed. Run with:
+
+```sh
+cargo bench -p oxideav-pcx --bench decode
+cargo bench -p oxideav-pcx --bench encode
+cargo bench -p oxideav-pcx --bench roundtrip
+```
+
 ## Fuzzing
 
 A [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) harness lives

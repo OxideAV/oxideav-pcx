@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 197: Criterion benchmark harness covering decode + encode +
+  roundtrip hot paths. Three new `benches/{decode,encode,roundtrip}.rs`
+  harnesses mirror the png / bmp / gif / tiff shape — each scenario
+  synthesises a fresh PCX on the fly via the public encoder API and
+  iterates the matching decoder path (or both, for the roundtrip
+  harness). Scenarios cover every spec §4.1 (depth, planes) tuple
+  (1 bpp mono / 1 bpp × 4 EGA / 2 bpp CGA / 4 bpp packed / 8 bpp
+  palette / 8 bpp grayscale / 8 bpp × 3 RGB), plus the DCX multi-page
+  wrapper. No fixture files committed; the bench inputs are entirely
+  reproducible from the bench source (deterministic xorshift32 fill).
+  Headline single-threaded apple-silicon numbers on the smoke run
+  include ~192 µs per 320×240 24bpp decode, ~5.18 ms per 1920×1080
+  24bpp decode, ~520 µs per 512×512 8bpp grayscale decode, ~759 µs per
+  4-page 320×240 DCX bundle decode, and ~9 µs per DCX assembler call
+  (the assembler just concatenates pre-encoded PCX page payloads + writes
+  the offset table). Saturated-crate depth-mode work per the workspace
+  README's "saturated → fuzz/bench/profile" memo (the fuzz harness
+  landed in r136; this round adds the bench arm).
 - Round 185: framework `oxideav_core::Encoder` accepts four new
   `PixelFormat` variants on top of the round-88 `Rgba` / `Rgb24` /
   `Gray8` surface — `Bgr24`, `Bgra`, `MonoBlack`, and `MonoWhite`.
