@@ -4,9 +4,8 @@ Pure-Rust ZSoft PCX (PC Paintbrush) reader/writer for the
 [`oxideav`](https://github.com/OxideAV/oxideav) framework.
 
 Clean-room implementation of the public **ZSoft PCX File Format
-Technical Reference Manual**, Revision 5 (1991). No `image` crate's
-PCX submodule, GIMP PCX plugin, FreeImage, DevIL, or libpcx source
-consulted, paraphrased, or cross-checked.
+Technical Reference Manual**, Revision 5 (1991), the sole source of
+truth for bitstream behaviour in this crate.
 
 ## Decode
 

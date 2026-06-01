@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Round 203: Rephrased the crate-level provenance prose in
+  `src/lib.rs` and `README.md` to a positive sole-source-of-truth
+  statement against the ZSoft PCX File Format Technical Reference
+  Manual Rev 5 (1991). The wording no longer enumerates external
+  PCX implementations by name.
+
 ### Added
 
 - Round 197: Criterion benchmark harness covering decode + encode +
