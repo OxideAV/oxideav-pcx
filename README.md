@@ -150,6 +150,27 @@ cargo bench -p oxideav-pcx --bench encode
 cargo bench -p oxideav-pcx --bench roundtrip
 ```
 
+Round 209 (depth-mode profile / optimisation) reworked the six planar
+unpack hot paths in `src/decoder.rs` against the r197 baseline. Single
+threaded apple-silicon medians (3 s measurement / 30 samples / fresh
+target dir per side): 24-bit 1920×1080 decode 6.63 ms → 5.04 ms
+(−24.0 %, 1.16 → 1.53 GiB/s); 24-bit 640×480 879 µs → 731 µs
+(−16.8 %); 24-bit 320×240 206 µs → 185 µs (−10.2 %); 8-bit indexed
+320×240 128 µs → 92 µs (−28.1 %, 2.24 → 3.12 GiB/s); 8-bit grayscale
+512×512 491 µs → 366 µs (−25.4 %, 1.99 → 2.67 GiB/s); 1-bit
+monochrome 512×512 226 µs → 182 µs (−19.5 %, 4.32 → 5.38 GiB/s); 4-bit
+packed 320×240 105 µs → 74 µs (−29.4 %); 2-bit CGA 320×240 84 µs →
+51 µs (−39.0 %, 3.42 → 5.59 GiB/s); 1-bit × 4-plane EGA 320×240 148 µs
+→ 114 µs (−22.8 %). Geometric-mean speedup ≈ 22.6 % across the nine
+single-frame paths. Output bytes stay bit-identical (cross-validate +
+roundtrip tests all pass). The transformation is mechanical:
+`chunks_exact_mut(w * 4)` over the destination row + per-pixel
+`chunks_exact_mut(4)` for the four RGBA stores, pre-sliced per-plane
+row references for the multi-plane variants, and pre-baked
+`[r, g, b, 0xFF]` palettes so per-pixel palette lookups become one
+`copy_from_slice` instead of three scalar byte writes plus an alpha
+byte.
+
 ## Fuzzing
 
 A [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) harness lives

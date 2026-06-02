@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Round 209: Restructured the six planar-unpack hot paths in
+  `src/decoder.rs` to walk both source scanlines and the destination
+  RGBA buffer via `chunks_exact_mut`, with pre-sliced per-plane row
+  references for the multi-plane variants and pre-baked
+  `[r, g, b, 0xFF]` RGBA palettes for the 8 / 4 / 2 bpp paths. The
+  destination split gives the optimiser enough provenance information
+  to drop the per-pixel bounds checks against `out` and lay each
+  pixel's four-byte RGBA store down as a single aligned move. Output
+  bytes remain bit-identical to the pre-r209 implementation — all 69
+  existing tests (cross-validate / round82 / round88 / round185 /
+  round2 / roundtrip + lib unit) stay green unmodified. r197 Criterion
+  decode bench, median wall-clock on the same machine (3 s
+  measurement, 30 samples, fresh `CARGO_TARGET_DIR` per side):
+  decode_24bpp_1920×1080 6.63 ms → 5.04 ms (−24.0 %, 1.16 → 1.53 GiB/s),
+  decode_24bpp_640×480 879 µs → 731 µs (−16.8 %, 1.30 → 1.57 GiB/s),
+  decode_24bpp_320×240 206 µs → 185 µs (−10.2 %, 1.39 → 1.55 GiB/s),
+  decode_8bpp_indexed_320×240 128 µs → 92 µs (−28.1 %, 2.24 → 3.12
+  GiB/s), decode_8bpp_grayscale_512×512 491 µs → 366 µs (−25.4 %,
+  1.99 → 2.67 GiB/s), decode_1bpp_mono_512×512 226 µs → 182 µs
+  (−19.5 %, 4.32 → 5.38 GiB/s), decode_4bpp_packed_320×240 105 µs →
+  74 µs (−29.4 %, 2.72 → 3.86 GiB/s), decode_2bpp_cga_320×240 84 µs →
+  51 µs (−39.0 %, 3.42 → 5.59 GiB/s), decode_1bpp_4planes_ega_320×240
+  148 µs → 114 µs (−22.8 %, 1.94 → 2.51 GiB/s). Geometric-mean
+  speedup across the nine single-frame paths is ≈ 22.6 %.  No new
+  dependencies, no `unsafe`, no SIMD intrinsics. Encoder hot paths
+  unchanged (encode bench within run-to-run variance).
 - Round 203: Rephrased the crate-level provenance prose in
   `src/lib.rs` and `README.md` to a positive sole-source-of-truth
   statement against the ZSoft PCX File Format Technical Reference
