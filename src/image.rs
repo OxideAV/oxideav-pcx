@@ -63,6 +63,19 @@ pub struct PcxImage {
     /// caller can round-trip the scanner DPI through decode + re-encode
     /// without losing the metadata.
     pub dpi: Option<(u16, u16)>,
+    /// Header `(x_min, y_min)` window origin from spec §3. PCX 3.0+
+    /// supports a non-zero origin to record the source crop region the
+    /// pixel buffer came from (per spec §3 the visible width / height
+    /// are `x_max - x_min + 1` and `y_max - y_min + 1`).
+    ///
+    /// The decoder reports `Some((x, y))` whenever either component is
+    /// non-zero, and `None` when the header carries `(0, 0)` — the
+    /// overwhelmingly common case for screen-authored PCX files. The
+    /// re-encode wrapper [`crate::encode_pcx_24bpp_image`] threads a
+    /// `Some(...)` value through [`crate::encode_pcx_24bpp_window`] so
+    /// a windowed PCX round-trips its crop origin end-to-end instead of
+    /// having it silently zeroed.
+    pub window_origin: Option<(u16, u16)>,
 }
 
 impl PcxImage {

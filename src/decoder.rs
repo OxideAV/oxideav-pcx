@@ -249,6 +249,20 @@ pub fn parse_pcx(input: &[u8]) -> Result<PcxImage> {
         None
     };
 
+    // Surface the window origin only when at least one of `x_min` /
+    // `y_min` is non-zero: PCX 3.0+ allows a non-zero origin to record
+    // the source crop region the pixel buffer came from (spec §3 derives
+    // visible width / height as `x_max - x_min + 1` / `y_max - y_min +
+    // 1`). The overwhelmingly common screen-authored case sits at
+    // `(0, 0)` — surfacing that as `None` keeps the re-encode wrapper
+    // emitting the conventional zero-origin header rather than restating
+    // an implicit default.
+    let window_origin = if header.x_min != 0 || header.y_min != 0 {
+        Some((header.x_min, header.y_min))
+    } else {
+        None
+    };
+
     Ok(PcxImage {
         width,
         height,
@@ -256,6 +270,7 @@ pub fn parse_pcx(input: &[u8]) -> Result<PcxImage> {
         data,
         pts: None,
         dpi,
+        window_origin,
     })
 }
 

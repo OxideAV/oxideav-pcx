@@ -255,6 +255,29 @@ writer boundary too. The remaining writers (`encode_pcx_24bpp`,
 `encode_pcx_1bpp_3planes_ega_rgb`, `encode_pcx_1bpp_4planes_ega`,
 `encode_pcx_24bpp_window`) keep the historical 72×72 default.
 
+## Window origin (`x_min` / `y_min`)
+
+The header's `x_min` / `y_min` words (offsets 4 / 6) record the
+source crop region the pixel buffer came from. Spec §3 derives the
+visible width / height as `x_max - x_min + 1` and `y_max - y_min +
+1`; PCX 3.0+ supports a non-zero origin so an editor can preserve the
+position of a cropped sub-image inside its parent canvas. The decoder
+surfaces this on [`PcxImage`] as
+`Option<(u16, u16)> window_origin` — `Some((x, y))` whenever either
+header word is non-zero, `None` for the conventional zero-origin
+screen-author case so the re-encode wrapper doesn't restate `(0, 0)`
+as data.
+
+The combined writer `encode_pcx_24bpp_window_dpi(x_min, y_min, w, h,
+&rgb, (h_dpi, v_dpi))` stamps both the origin AND the authoring DPI
+into a single PCX 5.0 file, mirroring the existing
+[`encode_pcx_24bpp_window`] (origin only) and
+[`encode_pcx_24bpp_dpi`] (DPI only) writers. The wrapper
+`encode_pcx_24bpp_image` now dispatches across the four
+`(window_origin, dpi)` combinations so a decoded windowed-and-tagged
+PCX round-trips both fields through one call instead of forcing the
+caller to flatten the metadata by hand.
+
 ## Lacks
 
 * 4 bpp × 4 planes (16-colour planar with finer per-plane depth)

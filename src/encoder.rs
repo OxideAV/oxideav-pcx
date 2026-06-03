@@ -823,7 +823,12 @@ pub fn encode_pcx_24bpp_window(
 ///
 /// When `image.dpi` is `Some((h, v))`, the same `(h_dpi, v_dpi)` is
 /// threaded into the header so a decode → re-encode pass preserves the
-/// authoring resolution metadata from spec §3.
+/// authoring resolution metadata from spec §3. When
+/// `image.window_origin` is `Some((x, y))`, the same `(x_min, y_min)`
+/// is threaded into the header (via [`encode_pcx_24bpp_window`] or its
+/// matching DPI-bearing variant [`encode_pcx_24bpp_window_dpi`]) so a
+/// decoded windowed PCX round-trips its crop origin instead of having
+/// it silently zeroed out.
 pub fn encode_pcx_24bpp_image(image: &PcxImage) -> Result<Vec<u8>> {
     let w: u16 = image
         .width
@@ -833,25 +838,32 @@ pub fn encode_pcx_24bpp_image(image: &PcxImage) -> Result<Vec<u8>> {
         .height
         .try_into()
         .map_err(|_| Error::invalid("PCX encoder: height exceeds 65535"))?;
-    match image.pixel_format {
+    // Build the packed RGB buffer once so the four (dpi × window_origin)
+    // sub-cases below all share the same input.
+    let rgb_owned: Option<Vec<u8>> = match image.pixel_format {
         PcxPixelFormat::Rgba => {
             let mut rgb = Vec::with_capacity(image.data.len() / 4 * 3);
             for c in image.data.chunks_exact(4) {
                 rgb.extend_from_slice(&c[..3]);
             }
-            match image.dpi {
-                Some(dpi) => encode_pcx_24bpp_dpi(w, h, &rgb, dpi),
-                None => encode_pcx_24bpp(w, h, &rgb),
-            }
+            Some(rgb)
         }
-        PcxPixelFormat::Rgb24 => match image.dpi {
-            Some(dpi) => encode_pcx_24bpp_dpi(w, h, &image.data, dpi),
-            None => encode_pcx_24bpp(w, h, &image.data),
-        },
-        PcxPixelFormat::Indexed8 => Err(Error::unsupported(
-            "PCX encoder: Indexed8 input needs explicit palette \
-             (use encode_pcx_8bpp_indexed)",
-        )),
+        PcxPixelFormat::Rgb24 => None,
+        PcxPixelFormat::Indexed8 => {
+            return Err(Error::unsupported(
+                "PCX encoder: Indexed8 input needs explicit palette \
+                 (use encode_pcx_8bpp_indexed)",
+            ))
+        }
+    };
+    let rgb: &[u8] = rgb_owned.as_deref().unwrap_or(&image.data);
+    match (image.window_origin, image.dpi) {
+        (Some((x_min, y_min)), Some(dpi)) => {
+            encode_pcx_24bpp_window_dpi(x_min, y_min, w, h, rgb, dpi)
+        }
+        (Some((x_min, y_min)), None) => encode_pcx_24bpp_window(x_min, y_min, w, h, rgb),
+        (None, Some(dpi)) => encode_pcx_24bpp_dpi(w, h, rgb, dpi),
+        (None, None) => encode_pcx_24bpp(w, h, rgb),
     }
 }
 
@@ -1059,6 +1071,69 @@ pub fn encode_pcx_1bpp_mono_dpi(
             if v != 0 {
                 row[x / 8] |= 1 << (7 - (x % 8));
             }
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
+/// Encode 24-bit packed RGB to PCX 5.0 with both a non-zero window
+/// origin AND a custom authoring DPI in one call. Mirrors the
+/// combination of [`encode_pcx_24bpp_window`] (window origin from spec
+/// §3) and [`encode_pcx_24bpp_dpi`] (authoring DPI from spec §3); used
+/// by [`encode_pcx_24bpp_image`] when the decoded source carried both
+/// metadata fields so a round-trip preserves them together.
+pub fn encode_pcx_24bpp_window_dpi(
+    x_min: u16,
+    y_min: u16,
+    width: u16,
+    height: u16,
+    rgb: &[u8],
+    dpi: (u16, u16),
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if rgb.len() < width as usize * height as usize * 3 {
+        return Err(Error::invalid(
+            "PCX encoder: rgb input shorter than width × height × 3",
+        ));
+    }
+    if (x_min as u32 + width as u32) > u16::MAX as u32 + 1 {
+        return Err(Error::invalid(
+            "PCX encoder: x_min + width exceeds u16::MAX + 1",
+        ));
+    }
+    if (y_min as u32 + height as u32) > u16::MAX as u32 + 1 {
+        return Err(Error::invalid(
+            "PCX encoder: y_min + height exceeds u16::MAX + 1",
+        ));
+    }
+    check_dpi(dpi)?;
+    let bytes_per_line = round_up_to_even(width);
+    let mut out = Vec::with_capacity(PCX_HEADER_SIZE + rgb.len() / 2);
+    write_header_full(
+        &mut out,
+        x_min,
+        y_min,
+        width,
+        height,
+        8,
+        3,
+        bytes_per_line,
+        &[0u8; 48],
+        1,
+        dpi,
+    );
+    let mut row = Vec::with_capacity(bytes_per_line as usize * 3);
+    for y in 0..height as usize {
+        row.clear();
+        for plane in 0..3 {
+            for x in 0..width as usize {
+                let off = (y * width as usize + x) * 3 + plane;
+                row.push(rgb[off]);
+            }
+            row.resize((plane + 1) * bytes_per_line as usize, 0);
         }
         rle::encode(&row, &mut out);
     }

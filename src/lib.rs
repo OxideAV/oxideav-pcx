@@ -66,6 +66,22 @@
 //! wrapper [`encode_pcx_24bpp_image`] automatically threads
 //! `PcxImage::dpi` through when set.
 //!
+//! ## Window origin
+//!
+//! The header's `x_min` / `y_min` words (offsets 4 / 6) record the
+//! source crop region the pixel buffer came from. Spec §3 derives the
+//! visible width / height as `x_max - x_min + 1` / `y_max - y_min +
+//! 1`; PCX 3.0+ supports a non-zero origin so an editor can preserve
+//! the position of a cropped sub-image inside its parent canvas. The
+//! decoder surfaces this on [`PcxImage::window_origin`] as
+//! `Option<(u16, u16)>` (`Some` whenever either header word is
+//! non-zero, `None` for the conventional zero-origin screen-author
+//! case). [`encode_pcx_24bpp_window_dpi`] combines the existing
+//! window-only and DPI-only writers into one call so the wrapper can
+//! round-trip both metadata fields at once; [`encode_pcx_24bpp_image`]
+//! dispatches across the four `(window_origin, dpi)` combinations
+//! automatically.
+//!
 //! ## DCX multi-page bundles
 //!
 //! [`parse_dcx`] / [`encode_dcx`] handle the Microsoft FAX multi-page
@@ -117,9 +133,9 @@ pub use decoder::parse_pcx;
 pub use encoder::{
     encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono,
     encode_pcx_1bpp_mono_dpi, encode_pcx_24bpp, encode_pcx_24bpp_dpi, encode_pcx_24bpp_image,
-    encode_pcx_24bpp_window, encode_pcx_2bpp_cga, encode_pcx_4bpp_packed,
-    encode_pcx_8bpp_grayscale, encode_pcx_8bpp_grayscale_dpi, encode_pcx_8bpp_indexed,
-    encode_pcx_8bpp_indexed_dpi,
+    encode_pcx_24bpp_window, encode_pcx_24bpp_window_dpi, encode_pcx_2bpp_cga,
+    encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_grayscale_dpi,
+    encode_pcx_8bpp_indexed, encode_pcx_8bpp_indexed_dpi,
 };
 pub use error::{PcxError, Result};
 pub use image::{PcxImage, PcxPixelFormat};

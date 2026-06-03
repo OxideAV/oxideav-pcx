@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 225: window-origin (`x_min` / `y_min`) round-trip support.
+  Spec §3 defines the image window via `(x_min, y_min)` / `(x_max,
+  y_max)`, with the visible width / height derived as `x_max - x_min +
+  1` and `y_max - y_min + 1`; PCX 3.0+ supports a non-zero origin so an
+  editor can record the source crop region a pixel buffer came from.
+  Prior to r225 the standalone `PcxImage` discarded the decoded origin
+  and the `encode_pcx_24bpp_image` wrapper always re-emitted `(0, 0)`,
+  so a windowed PCX silently lost its crop metadata across a decode →
+  re-encode pass.
+  * `PcxImage` gains an `Option<(u16, u16)>` `window_origin` field. The
+    decoder fills it with `Some((x, y))` whenever either header word
+    is non-zero, and `None` for the conventional zero-origin
+    screen-authored case (so the re-encode wrapper doesn't restate an
+    implicit `(0, 0)` as data).
+  * `encode_pcx_24bpp_window_dpi(x_min, y_min, w, h, &rgb,
+    (h_dpi, v_dpi))` combines the existing window-only
+    (`encode_pcx_24bpp_window`) and DPI-only (`encode_pcx_24bpp_dpi`)
+    writers into one call so the wrapper can round-trip both metadata
+    fields at once without forking the body of the 24-bit writer for a
+    fourth time.
+  * `encode_pcx_24bpp_image` now dispatches across the four
+    `(window_origin, dpi)` combinations (`None`/`None` → plain,
+    `Some`/`None` → window, `None`/`Some` → dpi, `Some`/`Some` →
+    window_dpi). The packed RGB buffer is built once up front so the
+    `Rgba`-vs-`Rgb24` byte-swap stays untouched.
+  * Thirteen new tests in `tests/round225.rs` cover decoder reporting
+    of `Some/None` per the asymmetric / zero / non-zero origin cases,
+    header-offset placement of the new combined writer, self-roundtrip
+    + end-to-end round-trip through the wrapper, wrapper dispatch
+    bit-identical to each standalone writer in its sub-case, and the
+    new combined writer's input-rejection paths (zero-component DPI,
+    origin + dimension overflow). All 102 existing + new tests stay
+    green on both the default and `--no-default-features` standalone
+    builds.
 - Round 219: authoring DPI (`h_dpi` / `v_dpi`) round-trip support.
   Spec §3 records the header's two 16-bit DPI words at offsets 12 / 14
   as "the resolutions at which the image was created (printer or
