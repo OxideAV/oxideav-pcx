@@ -46,6 +46,23 @@ pub struct PcxImage {
     /// Optional presentation timestamp. Always `None` from the
     /// standalone decode path.
     pub pts: Option<i64>,
+    /// Source authoring resolution as `(h_dpi, v_dpi)` if the header
+    /// carried non-zero values for both fields. Spec §3 records this as
+    /// "the resolutions at which the image was created (printer or
+    /// scanner); e.g. a scan might store 300, 300."
+    ///
+    /// The decoder reports `Some((h, v))` whenever both header fields
+    /// are non-zero, and `None` otherwise (a 0 in either field per the
+    /// rev-5 manual means "unset" — many drawing-program writers leave
+    /// the field at zero rather than the 72×72 convention some scanner
+    /// software emits). The standalone re-encode helpers
+    /// [`crate::encode_pcx_24bpp_dpi`] /
+    /// [`crate::encode_pcx_8bpp_indexed_dpi`] /
+    /// [`crate::encode_pcx_8bpp_grayscale_dpi`] /
+    /// [`crate::encode_pcx_1bpp_mono_dpi`] consume the same tuple so a
+    /// caller can round-trip the scanner DPI through decode + re-encode
+    /// without losing the metadata.
+    pub dpi: Option<(u16, u16)>,
 }
 
 impl PcxImage {

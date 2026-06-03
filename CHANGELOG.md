@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 219: authoring DPI (`h_dpi` / `v_dpi`) round-trip support.
+  Spec §3 records the header's two 16-bit DPI words at offsets 12 / 14
+  as "the resolutions at which the image was created (printer or
+  scanner); e.g. a scan might store 300, 300", and treats a 0 in
+  either field as the documented "unset" sentinel. Prior to r219 the
+  decoder discarded both fields after parsing, and every writer hard-
+  coded the historical PC Paintbrush 72×72 "screen DPI" convention —
+  a decode → re-encode pass therefore silently destroyed the
+  authoring resolution of a scanned input.
+  * `PcxImage` gains an `Option<(u16, u16)>` `dpi` field. The decoder
+    fills it with `Some((h, v))` whenever both header fields are
+    non-zero, and `None` otherwise (asymmetric or zeroed headers
+    collapse to `None` per the spec §3 sentinel).
+  * Four new writer entry points stamp a custom authoring resolution
+    into the header in place of the 72×72 default:
+    `encode_pcx_24bpp_dpi(w, h, &rgb, (h_dpi, v_dpi))`,
+    `encode_pcx_8bpp_indexed_dpi(w, h, &indices, &palette, dpi)`,
+    `encode_pcx_8bpp_grayscale_dpi(w, h, &pixels, dpi)`, and
+    `encode_pcx_1bpp_mono_dpi(w, h, &pixels, dpi)`. Each rejects a
+    tuple with a 0 in either component so the spec §3 "unset"
+    semantic is preserved at the writer boundary.
+  * The convenience wrapper `encode_pcx_24bpp_image(&img)` now
+    automatically threads `img.dpi` into the header when present, so
+    `parse_pcx → encode_pcx_24bpp_image` preserves the scanner DPI
+    end-to-end without the caller flattening + restamping by hand.
+  * Internal `write_header_full` gained a `(u16, u16)` `dpi`
+    parameter; the existing helpers (`write_header`,
+    `write_header_with_palette`) pass the `DEFAULT_DPI = (72, 72)`
+    constant so the on-disk pixel-data RLE byte stream is
+    bit-identical to the pre-r219 output for every legacy writer.
+  * Thirteen new tests in `tests/round219.rs` cover header offset
+    placement, asymmetric-axes encoding, decoder reporting of
+    `Some/None` per the spec §3 sentinel rule, pixel-data invariance
+    across the DPI dimension, decoder→encoder→decoder round-trip
+    through the `PcxImage` wrapper, rejection of zero-component DPI
+    tuples, and rejection of bad palette length in the new
+    `_dpi`-indexed writer. All 89 existing + new tests stay green on
+    both the default and `--no-default-features` standalone builds.
 - Round 215: 1 bpp × 3 planes (8-colour EGA RGB) decode + encode.
   This `(bpp, planes)` combination is one of the six formal video
   modes listed in the EGFF PCX file-format summary (3 planes / 1

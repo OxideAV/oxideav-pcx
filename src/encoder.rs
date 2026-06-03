@@ -416,6 +416,12 @@ fn round_up_to_even(v: u16) -> u16 {
     }
 }
 
+/// Default authoring DPI written into the header when the caller does
+/// not supply one. 72×72 matches the "screen DPI" convention PC
+/// Paintbrush and the rev-5 manual's example header carry; scanner
+/// software that emits PCX typically overrides this to 300/300.
+pub(crate) const DEFAULT_DPI: (u16, u16) = (72, 72);
+
 fn write_header(
     out: &mut Vec<u8>,
     width: u16,
@@ -435,6 +441,7 @@ fn write_header(
         bytes_per_line,
         &[0u8; 48],
         1,
+        DEFAULT_DPI,
     );
 }
 
@@ -458,14 +465,17 @@ fn write_header_with_palette(
         bytes_per_line,
         ega_palette,
         1,
+        DEFAULT_DPI,
     );
 }
 
 /// Full-control header writer. Used by the specialised helpers that
 /// need to set a non-zero window origin (PCX 3.0+ pixel-region edge
-/// case) or override `palette_info` (1 = colour / BW, 2 = grayscale —
+/// case), override `palette_info` (1 = colour / BW, 2 = grayscale —
 /// per spec §3 the latter forces the decoder onto a grayscale
-/// interpretation regardless of any tail palette).
+/// interpretation regardless of any tail palette), or carry a custom
+/// authoring DPI (spec §3 records `h_dpi` / `v_dpi` as "the resolutions
+/// at which the image was created — e.g. a scan might store 300, 300").
 #[allow(clippy::too_many_arguments)]
 fn write_header_full(
     out: &mut Vec<u8>,
@@ -478,6 +488,7 @@ fn write_header_full(
     bytes_per_line: u16,
     ega_palette: &[u8; 48],
     palette_info: u16,
+    dpi: (u16, u16),
 ) {
     let start = out.len();
     let x_max = x_min + width - 1;
@@ -490,8 +501,8 @@ fn write_header_full(
     out.extend_from_slice(&y_min.to_le_bytes()); // y_min  6
     out.extend_from_slice(&x_max.to_le_bytes()); // x_max  8
     out.extend_from_slice(&y_max.to_le_bytes()); // y_max 10
-    out.extend_from_slice(&72u16.to_le_bytes()); // h_dpi  12 (typical default)
-    out.extend_from_slice(&72u16.to_le_bytes()); // v_dpi  14
+    out.extend_from_slice(&dpi.0.to_le_bytes()); // h_dpi  12
+    out.extend_from_slice(&dpi.1.to_le_bytes()); // v_dpi  14
     out.extend_from_slice(ega_palette); // ega_palette  16..64
     out.push(0); // reserved 64
     out.push(n_planes); // n_planes 65
@@ -724,6 +735,7 @@ pub fn encode_pcx_8bpp_grayscale(width: u16, height: u16, pixels: &[u8]) -> Resu
         bytes_per_line,
         &[0u8; 48],
         2, // palette_info = 2 → grayscale per spec §3
+        DEFAULT_DPI,
     );
     let mut row = Vec::with_capacity(bytes_per_line as usize);
     for y in 0..height as usize {
@@ -787,6 +799,7 @@ pub fn encode_pcx_24bpp_window(
         bytes_per_line,
         &[0u8; 48],
         1,
+        DEFAULT_DPI,
     );
     let mut row = Vec::with_capacity(bytes_per_line as usize * 3);
     for y in 0..height as usize {
@@ -807,6 +820,10 @@ pub fn encode_pcx_24bpp_window(
 /// hand. Picks `encode_pcx_24bpp` for `Rgba` (alpha is dropped) and
 /// `Rgb24` inputs; rejects `Indexed8` (which needs an explicit
 /// palette argument).
+///
+/// When `image.dpi` is `Some((h, v))`, the same `(h_dpi, v_dpi)` is
+/// threaded into the header so a decode → re-encode pass preserves the
+/// authoring resolution metadata from spec §3.
 pub fn encode_pcx_24bpp_image(image: &PcxImage) -> Result<Vec<u8>> {
     let w: u16 = image
         .width
@@ -822,12 +839,239 @@ pub fn encode_pcx_24bpp_image(image: &PcxImage) -> Result<Vec<u8>> {
             for c in image.data.chunks_exact(4) {
                 rgb.extend_from_slice(&c[..3]);
             }
-            encode_pcx_24bpp(w, h, &rgb)
+            match image.dpi {
+                Some(dpi) => encode_pcx_24bpp_dpi(w, h, &rgb, dpi),
+                None => encode_pcx_24bpp(w, h, &rgb),
+            }
         }
-        PcxPixelFormat::Rgb24 => encode_pcx_24bpp(w, h, &image.data),
+        PcxPixelFormat::Rgb24 => match image.dpi {
+            Some(dpi) => encode_pcx_24bpp_dpi(w, h, &image.data, dpi),
+            None => encode_pcx_24bpp(w, h, &image.data),
+        },
         PcxPixelFormat::Indexed8 => Err(Error::unsupported(
             "PCX encoder: Indexed8 input needs explicit palette \
              (use encode_pcx_8bpp_indexed)",
         )),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Public DPI-bearing variants
+// ---------------------------------------------------------------------------
+//
+// Spec §3 records `h_dpi` / `v_dpi` as "the resolutions at which the
+// image was created (printer or scanner); e.g. a scan might store
+// 300, 300". The plain `encode_pcx_*` writers fix this at the 72×72
+// "screen DPI" convention the PC Paintbrush family historically wrote.
+// These _dpi variants let a caller round-trip a scanner's authoring
+// resolution through decode → re-encode without losing the metadata,
+// or stamp a destination DPI that downstream printing software will
+// honour. Both fields must be non-zero — per spec §3 a 0 means "unset"
+// and a decoder would surface `PcxImage::dpi = None` for such a file.
+
+/// Encode 24-bit packed RGB to PCX 5.0 with a custom authoring DPI.
+///
+/// Identical to [`encode_pcx_24bpp`] except the header's `h_dpi` /
+/// `v_dpi` fields carry the supplied `(h, v)` rather than the default
+/// 72×72. `(0, 0)` and any tuple where either component is zero is
+/// rejected — spec §3 treats a 0 as "unset" and a decoder will surface
+/// the image with [`PcxImage::dpi`] = `None`.
+pub fn encode_pcx_24bpp_dpi(
+    width: u16,
+    height: u16,
+    rgb: &[u8],
+    dpi: (u16, u16),
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if rgb.len() < width as usize * height as usize * 3 {
+        return Err(Error::invalid(
+            "PCX encoder: rgb input shorter than width × height × 3",
+        ));
+    }
+    check_dpi(dpi)?;
+    let bytes_per_line = round_up_to_even(width);
+    let mut out = Vec::with_capacity(PCX_HEADER_SIZE + rgb.len() / 2);
+    write_header_full(
+        &mut out,
+        0,
+        0,
+        width,
+        height,
+        8,
+        3,
+        bytes_per_line,
+        &[0u8; 48],
+        1,
+        dpi,
+    );
+    let mut row = Vec::with_capacity(bytes_per_line as usize * 3);
+    for y in 0..height as usize {
+        row.clear();
+        for plane in 0..3 {
+            for x in 0..width as usize {
+                let off = (y * width as usize + x) * 3 + plane;
+                row.push(rgb[off]);
+            }
+            row.resize((plane + 1) * bytes_per_line as usize, 0);
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
+/// Encode an 8 bpp indexed PCX with custom DPI plus a 256-entry VGA
+/// tail palette. Mirrors [`encode_pcx_8bpp_indexed`] except for the
+/// authoring DPI fields.
+pub fn encode_pcx_8bpp_indexed_dpi(
+    width: u16,
+    height: u16,
+    indices: &[u8],
+    palette: &[u8],
+    dpi: (u16, u16),
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if indices.len() < width as usize * height as usize {
+        return Err(Error::invalid(
+            "PCX encoder: indexed input shorter than width × height",
+        ));
+    }
+    if palette.len() != PCX_VGA_PALETTE_BYTES {
+        return Err(Error::invalid(format!(
+            "PCX encoder: 256-colour palette must be exactly {PCX_VGA_PALETTE_BYTES} bytes (got {})",
+            palette.len()
+        )));
+    }
+    check_dpi(dpi)?;
+    let bytes_per_line = round_up_to_even(width);
+    let mut out = Vec::with_capacity(PCX_HEADER_SIZE + indices.len() / 2 + PCX_VGA_PALETTE_BYTES);
+    write_header_full(
+        &mut out,
+        0,
+        0,
+        width,
+        height,
+        8,
+        1,
+        bytes_per_line,
+        &[0u8; 48],
+        1,
+        dpi,
+    );
+    let mut row = Vec::with_capacity(bytes_per_line as usize);
+    for y in 0..height as usize {
+        row.clear();
+        row.extend_from_slice(&indices[y * width as usize..y * width as usize + width as usize]);
+        row.resize(bytes_per_line as usize, 0);
+        rle::encode(&row, &mut out);
+    }
+    out.push(PCX_VGA_PALETTE_MARKER);
+    out.extend_from_slice(palette);
+    Ok(out)
+}
+
+/// Encode an 8 bpp × 1 plane grayscale PCX (spec §3 `palette_info = 2`,
+/// no tail palette) with a custom authoring DPI. Mirrors
+/// [`encode_pcx_8bpp_grayscale`] except for the DPI fields.
+pub fn encode_pcx_8bpp_grayscale_dpi(
+    width: u16,
+    height: u16,
+    pixels: &[u8],
+    dpi: (u16, u16),
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if pixels.len() < width as usize * height as usize {
+        return Err(Error::invalid(
+            "PCX encoder: grayscale input shorter than width × height",
+        ));
+    }
+    check_dpi(dpi)?;
+    let bytes_per_line = round_up_to_even(width);
+    let mut out = Vec::with_capacity(PCX_HEADER_SIZE + bytes_per_line as usize * height as usize);
+    write_header_full(
+        &mut out,
+        0,
+        0,
+        width,
+        height,
+        8,
+        1,
+        bytes_per_line,
+        &[0u8; 48],
+        2,
+        dpi,
+    );
+    let mut row = Vec::with_capacity(bytes_per_line as usize);
+    for y in 0..height as usize {
+        row.clear();
+        row.extend_from_slice(&pixels[y * width as usize..y * width as usize + width as usize]);
+        row.resize(bytes_per_line as usize, 0);
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
+/// Encode a 1 bpp × 1 plane monochrome PCX with a custom authoring DPI.
+/// Mirrors [`encode_pcx_1bpp_mono`] except for the DPI fields. Bit 1 =
+/// white, bit 0 = black per spec §4.1.
+pub fn encode_pcx_1bpp_mono_dpi(
+    width: u16,
+    height: u16,
+    pixels: &[u8],
+    dpi: (u16, u16),
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if pixels.len() < width as usize * height as usize {
+        return Err(Error::invalid(
+            "PCX encoder: 1bpp input shorter than width × height",
+        ));
+    }
+    check_dpi(dpi)?;
+    let bytes_per_line = round_up_to_even(width.div_ceil(8));
+    let mut out = Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * height as usize);
+    write_header_full(
+        &mut out,
+        0,
+        0,
+        width,
+        height,
+        1,
+        1,
+        bytes_per_line,
+        &[0u8; 48],
+        1,
+        dpi,
+    );
+    let mut row = vec![0u8; bytes_per_line as usize];
+    for y in 0..height as usize {
+        for v in row.iter_mut() {
+            *v = 0;
+        }
+        for x in 0..width as usize {
+            let v = pixels[y * width as usize + x];
+            if v != 0 {
+                row[x / 8] |= 1 << (7 - (x % 8));
+            }
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
+#[inline]
+fn check_dpi(dpi: (u16, u16)) -> Result<()> {
+    if dpi.0 == 0 || dpi.1 == 0 {
+        return Err(Error::invalid(format!(
+            "PCX encoder: dpi components must both be non-zero (got {:?}); spec §3 treats 0 as 'unset'",
+            dpi
+        )));
+    }
+    Ok(())
 }

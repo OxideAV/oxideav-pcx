@@ -238,12 +238,24 @@ pub fn parse_pcx(input: &[u8]) -> Result<PcxImage> {
         }
     };
 
+    // Surface the authoring DPI only when BOTH fields carry a non-zero
+    // value: per spec §3 the 0 sentinel means "unset" (many drawing
+    // programs leave the field at zero rather than 72×72), so an
+    // asymmetric (0, 300) header would not be a sensible printer/scanner
+    // reading.
+    let dpi = if header.h_dpi != 0 && header.v_dpi != 0 {
+        Some((header.h_dpi, header.v_dpi))
+    } else {
+        None
+    };
+
     Ok(PcxImage {
         width,
         height,
         pixel_format: PcxPixelFormat::Rgba,
         data,
         pts: None,
+        dpi,
     })
 }
 

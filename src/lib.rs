@@ -50,6 +50,22 @@
 //! per spec §1; RLE escapes any literal byte ≥ `0xC0` even when its
 //! run length is 1.
 //!
+//! ## Authoring DPI
+//!
+//! The header's `h_dpi` / `v_dpi` words (offsets 12 / 14) record what
+//! spec §3 calls "the resolutions at which the image was created
+//! (printer or scanner); e.g. a scan might store 300, 300". The
+//! decoder surfaces these on [`PcxImage::dpi`] as `Option<(u16,
+//! u16)>` (`Some` iff both fields are non-zero — a 0 means "unset"
+//! per the spec §3 sentinel). The plain `encode_pcx_*` writers stamp
+//! the historical 72×72 PC Paintbrush convention; the matching
+//! [`encode_pcx_24bpp_dpi`] / [`encode_pcx_8bpp_indexed_dpi`] /
+//! [`encode_pcx_8bpp_grayscale_dpi`] / [`encode_pcx_1bpp_mono_dpi`]
+//! variants take a `(h, v)` tuple instead so a scanner DPI round-
+//! trips through decode + re-encode without loss. The convenience
+//! wrapper [`encode_pcx_24bpp_image`] automatically threads
+//! `PcxImage::dpi` through when set.
+//!
 //! ## DCX multi-page bundles
 //!
 //! [`parse_dcx`] / [`encode_dcx`] handle the Microsoft FAX multi-page
@@ -100,8 +116,10 @@ pub use dcx::{encode_dcx, parse_dcx, DcxImage, DCX_MAGIC, DCX_MAX_PAGES};
 pub use decoder::parse_pcx;
 pub use encoder::{
     encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono,
-    encode_pcx_24bpp, encode_pcx_24bpp_image, encode_pcx_24bpp_window, encode_pcx_2bpp_cga,
-    encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed,
+    encode_pcx_1bpp_mono_dpi, encode_pcx_24bpp, encode_pcx_24bpp_dpi, encode_pcx_24bpp_image,
+    encode_pcx_24bpp_window, encode_pcx_2bpp_cga, encode_pcx_4bpp_packed,
+    encode_pcx_8bpp_grayscale, encode_pcx_8bpp_grayscale_dpi, encode_pcx_8bpp_indexed,
+    encode_pcx_8bpp_indexed_dpi,
 };
 pub use error::{PcxError, Result};
 pub use image::{PcxImage, PcxPixelFormat};

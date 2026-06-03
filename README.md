@@ -227,6 +227,34 @@ let mut containers = oxideav_core::ContainerRegistry::new();
 oxideav_pcx::register(&mut codecs, &mut containers);
 ```
 
+## Authoring DPI (`h_dpi` / `v_dpi`)
+
+The header's `h_dpi` / `v_dpi` fields (offsets 12 / 14) are surfaced
+on the decoded [`PcxImage`] as `Option<(u16, u16)>` — per spec §3 the
+fields record "the resolutions at which the image was created
+(printer or scanner); e.g. a scan might store 300, 300", and a 0 in
+either field is the documented "unset" sentinel. The decoder reports
+`Some((h, v))` whenever both fields are non-zero, `None` otherwise.
+
+Four `*_dpi` writer variants stamp a custom authoring resolution into
+the header in place of the historical 72×72 PC Paintbrush convention
+the plain writers default to:
+
+* `encode_pcx_24bpp_dpi(w, h, &rgb, (h_dpi, v_dpi))`
+* `encode_pcx_8bpp_indexed_dpi(w, h, &indices, &palette, dpi)`
+* `encode_pcx_8bpp_grayscale_dpi(w, h, &pixels, dpi)`
+* `encode_pcx_1bpp_mono_dpi(w, h, &pixels, dpi)`
+
+The wrapper `encode_pcx_24bpp_image` automatically threads
+`PcxImage::dpi` through into the new header when the decoded image
+carries a `Some(...)`, so a decode → re-encode pass preserves the
+scanner DPI end-to-end. Both DPI components must be non-zero; a 0 is
+rejected up front to keep the spec §3 "unset" semantic intact at the
+writer boundary too. The remaining writers (`encode_pcx_24bpp`,
+`encode_pcx_4bpp_packed`, `encode_pcx_2bpp_cga`,
+`encode_pcx_1bpp_3planes_ega_rgb`, `encode_pcx_1bpp_4planes_ega`,
+`encode_pcx_24bpp_window`) keep the historical 72×72 default.
+
 ## Lacks
 
 * 4 bpp × 4 planes (16-colour planar with finer per-plane depth)
@@ -240,3 +268,10 @@ oxideav_pcx::register(&mut codecs, &mut containers);
   `encode_pcx_8bpp_indexed` / `encode_pcx_4bpp_packed` /
   `encode_pcx_2bpp_cga` / `encode_pcx_1bpp_4planes_ega` directly
   with an explicit palette argument.
+* Per-pixel-region authoring DPI override for the EGA/CGA / 4 bpp /
+  1 bpp × 3 / 1 bpp × 4 writers (these still emit 72×72). The
+  `_dpi` writer suite covers the four formats consumers actually
+  scan into PCX (24-bit, 8 bpp indexed, 8 bpp grayscale, 1 bpp mono);
+  the EGA/CGA palette-mode writers stay at the historical default
+  because EGA / CGA hardware never had a non-screen authoring DPI to
+  carry.
