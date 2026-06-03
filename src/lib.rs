@@ -9,6 +9,7 @@
 //! | bits/pixel | n_planes | Source meaning              | Output |
 //! | ---------- | -------- | --------------------------- | ------ |
 //! | 1          | 1        | Monochrome (1-bit)          | `Rgba` |
+//! | 1          | 3        | 8-colour EGA RGB            | `Rgba` |
 //! | 1          | 4        | 16-colour EGA               | `Rgba` |
 //! | 2          | 1        | 4-colour CGA (packed)       | `Rgba` |
 //! | 4          | 1        | 16-colour packed-bits       | `Rgba` |
@@ -30,6 +31,9 @@
 //! * [`encode_pcx_24bpp`] — 8 bpp × 3 planes, planar RGB. No tail
 //!   palette.
 //! * [`encode_pcx_1bpp_mono`] — 1 bpp × 1 plane monochrome.
+//! * [`encode_pcx_1bpp_3planes_ega_rgb`] — 8-colour EGA RGB at 1 bpp ×
+//!   3 planes (each input channel thresholded at 0x80 into one
+//!   bit-plane).
 //! * [`encode_pcx_1bpp_4planes_ega`] — 16-colour EGA at 1 bpp × 4
 //!   planes.
 //! * [`encode_pcx_4bpp_packed`] — 16-colour packed-bits at 4 bpp ×
@@ -95,9 +99,9 @@ pub const CODEC_ID_STR: &str = "pcx";
 pub use dcx::{encode_dcx, parse_dcx, DcxImage, DCX_MAGIC, DCX_MAX_PAGES};
 pub use decoder::parse_pcx;
 pub use encoder::{
-    encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono, encode_pcx_24bpp, encode_pcx_24bpp_image,
-    encode_pcx_24bpp_window, encode_pcx_2bpp_cga, encode_pcx_4bpp_packed,
-    encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed,
+    encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono,
+    encode_pcx_24bpp, encode_pcx_24bpp_image, encode_pcx_24bpp_window, encode_pcx_2bpp_cga,
+    encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed,
 };
 pub use error::{PcxError, Result};
 pub use image::{PcxImage, PcxPixelFormat};

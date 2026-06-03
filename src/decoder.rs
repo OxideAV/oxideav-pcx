@@ -3,6 +3,11 @@
 //! Supports the (depth, planes) combinations called out by spec §4.1:
 //!
 //! * 1 bpp × 1 plane — monochrome (each bit = one pixel).
+//! * 1 bpp × 3 planes — 8-colour EGA RGB. One plane per primary; plane
+//!   order is R, G, B per spec §4 (the bit-plane example at lines
+//!   46-58 of the rev-5 technical reference). Each plane bit toggles
+//!   its channel between 0x00 and 0xFF, giving the eight on/off
+//!   primary combinations.
 //! * 1 bpp × 4 planes — 16-colour EGA. Each plane carries the matching
 //!   bit-position of an EGA colour index; planes are read in BGR-IRGB
 //!   order per the spec table.
@@ -207,6 +212,7 @@ pub fn parse_pcx(input: &[u8]) -> Result<PcxImage> {
     // (depth, n_planes) combination.
     let data = match (header.bits_per_pixel, header.n_planes) {
         (1, 1) => unpack_1bpp_1plane(&header, &pixels_planar),
+        (1, 3) => unpack_1bpp_3planes(&header, &pixels_planar),
         (1, 4) => unpack_1bpp_4planes(&header, &pixels_planar),
         (2, 1) => unpack_2bpp_1plane_cga(&header, &pixels_planar),
         (4, 1) => unpack_4bpp_1plane(&header, &pixels_planar),
@@ -271,6 +277,36 @@ fn unpack_1bpp_1plane(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
             dst[0] = v;
             dst[1] = v;
             dst[2] = v;
+            dst[3] = 0xFF;
+        }
+    }
+    out
+}
+
+fn unpack_1bpp_3planes(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
+    // 8-colour EGA RGB: one bit-plane per primary, plane order R, G, B
+    // (spec §4 bit-plane example, lines 46-58 of the rev-5 technical
+    // reference). Each plane bit toggles the channel between 0x00 and
+    // 0xFF. No external palette is consulted; the eight colours are
+    // the on/off primaries enumerated by the plane bits themselves.
+    let w = header.width() as usize;
+    let h = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+    let mut out = vec![0u8; w * h * 4];
+    let src_rows = planar.chunks_exact(bpl * 3);
+    let dst_rows = out.chunks_exact_mut(w * 4);
+    for (row, dst_row) in src_rows.zip(dst_rows) {
+        let (rp, rest) = row.split_at(bpl);
+        let (gp, bp) = rest.split_at(bpl);
+        for (x, dst) in dst_row.chunks_exact_mut(4).enumerate() {
+            let byte = x >> 3;
+            let shift = 7 - (x & 7);
+            let r_bit = (rp[byte] >> shift) & 1;
+            let g_bit = (gp[byte] >> shift) & 1;
+            let b_bit = (bp[byte] >> shift) & 1;
+            dst[0] = if r_bit != 0 { 0xFF } else { 0x00 };
+            dst[1] = if g_bit != 0 { 0xFF } else { 0x00 };
+            dst[2] = if b_bit != 0 { 0xFF } else { 0x00 };
             dst[3] = 0xFF;
         }
     }

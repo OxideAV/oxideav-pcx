@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Round 215: 1 bpp × 3 planes (8-colour EGA RGB) decode + encode.
+  This `(bpp, planes)` combination is one of the six formal video
+  modes listed in the EGFF PCX file-format summary (3 planes / 1
+  bpp / 8 colours / EGA mode); the rev-5 ZSoft technical reference
+  §4 bit-plane example (lines 46-58) gives the plane order R, G, B.
+  Each input channel byte is thresholded at 0x80 to set its plane
+  bit on encode; on decode each plane bit toggles its channel
+  between 0x00 and 0xFF, producing the eight on/off primaries.
+  `parse_pcx` accepts `(bits_per_pixel = 1, n_planes = 3)` and
+  routes through a new `unpack_1bpp_3planes` path with the same
+  `chunks_exact_mut` row-walking idiom as the other multi-plane
+  paths. `encode_pcx_1bpp_3planes_ega_rgb(w, h, &rgb)` writes a
+  PCX 5.0 stream with `bytes_per_line = round_up_to_even(ceil(w /
+  8))` and three planar bit-planes per scanline. Seven new tests
+  in `tests/round215.rs` cover all eight primaries, a 32×16 stripe
+  pattern, odd-width scanline padding, the 0x80 threshold
+  behaviour, a hand-crafted byte-stream decode, and the two
+  encoder-input rejection paths. Both default and standalone
+  (`--no-default-features`) builds carry the new entry point.
+
 ### Changed
 
 - Round 209: Restructured the six planar-unpack hot paths in

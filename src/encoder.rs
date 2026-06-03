@@ -13,6 +13,9 @@
 //!   16-entry EGA palette in the header.
 //! * [`encode_pcx_2bpp_cga`] — 2 bpp × 1 plane CGA packed-bits using
 //!   the legacy 4-colour palette selector (header byte 16 / 19).
+//! * [`encode_pcx_1bpp_3planes_ega_rgb`] — 1 bpp × 3 planes 8-colour
+//!   EGA RGB. Each input channel is thresholded at 0x80 into the
+//!   matching bit-plane; plane order is R, G, B per spec §4.
 //! * [`encode_pcx_1bpp_4planes_ega`] — 1 bpp × 4 planes EGA with a
 //!   16-entry palette in the header.
 //!
@@ -345,6 +348,55 @@ pub fn encode_pcx_24bpp(width: u16, height: u16, rgb: &[u8]) -> Result<Vec<u8>> 
             }
             // Pad this plane out to `bytes_per_line` bytes.
             row.resize((plane + 1) * bytes_per_line as usize, 0);
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
+/// Encode `width × height` packed RGB bytes (3 bytes per pixel,
+/// row-major, top-down) into an 8-colour PCX 5.0 file at 1 bpp ×
+/// 3 planes.
+///
+/// Each input byte is thresholded at 0x80 to decide whether its
+/// channel bit is set; the resulting on/off triplet maps onto the
+/// eight standard EGA RGB primaries. Plane order is R, G, B (spec §4
+/// bit-plane example at lines 46-58 of the rev-5 technical
+/// reference). `bytes_per_line` is the natural `ceil(width / 8)`
+/// rounded up to the next even count.
+///
+/// The decoder's symmetric `(1, 3)` path produces the same eight
+/// primaries: 0x00 / 0xFF per channel, alpha 0xFF.
+pub fn encode_pcx_1bpp_3planes_ega_rgb(width: u16, height: u16, rgb: &[u8]) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if rgb.len() < width as usize * height as usize * 3 {
+        return Err(Error::invalid(
+            "PCX encoder: rgb input shorter than width × height × 3",
+        ));
+    }
+    let bytes_per_line = round_up_to_even(width.div_ceil(8));
+    let mut out =
+        Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * 3 * height as usize);
+    write_header(&mut out, width, height, 1, 3, bytes_per_line);
+    let mut row = vec![0u8; bytes_per_line as usize * 3];
+    for y in 0..height as usize {
+        for v in row.iter_mut() {
+            *v = 0;
+        }
+        for x in 0..width as usize {
+            let off = (y * width as usize + x) * 3;
+            // 0x80 threshold matches the decode round-trip: any input
+            // byte ≥ 0x80 sets the bit, anything below clears it. The
+            // decoder always emits 0x00 / 0xFF, so this is the cut
+            // that round-trips exactly when the source is already in
+            // {0x00, 0xFF} per channel.
+            for (plane, &b) in rgb[off..off + 3].iter().enumerate() {
+                if b >= 0x80 {
+                    row[plane * bytes_per_line as usize + x / 8] |= 1 << (7 - (x % 8));
+                }
+            }
         }
         rle::encode(&row, &mut out);
     }
