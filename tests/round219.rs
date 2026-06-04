@@ -176,6 +176,7 @@ fn pcximage_wrapper_uses_default_72_when_dpi_is_none() {
         pts: None,
         dpi: None,
         window_origin: None,
+        screen_size: None,
     };
     let bytes = encode_pcx_24bpp_image(&img).unwrap();
     assert_eq!(read_u16_le(&bytes, 12), 72);

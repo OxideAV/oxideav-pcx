@@ -76,6 +76,23 @@ pub struct PcxImage {
     /// a windowed PCX round-trips its crop origin end-to-end instead of
     /// having it silently zeroed.
     pub window_origin: Option<(u16, u16)>,
+    /// Header `(h_screen_size, v_screen_size)` words from spec §3
+    /// (offsets 70 / 72). The rev-5 manual records these as "Horizontal
+    /// screen size in pixels (new field found only in PB IV / IV Plus)"
+    /// and "Vertical screen size in pixels (new field found only in PB
+    /// IV / IV Plus)" — a hint about the display resolution at the time
+    /// the image was authored, distinct from the printer/scanner DPI in
+    /// `h_dpi` / `v_dpi`.
+    ///
+    /// The decoder reports `Some((h, v))` whenever both components are
+    /// non-zero, and `None` otherwise (an in-the-wild zero in either
+    /// component means the field was left at the default by an older
+    /// PCX writer that pre-dates PB IV — many of which keep the bytes
+    /// at the historical zero fill). The re-encode wrapper
+    /// [`crate::encode_pcx_24bpp_image`] threads a `Some(...)` value
+    /// into the header so a tagged PCX round-trips its authoring screen
+    /// size end-to-end instead of having it silently zeroed.
+    pub screen_size: Option<(u16, u16)>,
 }
 
 impl PcxImage {

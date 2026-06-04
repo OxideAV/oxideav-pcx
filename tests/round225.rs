@@ -146,6 +146,7 @@ fn wrapper_neither_uses_plain_writer() {
         pts: None,
         dpi: None,
         window_origin: None,
+        screen_size: None,
     };
     let bytes = encode_pcx_24bpp_image(&img).unwrap();
     assert_eq!(read_u16_le(&bytes, 4), 0);
@@ -166,6 +167,7 @@ fn wrapper_dpi_only_uses_dpi_writer() {
         pts: None,
         dpi: Some((300, 300)),
         window_origin: None,
+        screen_size: None,
     };
     let bytes = encode_pcx_24bpp_image(&img).unwrap();
     assert_eq!(read_u16_le(&bytes, 4), 0);
@@ -189,6 +191,7 @@ fn wrapper_window_only_uses_window_writer() {
         pts: None,
         dpi: None,
         window_origin: Some((50, 100)),
+        screen_size: None,
     };
     let bytes = encode_pcx_24bpp_image(&img).unwrap();
     assert_eq!(read_u16_le(&bytes, 4), 50);
@@ -212,6 +215,7 @@ fn wrapper_both_uses_window_dpi_writer() {
         pts: None,
         dpi: Some((300, 300)),
         window_origin: Some((50, 100)),
+        screen_size: None,
     };
     let bytes = encode_pcx_24bpp_image(&img).unwrap();
     assert_eq!(read_u16_le(&bytes, 4), 50);

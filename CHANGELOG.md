@@ -9,6 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 231: authoring screen-size (`h_screen_size` / `v_screen_size`)
+  round-trip support. Spec §3 records the header's two 16-bit screen-
+  size words at offsets 70 / 72 as "Horizontal / Vertical screen size
+  in pixels (new field found only in PB IV / IV Plus)" — an
+  authoring-time annotation about the display resolution the image was
+  composed for, distinct from the printer / scanner DPI in `h_dpi` /
+  `v_dpi`. Prior to r231 the decoder discarded both fields and every
+  writer hard-coded `(0, 0)`, so a tagged PB IV / IV Plus PCX silently
+  lost its authoring screen size across a decode → re-encode pass.
+  * `PcxImage` gains an `Option<(u16, u16)>` `screen_size` field. The
+    decoder fills it with `Some((h, v))` whenever both header words
+    are non-zero, and `None` otherwise (asymmetric or zeroed headers
+    collapse to `None` per the spec §3 sentinel — a 0 means "unset",
+    which the pre-PB-IV writers leave the field at).
+  * Two new writers stamp a custom authoring screen size into the
+    header in place of the historical zero-fill:
+    `encode_pcx_24bpp_screen(w, h, &rgb, (h_screen, v_screen))` (24-bit
+    RGB with screen-size annotation only — DPI stays at the 72×72
+    default, origin at `(0, 0)`) and
+    `encode_pcx_24bpp_window_dpi_screen(x_min, y_min, w, h, &rgb,
+    (h_dpi, v_dpi), (h_screen, v_screen))` (the maximally-tagged
+    writer combining window origin + DPI + screen size in one call).
+    Each rejects a tuple with either component zero so the spec §3
+    "unset" semantic stays intact at the writer boundary too.
+  * Internal `write_header_full` gained a `(u16, u16)` `screen_size`
+    parameter; the existing helpers (`write_header`,
+    `write_header_with_palette`) and every pre-r231 public writer pass
+    a new `DEFAULT_SCREEN_SIZE = (0, 0)` constant so the on-disk
+    pixel-data RLE byte stream is bit-identical to the pre-r231 output
+    for every legacy writer.
+  * The wrapper `encode_pcx_24bpp_image` now dispatches across the
+    eight `(window_origin, dpi, screen_size)` `Option` combinations
+    (eight match arms covering every Some/None mix) so a decoded
+    fully-tagged PCX round-trips every metadata field through one
+    call instead of forcing the caller to flatten the metadata by
+    hand. The four pre-r231 `(window_origin, dpi)` arms keep their
+    existing dispatch paths intact, so the wrapper's output stays
+    bit-identical for any input where `screen_size = None`.
+  * Eighteen new tests in `tests/round231.rs` cover header offset
+    placement, the spec §3 sentinel rule (zero / asymmetric collapses
+    to `None`, both-non-zero surfaces as `Some(...)`), pixel-data
+    invariance across the screen-size dimension, decoder→encoder→
+    decoder round-trip through `PcxImage` for both screen-only and
+    maximally-tagged inputs, wrapper dispatch bit-identical to each
+    standalone writer in its sub-case, rejection of zero-component
+    screen-size and DPI tuples, and rejection of x_min + width
+    overflow. All 120 existing + new tests stay green on both the
+    default and `--no-default-features` standalone builds.
 - Round 225: window-origin (`x_min` / `y_min`) round-trip support.
   Spec §3 defines the image window via `(x_min, y_min)` / `(x_max,
   y_max)`, with the visible width / height derived as `x_max - x_min +

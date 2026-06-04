@@ -79,8 +79,24 @@
 //! case). [`encode_pcx_24bpp_window_dpi`] combines the existing
 //! window-only and DPI-only writers into one call so the wrapper can
 //! round-trip both metadata fields at once; [`encode_pcx_24bpp_image`]
-//! dispatches across the four `(window_origin, dpi)` combinations
-//! automatically.
+//! dispatches across the eight `(window_origin, dpi, screen_size)`
+//! combinations automatically.
+//!
+//! ## Authoring screen size
+//!
+//! The header's `h_screen_size` / `v_screen_size` words (offsets 70 /
+//! 72) record what spec §3 describes as "Horizontal / Vertical screen
+//! size in pixels (new field found only in PB IV / IV Plus)" — an
+//! authoring-time annotation distinct from the printer / scanner DPI.
+//! The decoder surfaces this on [`PcxImage::screen_size`] as
+//! `Option<(u16, u16)>` (`Some` iff both header words are non-zero;
+//! `None` otherwise per the spec §3 sentinel — a 0 in either component
+//! means "unset", which pre-PB-IV writers leave the field at). The
+//! [`encode_pcx_24bpp_screen`] writer (screen-only) and
+//! [`encode_pcx_24bpp_window_dpi_screen`] writer (maximally-tagged)
+//! stamp a non-zero pair into the header; the convenience wrapper
+//! [`encode_pcx_24bpp_image`] threads `PcxImage::screen_size` through
+//! when set.
 //!
 //! ## DCX multi-page bundles
 //!
@@ -133,9 +149,10 @@ pub use decoder::parse_pcx;
 pub use encoder::{
     encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono,
     encode_pcx_1bpp_mono_dpi, encode_pcx_24bpp, encode_pcx_24bpp_dpi, encode_pcx_24bpp_image,
-    encode_pcx_24bpp_window, encode_pcx_24bpp_window_dpi, encode_pcx_2bpp_cga,
-    encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_grayscale_dpi,
-    encode_pcx_8bpp_indexed, encode_pcx_8bpp_indexed_dpi,
+    encode_pcx_24bpp_screen, encode_pcx_24bpp_window, encode_pcx_24bpp_window_dpi,
+    encode_pcx_24bpp_window_dpi_screen, encode_pcx_2bpp_cga, encode_pcx_4bpp_packed,
+    encode_pcx_8bpp_grayscale, encode_pcx_8bpp_grayscale_dpi, encode_pcx_8bpp_indexed,
+    encode_pcx_8bpp_indexed_dpi,
 };
 pub use error::{PcxError, Result};
 pub use image::{PcxImage, PcxPixelFormat};

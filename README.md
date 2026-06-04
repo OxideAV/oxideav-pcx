@@ -278,6 +278,37 @@ into a single PCX 5.0 file, mirroring the existing
 PCX round-trips both fields through one call instead of forcing the
 caller to flatten the metadata by hand.
 
+## Authoring screen size (`h_screen_size` / `v_screen_size`)
+
+The header's `h_screen_size` / `v_screen_size` words (offsets 70 / 72)
+record what spec §3 describes as "the horizontal / vertical screen
+size in pixels (new field found only in PB IV / IV Plus)" — an
+authoring-time annotation distinct from the printer / scanner DPI in
+`h_dpi` / `v_dpi`. The decoder surfaces this on [`PcxImage`] as
+`Option<(u16, u16)> screen_size` — `Some((h, v))` whenever both header
+words are non-zero, `None` otherwise (the spec §3 sentinel rule
+collapses an asymmetric pair to `None` because a 0 in either component
+means "unset", which the pre-PB-IV writers leave at the default).
+
+Two new writers stamp the field in place of the historical zero-fill:
+
+* `encode_pcx_24bpp_screen(w, h, &rgb, (h_screen, v_screen))` — like
+  the plain `encode_pcx_24bpp` writer but with a custom screen-size
+  pair (DPI stays at the 72×72 default, origin at `(0, 0)`).
+* `encode_pcx_24bpp_window_dpi_screen(x_min, y_min, w, h, &rgb,
+  (h_dpi, v_dpi), (h_screen, v_screen))` — the maximally-tagged
+  writer that combines window origin + authoring DPI + screen size in
+  one call.
+
+Both components must be non-zero; a 0 is rejected at the writer
+boundary because the decoder would surface such a file with
+`screen_size = None`, so emitting the redundant zero pair would be
+indistinguishable from the plain writer's output. The wrapper
+`encode_pcx_24bpp_image` now dispatches across the eight
+`(window_origin, dpi, screen_size)` `Option` combinations so a
+decoded fully-tagged PCX round-trips every metadata field through one
+call.
+
 ## Lacks
 
 * 4 bpp × 4 planes (16-colour planar with finer per-plane depth)

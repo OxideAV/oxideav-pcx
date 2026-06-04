@@ -263,6 +263,19 @@ pub fn parse_pcx(input: &[u8]) -> Result<PcxImage> {
         None
     };
 
+    // Surface the authoring screen size only when BOTH header words
+    // carry a non-zero value: per spec §3 the `h_screen_size` /
+    // `v_screen_size` fields are PB IV / IV Plus additions and pre-PB-IV
+    // writers leave them at zero, so an asymmetric (0, 600) header
+    // would not be a meaningful display-size annotation. Treating both-
+    // non-zero as the sentinel keeps the round-trip wrapper from
+    // restating an implicit default.
+    let screen_size = if header.h_screen_size != 0 && header.v_screen_size != 0 {
+        Some((header.h_screen_size, header.v_screen_size))
+    } else {
+        None
+    };
+
     Ok(PcxImage {
         width,
         height,
@@ -271,6 +284,7 @@ pub fn parse_pcx(input: &[u8]) -> Result<PcxImage> {
         pts: None,
         dpi,
         window_origin,
+        screen_size,
     })
 }
 

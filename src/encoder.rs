@@ -422,6 +422,14 @@ fn round_up_to_even(v: u16) -> u16 {
 /// software that emits PCX typically overrides this to 300/300.
 pub(crate) const DEFAULT_DPI: (u16, u16) = (72, 72);
 
+/// Default authoring screen size written into the header when the
+/// caller does not supply one. `(0, 0)` matches the rev-5 manual's
+/// guidance for the `h_screen_size` / `v_screen_size` fields ("Set all
+/// bytes to 0" for the filler block applies to these PB IV / IV Plus
+/// additions on every writer that pre-dates the PB IV release), which
+/// the decoder surfaces as [`PcxImage::screen_size`] = `None`.
+pub(crate) const DEFAULT_SCREEN_SIZE: (u16, u16) = (0, 0);
+
 fn write_header(
     out: &mut Vec<u8>,
     width: u16,
@@ -442,6 +450,7 @@ fn write_header(
         &[0u8; 48],
         1,
         DEFAULT_DPI,
+        DEFAULT_SCREEN_SIZE,
     );
 }
 
@@ -466,6 +475,7 @@ fn write_header_with_palette(
         ega_palette,
         1,
         DEFAULT_DPI,
+        DEFAULT_SCREEN_SIZE,
     );
 }
 
@@ -473,9 +483,11 @@ fn write_header_with_palette(
 /// need to set a non-zero window origin (PCX 3.0+ pixel-region edge
 /// case), override `palette_info` (1 = colour / BW, 2 = grayscale —
 /// per spec §3 the latter forces the decoder onto a grayscale
-/// interpretation regardless of any tail palette), or carry a custom
+/// interpretation regardless of any tail palette), carry a custom
 /// authoring DPI (spec §3 records `h_dpi` / `v_dpi` as "the resolutions
-/// at which the image was created — e.g. a scan might store 300, 300").
+/// at which the image was created — e.g. a scan might store 300, 300"),
+/// or stamp a PB IV / IV Plus authoring screen size into the header's
+/// `h_screen_size` / `v_screen_size` words (spec §3 offsets 70 / 72).
 #[allow(clippy::too_many_arguments)]
 fn write_header_full(
     out: &mut Vec<u8>,
@@ -489,6 +501,7 @@ fn write_header_full(
     ega_palette: &[u8; 48],
     palette_info: u16,
     dpi: (u16, u16),
+    screen_size: (u16, u16),
 ) {
     let start = out.len();
     let x_max = x_min + width - 1;
@@ -508,8 +521,8 @@ fn write_header_full(
     out.push(n_planes); // n_planes 65
     out.extend_from_slice(&bytes_per_line.to_le_bytes()); // bytes_per_line 66
     out.extend_from_slice(&palette_info.to_le_bytes()); // palette_info 68
-    out.extend_from_slice(&0u16.to_le_bytes()); // h_screen_size 70
-    out.extend_from_slice(&0u16.to_le_bytes()); // v_screen_size 72
+    out.extend_from_slice(&screen_size.0.to_le_bytes()); // h_screen_size 70
+    out.extend_from_slice(&screen_size.1.to_le_bytes()); // v_screen_size 72
     out.extend_from_slice(&[0u8; 54]); // filler 74..128
     debug_assert_eq!(out.len() - start, PCX_HEADER_SIZE);
 }
@@ -736,6 +749,7 @@ pub fn encode_pcx_8bpp_grayscale(width: u16, height: u16, pixels: &[u8]) -> Resu
         &[0u8; 48],
         2, // palette_info = 2 → grayscale per spec §3
         DEFAULT_DPI,
+        DEFAULT_SCREEN_SIZE,
     );
     let mut row = Vec::with_capacity(bytes_per_line as usize);
     for y in 0..height as usize {
@@ -800,6 +814,7 @@ pub fn encode_pcx_24bpp_window(
         &[0u8; 48],
         1,
         DEFAULT_DPI,
+        DEFAULT_SCREEN_SIZE,
     );
     let mut row = Vec::with_capacity(bytes_per_line as usize * 3);
     for y in 0..height as usize {
@@ -828,7 +843,11 @@ pub fn encode_pcx_24bpp_window(
 /// is threaded into the header (via [`encode_pcx_24bpp_window`] or its
 /// matching DPI-bearing variant [`encode_pcx_24bpp_window_dpi`]) so a
 /// decoded windowed PCX round-trips its crop origin instead of having
-/// it silently zeroed out.
+/// it silently zeroed out. When `image.screen_size` is `Some((h, v))`,
+/// the same `(h_screen_size, v_screen_size)` is threaded through the
+/// matching `_screen` / `_window_dpi_screen` writer so a tagged PB IV /
+/// IV Plus authoring display resolution survives the round-trip as
+/// well.
 pub fn encode_pcx_24bpp_image(image: &PcxImage) -> Result<Vec<u8>> {
     let w: u16 = image
         .width
@@ -838,8 +857,8 @@ pub fn encode_pcx_24bpp_image(image: &PcxImage) -> Result<Vec<u8>> {
         .height
         .try_into()
         .map_err(|_| Error::invalid("PCX encoder: height exceeds 65535"))?;
-    // Build the packed RGB buffer once so the four (dpi × window_origin)
-    // sub-cases below all share the same input.
+    // Build the packed RGB buffer once so the eight (window_origin ×
+    // dpi × screen_size) sub-cases below all share the same input.
     let rgb_owned: Option<Vec<u8>> = match image.pixel_format {
         PcxPixelFormat::Rgba => {
             let mut rgb = Vec::with_capacity(image.data.len() / 4 * 3);
@@ -857,13 +876,38 @@ pub fn encode_pcx_24bpp_image(image: &PcxImage) -> Result<Vec<u8>> {
         }
     };
     let rgb: &[u8] = rgb_owned.as_deref().unwrap_or(&image.data);
-    match (image.window_origin, image.dpi) {
-        (Some((x_min, y_min)), Some(dpi)) => {
+    match (image.window_origin, image.dpi, image.screen_size) {
+        // All three present → maximally-tagged writer.
+        (Some((x_min, y_min)), Some(dpi), Some(screen)) => {
+            encode_pcx_24bpp_window_dpi_screen(x_min, y_min, w, h, rgb, dpi, screen)
+        }
+        // Screen-only on top of window + dpi → fold the missing axis to
+        // the maximally-tagged writer by leaving the other-default
+        // sentinel for the absent axis. Since `_screen` is a sentinel
+        // ("both non-zero" or absent), the natural composition is to
+        // raise the request to the next-more-tagged writer.
+        (Some((x_min, y_min)), None, Some(screen)) => {
+            // window + screen_size, no DPI override. The simplest path
+            // is to call the window writer then patch the screen-size
+            // bytes; instead, emit via the combined writer with
+            // DEFAULT_DPI so the header stays self-consistent.
+            encode_pcx_24bpp_window_dpi_screen(x_min, y_min, w, h, rgb, DEFAULT_DPI, screen)
+        }
+        (None, Some(dpi), Some(screen)) => {
+            // dpi + screen_size, no window. Same idea — combined writer
+            // with zero origin.
+            encode_pcx_24bpp_window_dpi_screen(0, 0, w, h, rgb, dpi, screen)
+        }
+        (None, None, Some(screen)) => encode_pcx_24bpp_screen(w, h, rgb, screen),
+        // No screen-size → keep the existing dispatch the round-225
+        // wrapper used. The output is bit-identical to pre-r231 for
+        // every untagged input.
+        (Some((x_min, y_min)), Some(dpi), None) => {
             encode_pcx_24bpp_window_dpi(x_min, y_min, w, h, rgb, dpi)
         }
-        (Some((x_min, y_min)), None) => encode_pcx_24bpp_window(x_min, y_min, w, h, rgb),
-        (None, Some(dpi)) => encode_pcx_24bpp_dpi(w, h, rgb, dpi),
-        (None, None) => encode_pcx_24bpp(w, h, rgb),
+        (Some((x_min, y_min)), None, None) => encode_pcx_24bpp_window(x_min, y_min, w, h, rgb),
+        (None, Some(dpi), None) => encode_pcx_24bpp_dpi(w, h, rgb, dpi),
+        (None, None, None) => encode_pcx_24bpp(w, h, rgb),
     }
 }
 
@@ -917,6 +961,7 @@ pub fn encode_pcx_24bpp_dpi(
         &[0u8; 48],
         1,
         dpi,
+        DEFAULT_SCREEN_SIZE,
     );
     let mut row = Vec::with_capacity(bytes_per_line as usize * 3);
     for y in 0..height as usize {
@@ -972,6 +1017,7 @@ pub fn encode_pcx_8bpp_indexed_dpi(
         &[0u8; 48],
         1,
         dpi,
+        DEFAULT_SCREEN_SIZE,
     );
     let mut row = Vec::with_capacity(bytes_per_line as usize);
     for y in 0..height as usize {
@@ -1017,6 +1063,7 @@ pub fn encode_pcx_8bpp_grayscale_dpi(
         &[0u8; 48],
         2,
         dpi,
+        DEFAULT_SCREEN_SIZE,
     );
     let mut row = Vec::with_capacity(bytes_per_line as usize);
     for y in 0..height as usize {
@@ -1060,6 +1107,7 @@ pub fn encode_pcx_1bpp_mono_dpi(
         &[0u8; 48],
         1,
         dpi,
+        DEFAULT_SCREEN_SIZE,
     );
     let mut row = vec![0u8; bytes_per_line as usize];
     for y in 0..height as usize {
@@ -1124,6 +1172,7 @@ pub fn encode_pcx_24bpp_window_dpi(
         &[0u8; 48],
         1,
         dpi,
+        DEFAULT_SCREEN_SIZE,
     );
     let mut row = Vec::with_capacity(bytes_per_line as usize * 3);
     for y in 0..height as usize {
@@ -1138,6 +1187,158 @@ pub fn encode_pcx_24bpp_window_dpi(
         rle::encode(&row, &mut out);
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Public screen-size-bearing variants
+// ---------------------------------------------------------------------------
+//
+// Spec §3 records `h_screen_size` / `v_screen_size` at offsets 70 / 72
+// as "Horizontal / Vertical screen size in pixels (new field found
+// only in PB IV / IV Plus)". These fields annotate the display
+// resolution the image was authored for and are distinct from the
+// printer / scanner DPI carried in `h_dpi` / `v_dpi`. Pre-PB-IV
+// writers leave the fields at zero, which the decoder surfaces as
+// [`PcxImage::screen_size`] = `None`; the variants below let a caller
+// stamp a non-zero pair so a tagged authoring screen size survives
+// decode + re-encode. Both components must be non-zero — an
+// asymmetric (0, 600) header would not be a meaningful annotation
+// and is rejected at the writer boundary.
+
+/// Encode 24-bit packed RGB to PCX 5.0 with a custom authoring screen
+/// size in the header.
+///
+/// Identical to [`encode_pcx_24bpp`] except the header's
+/// `h_screen_size` / `v_screen_size` fields (spec §3 offsets 70 / 72)
+/// carry the supplied `(h, v)` rather than the default `(0, 0)`. A
+/// tuple with either component zero is rejected — the decoder surfaces
+/// such a header with [`PcxImage::screen_size`] = `None`, matching the
+/// spec §3 "unset" semantic, so emitting it would be redundant.
+pub fn encode_pcx_24bpp_screen(
+    width: u16,
+    height: u16,
+    rgb: &[u8],
+    screen_size: (u16, u16),
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if rgb.len() < width as usize * height as usize * 3 {
+        return Err(Error::invalid(
+            "PCX encoder: rgb input shorter than width × height × 3",
+        ));
+    }
+    check_screen_size(screen_size)?;
+    let bytes_per_line = round_up_to_even(width);
+    let mut out = Vec::with_capacity(PCX_HEADER_SIZE + rgb.len() / 2);
+    write_header_full(
+        &mut out,
+        0,
+        0,
+        width,
+        height,
+        8,
+        3,
+        bytes_per_line,
+        &[0u8; 48],
+        1,
+        DEFAULT_DPI,
+        screen_size,
+    );
+    let mut row = Vec::with_capacity(bytes_per_line as usize * 3);
+    for y in 0..height as usize {
+        row.clear();
+        for plane in 0..3 {
+            for x in 0..width as usize {
+                let off = (y * width as usize + x) * 3 + plane;
+                row.push(rgb[off]);
+            }
+            row.resize((plane + 1) * bytes_per_line as usize, 0);
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
+/// Encode 24-bit packed RGB to PCX 5.0 with a non-zero window origin,
+/// custom authoring DPI, and custom authoring screen size — all three
+/// in one call.
+///
+/// Mirrors the union of [`encode_pcx_24bpp_window`] /
+/// [`encode_pcx_24bpp_dpi`] / [`encode_pcx_24bpp_screen`]. Used by
+/// [`encode_pcx_24bpp_image`] when the decoded source carried every
+/// metadata field so a round-trip preserves them together. The DPI
+/// tuple and the screen-size tuple are both validated against the
+/// "both components non-zero" sentinel rule (spec §3).
+pub fn encode_pcx_24bpp_window_dpi_screen(
+    x_min: u16,
+    y_min: u16,
+    width: u16,
+    height: u16,
+    rgb: &[u8],
+    dpi: (u16, u16),
+    screen_size: (u16, u16),
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if rgb.len() < width as usize * height as usize * 3 {
+        return Err(Error::invalid(
+            "PCX encoder: rgb input shorter than width × height × 3",
+        ));
+    }
+    if (x_min as u32 + width as u32) > u16::MAX as u32 + 1 {
+        return Err(Error::invalid(
+            "PCX encoder: x_min + width exceeds u16::MAX + 1",
+        ));
+    }
+    if (y_min as u32 + height as u32) > u16::MAX as u32 + 1 {
+        return Err(Error::invalid(
+            "PCX encoder: y_min + height exceeds u16::MAX + 1",
+        ));
+    }
+    check_dpi(dpi)?;
+    check_screen_size(screen_size)?;
+    let bytes_per_line = round_up_to_even(width);
+    let mut out = Vec::with_capacity(PCX_HEADER_SIZE + rgb.len() / 2);
+    write_header_full(
+        &mut out,
+        x_min,
+        y_min,
+        width,
+        height,
+        8,
+        3,
+        bytes_per_line,
+        &[0u8; 48],
+        1,
+        dpi,
+        screen_size,
+    );
+    let mut row = Vec::with_capacity(bytes_per_line as usize * 3);
+    for y in 0..height as usize {
+        row.clear();
+        for plane in 0..3 {
+            for x in 0..width as usize {
+                let off = (y * width as usize + x) * 3 + plane;
+                row.push(rgb[off]);
+            }
+            row.resize((plane + 1) * bytes_per_line as usize, 0);
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
+#[inline]
+fn check_screen_size(screen_size: (u16, u16)) -> Result<()> {
+    if screen_size.0 == 0 || screen_size.1 == 0 {
+        return Err(Error::invalid(format!(
+            "PCX encoder: screen_size components must both be non-zero (got {:?}); spec §3 treats 0 as 'unset'",
+            screen_size
+        )));
+    }
+    Ok(())
 }
 
 #[inline]
