@@ -110,3 +110,68 @@ impl PcxImage {
         self.width as usize * self.bytes_per_pixel()
     }
 }
+
+/// Origin of the 256-entry palette resolved by
+/// [`crate::parse_pcx_indexed_8bpp`] for an 8 bpp × 1 plane PCX.
+///
+/// Surfaces which spec §3 / §4.1 branch the decoder took to fill the
+/// `palette` field, so a consumer that re-encodes via
+/// [`crate::encode_pcx_8bpp_indexed`] (VGA tail) versus
+/// [`crate::encode_pcx_8bpp_grayscale`] (`palette_info = 2`) can pick
+/// the matching writer rather than guessing from the bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PcxPaletteSource {
+    /// Header `palette_info` field carried the value `2` (spec §3
+    /// grayscale flag). The palette is the synthetic `0..=255`
+    /// grayscale ramp — the spec §3 rule forces this interpretation
+    /// regardless of whether the file also carries a VGA tail block.
+    GrayscaleFlag,
+    /// Optional 256-colour VGA palette block was present at the end of
+    /// the file (spec §3: 769 bytes from EOF starts with the `0x0C`
+    /// marker, followed by 768 RGB bytes).
+    VgaTail,
+    /// Neither `palette_info = 2` nor a VGA tail block was present. The
+    /// decoder fills the palette with the synthetic `0..=255` grayscale
+    /// ramp as a deterministic fallback for files that omit colour
+    /// information entirely.
+    GrayscaleFallback,
+}
+
+/// Typed 8 bpp × 1 plane paletted view returned by
+/// [`crate::parse_pcx_indexed_8bpp`].
+///
+/// The standard [`crate::parse_pcx`] entry point always materialises an
+/// `Rgba` buffer by walking the palette per pixel and dropping the
+/// on-disk indices. For consumers that need the *indices themselves* —
+/// to re-encode without re-quantising, to apply a palette swap, or to
+/// hand the data to an indexed-image pipeline — this typed accessor
+/// returns the raw 8-bit index buffer alongside the resolved palette
+/// and a [`PcxPaletteSource`] tag so the caller knows which spec §3
+/// branch produced the palette.
+#[derive(Debug, Clone)]
+pub struct PcxIndexed8 {
+    /// Picture width in pixels (derived from spec §3 `x_max - x_min +
+    /// 1`, matching [`PcxImage::width`]).
+    pub width: u32,
+    /// Picture height in pixels (derived from spec §3 `y_max - y_min +
+    /// 1`, matching [`PcxImage::height`]).
+    pub height: u32,
+    /// `width × height` palette indices, row-major top-down. Padding
+    /// bytes that the encoder added to round `bytes_per_line` up to an
+    /// even number per spec §1 are NOT included; only the visible
+    /// pixels of each scanline are surfaced.
+    pub indices: Vec<u8>,
+    /// 256-entry RGB palette. The source (VGA tail / grayscale flag /
+    /// fallback) is recorded in [`Self::palette_source`].
+    pub palette: [[u8; 3]; 256],
+    /// Origin of the [`Self::palette`] entries — useful when picking
+    /// the matching writer for a round-trip re-encode.
+    pub palette_source: PcxPaletteSource,
+}
+
+impl PcxIndexed8 {
+    /// Bytes per row (= `width`, one byte per pixel).
+    pub fn stride(&self) -> usize {
+        self.width as usize
+    }
+}

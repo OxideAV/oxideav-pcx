@@ -98,6 +98,19 @@
 //! [`encode_pcx_24bpp_image`] threads `PcxImage::screen_size` through
 //! when set.
 //!
+//! ## Typed paletted view (8 bpp × 1 plane)
+//!
+//! [`parse_pcx`] always flattens to packed `Rgba` — convenient for
+//! display pipelines but discards the on-disk palette indices.
+//! [`parse_pcx_indexed_8bpp`] is the typed accessor for the 8 bpp × 1
+//! plane (256-colour) case: it returns a [`PcxIndexed8`] carrying the
+//! raw `width × height` index buffer (one byte per pixel, top-down,
+//! padding bytes stripped) plus the resolved 256-entry RGB palette and
+//! a [`PcxPaletteSource`] tag recording which spec §3 branch produced
+//! it (`palette_info = 2` grayscale flag, optional VGA tail block,
+//! grayscale-ramp fallback). Useful for round-tripping a paletted PCX
+//! through [`encode_pcx_8bpp_indexed`] without re-quantising.
+//!
 //! ## DCX multi-page bundles
 //!
 //! [`parse_dcx`] / [`encode_dcx`] handle the Microsoft FAX multi-page
@@ -145,7 +158,7 @@ pub mod types;
 pub const CODEC_ID_STR: &str = "pcx";
 
 pub use dcx::{encode_dcx, parse_dcx, DcxImage, DCX_MAGIC, DCX_MAX_PAGES};
-pub use decoder::parse_pcx;
+pub use decoder::{parse_pcx, parse_pcx_indexed_8bpp};
 pub use encoder::{
     encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono,
     encode_pcx_1bpp_mono_dpi, encode_pcx_24bpp, encode_pcx_24bpp_dpi, encode_pcx_24bpp_image,
@@ -155,7 +168,7 @@ pub use encoder::{
     encode_pcx_8bpp_indexed_dpi,
 };
 pub use error::{PcxError, Result};
-pub use image::{PcxImage, PcxPixelFormat};
+pub use image::{PcxImage, PcxIndexed8, PcxPaletteSource, PcxPixelFormat};
 pub use types::{
     find_vga_palette, parse_header, PcxHeader, PCX_ENCODING_RLE, PCX_HEADER_SIZE, PCX_MANUFACTURER,
     PCX_VGA_PALETTE_BLOCK_BYTES, PCX_VGA_PALETTE_BYTES, PCX_VGA_PALETTE_MARKER,

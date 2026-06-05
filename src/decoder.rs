@@ -27,7 +27,7 @@
 //! surface.
 
 use crate::error::{PcxError as Error, Result};
-use crate::image::{PcxImage, PcxPixelFormat};
+use crate::image::{PcxImage, PcxIndexed8, PcxPaletteSource, PcxPixelFormat};
 use crate::rle;
 use crate::types::*;
 
@@ -105,108 +105,15 @@ fn image_to_video_frame(image: PcxImage) -> VideoFrame {
 /// happen at decode time so consumers don't have to know the on-disk
 /// quirks). Top-left origin.
 pub fn parse_pcx(input: &[u8]) -> Result<PcxImage> {
-    let header = parse_header(input).ok_or_else(|| Error::invalid("PCX: header truncated"))?;
-    if header.manufacturer != PCX_MANUFACTURER {
-        return Err(Error::invalid(format!(
-            "PCX: bad manufacturer byte 0x{:02X} (expected 0x0A)",
-            header.manufacturer
-        )));
-    }
-    if !matches!(header.version, 0 | 2 | 3 | 4 | 5) {
-        return Err(Error::invalid(format!(
-            "PCX: unknown version byte {} (expected 0/2/3/4/5)",
-            header.version
-        )));
-    }
-    if header.encoding != PCX_ENCODING_RLE {
-        return Err(Error::unsupported(format!(
-            "PCX: encoding byte {} not supported (only 1 = RLE is defined)",
-            header.encoding
-        )));
-    }
+    // Shared validation + RLE decode (see `decode_planar_scanlines`):
+    // every clean-room guard — manufacturer byte, version table,
+    // encoding byte, dimension underflow, `bytes_per_line < min_bpl`
+    // mis-framing, `scanline × height` overflow, decompression-bomb
+    // cap — lives in one place so the typed paletted accessors (e.g.
+    // `parse_pcx_indexed_8bpp`) stay in lockstep with this entry point.
+    let (header, pixels_planar, vga_palette) = decode_planar_scanlines(input)?;
     let width = header.width();
     let height = header.height();
-    if width == 0 || height == 0 {
-        return Err(Error::invalid("PCX: zero dimension"));
-    }
-    if header.x_max < header.x_min || header.y_max < header.y_min {
-        return Err(Error::invalid("PCX: x_max < x_min or y_max < y_min"));
-    }
-    if header.bytes_per_line == 0 {
-        return Err(Error::invalid("PCX: bytes_per_line == 0"));
-    }
-    if header.n_planes == 0 {
-        return Err(Error::invalid("PCX: n_planes == 0"));
-    }
-    // `bytes_per_line` is the per-plane on-disk row width. Per spec §1
-    // it MUST be wide enough to carry every pixel of the visible row;
-    // some malformed writers under-set this field and the result would
-    // silently mis-frame planar→packed reconstruction. Reject up front.
-    let min_bpl: u32 = match header.bits_per_pixel {
-        1 => width.div_ceil(8),
-        2 => width.div_ceil(4),
-        4 => width.div_ceil(2),
-        8 => width,
-        bpp => {
-            return Err(Error::unsupported(format!(
-                "PCX: bits_per_pixel={bpp} not in the {{1,2,4,8}} set the spec defines"
-            )))
-        }
-    };
-    if (header.bytes_per_line as u32) < min_bpl {
-        return Err(Error::invalid(format!(
-            "PCX: bytes_per_line={} too small for width={} at {} bpp (need ≥ {})",
-            header.bytes_per_line, width, header.bits_per_pixel, min_bpl
-        )));
-    }
-
-    // Decode RLE: scanline-by-scanline so we can spot truncation.
-    let scanline = header.scanline_bytes();
-    // Total decoded planar size = scanline × height. Both factors are
-    // attacker-controlled (up to 255 × 65535 per scanline, 65536 rows),
-    // so compute the product with `checked_mul` to avoid a debug-build
-    // multiply overflow before it is used as an allocation hint / bound.
-    let total_planar = scanline
-        .checked_mul(height as usize)
-        .ok_or_else(|| Error::invalid("PCX: scanline × height overflows usize"))?;
-    let mut cursor = PCX_HEADER_SIZE;
-    // The RLE pixel data ends either at end-of-file (no VGA palette)
-    // or 769 bytes before EOF (VGA palette block present). Limit
-    // `rle_input` accordingly so a stray `0x0C` inside the palette
-    // can't be misinterpreted as a literal pixel byte.
-    let vga_palette = find_vga_palette(input);
-    let rle_end = if vga_palette.is_some() {
-        input.len() - PCX_VGA_PALETTE_BLOCK_BYTES
-    } else {
-        input.len()
-    };
-    if rle_end < cursor {
-        return Err(Error::invalid("PCX: pixel data section is empty"));
-    }
-    // Decompression-bomb guard. A header can claim arbitrarily large
-    // dimensions while the file carries only a few RLE bytes; eagerly
-    // reserving `scanline × height` would then try to allocate hundreds
-    // of gigabytes for a tiny input. PCX RLE expands at most ~31.5:1
-    // (a 2-byte packet yields up to 63 output bytes), so the largest
-    // output the available pixel bytes could legitimately produce is
-    // bounded by `available × 63`. Reject any claim that exceeds that
-    // bound up front, and cap the initial reservation so a borderline
-    // (but in-range) claim still grows the buffer lazily as the RLE
-    // decoder actually produces bytes.
-    let available = rle_end - cursor;
-    let max_plausible_output = available.saturating_mul(63);
-    if total_planar > max_plausible_output {
-        return Err(Error::invalid(format!(
-            "PCX: claimed pixel data ({total_planar} bytes) exceeds what {available} RLE bytes can decode"
-        )));
-    }
-    // `total_planar ≤ max_plausible_output ≤ available × 63`, so this
-    // reservation is now bounded by the actual input size.
-    let mut pixels_planar = Vec::with_capacity(total_planar);
-    for _ in 0..height as usize {
-        let consumed = rle::decode(&input[cursor..rle_end], &mut pixels_planar, scanline)?;
-        cursor += consumed;
-    }
 
     // Re-pack planar scanlines into packed RGBA pixels per
     // (depth, n_planes) combination.
@@ -286,6 +193,178 @@ pub fn parse_pcx(input: &[u8]) -> Result<PcxImage> {
         window_origin,
         screen_size,
     })
+}
+
+/// Decode an 8 bpp × 1 plane PCX into a typed paletted view (indices +
+/// resolved 256-entry palette).
+///
+/// The standard [`parse_pcx`] entry point always flattens the on-disk
+/// image to packed `Rgba`, which is convenient for display pipelines
+/// but discards the palette indices the file actually carries. This
+/// typed accessor preserves them: the returned [`PcxIndexed8`] surfaces
+/// the `width × height` index buffer (one byte per pixel, top-down)
+/// alongside the resolved 256-entry RGB palette and a
+/// [`PcxPaletteSource`] tag that records which spec §3 branch produced
+/// it. Useful for round-tripping a paletted PCX through
+/// [`crate::encode_pcx_8bpp_indexed`] without re-quantising the
+/// pixels.
+///
+/// Rejects any (depth, planes) combination other than `(8, 1)` with
+/// [`Error::unsupported`]: 24-bit PCX and the various EGA/CGA paletted
+/// modes have different palette geometries and are best served by
+/// dedicated typed accessors (the 24-bit `(8, 3)` planar path has its
+/// own RGB shape; the 1/2/4 bpp paths share a sub-byte unpacking step
+/// that doesn't fit a one-byte-per-pixel index buffer).
+pub fn parse_pcx_indexed_8bpp(input: &[u8]) -> Result<PcxIndexed8> {
+    let (header, scanlines, vga_palette) = decode_planar_scanlines(input)?;
+    if (header.bits_per_pixel, header.n_planes) != (8, 1) {
+        return Err(Error::unsupported(format!(
+            "PCX: parse_pcx_indexed_8bpp expects 8 bpp × 1 plane, found {} bpp × {} planes",
+            header.bits_per_pixel, header.n_planes
+        )));
+    }
+    let width = header.width() as usize;
+    let height = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+    // Strip per-row padding: spec §1 rounds `bytes_per_line` up to an
+    // even number, so the on-disk scanline can carry one trailing byte
+    // beyond the visible width that the writer set to a don't-care
+    // value. The typed view surfaces only the visible pixels so the
+    // caller's index buffer matches `width × height` exactly.
+    let mut indices = Vec::with_capacity(width * height);
+    for row in scanlines.chunks_exact(bpl) {
+        indices.extend_from_slice(&row[..width]);
+    }
+    debug_assert_eq!(indices.len(), width * height);
+
+    // Resolve the palette: `palette_info = 2` forces the grayscale
+    // interpretation per spec §3 (even if a VGA tail block is also
+    // present); otherwise honour the tail block; otherwise fall back to
+    // the deterministic `0..=255` ramp so the field is never left
+    // implementation-defined.
+    let (palette, palette_source) = if header.palette_info == 2 {
+        (grayscale_palette_256(), PcxPaletteSource::GrayscaleFlag)
+    } else if let Some(p) = vga_palette {
+        let mut out = [[0u8; 3]; 256];
+        for (i, e) in out.iter_mut().enumerate() {
+            *e = [p[i * 3], p[i * 3 + 1], p[i * 3 + 2]];
+        }
+        (out, PcxPaletteSource::VgaTail)
+    } else {
+        (grayscale_palette_256(), PcxPaletteSource::GrayscaleFallback)
+    };
+
+    Ok(PcxIndexed8 {
+        width: header.width(),
+        height: header.height(),
+        indices,
+        palette,
+        palette_source,
+    })
+}
+
+fn grayscale_palette_256() -> [[u8; 3]; 256] {
+    let mut out = [[0u8; 3]; 256];
+    for (i, e) in out.iter_mut().enumerate() {
+        let v = i as u8;
+        *e = [v, v, v];
+    }
+    out
+}
+
+/// Return shape of [`decode_planar_scanlines`]: the parsed header, the
+/// fully-RLE-decoded planar pixel buffer (`n_planes × bytes_per_line ×
+/// height` bytes), and the resolved optional VGA tail palette slice.
+type PlanarDecode<'a> = (PcxHeader, Vec<u8>, Option<&'a [u8]>);
+
+/// Shared header-validation + RLE-decode step that produces the planar
+/// scanline buffer (`n_planes × bytes_per_line × height` bytes) plus
+/// the resolved VGA palette slice, if any. Centralising the validation
+/// keeps [`parse_pcx`] and the typed accessors (e.g.
+/// [`parse_pcx_indexed_8bpp`]) in lockstep on every clean-room guard
+/// established in earlier rounds: manufacturer byte, version table,
+/// encoding byte, dimension underflow, `bytes_per_line < min_bpl`
+/// mis-framing, `scanline × height` overflow, and the
+/// decompression-bomb cap.
+fn decode_planar_scanlines(input: &[u8]) -> Result<PlanarDecode<'_>> {
+    let header = parse_header(input).ok_or_else(|| Error::invalid("PCX: header truncated"))?;
+    if header.manufacturer != PCX_MANUFACTURER {
+        return Err(Error::invalid(format!(
+            "PCX: bad manufacturer byte 0x{:02X} (expected 0x0A)",
+            header.manufacturer
+        )));
+    }
+    if !matches!(header.version, 0 | 2 | 3 | 4 | 5) {
+        return Err(Error::invalid(format!(
+            "PCX: unknown version byte {} (expected 0/2/3/4/5)",
+            header.version
+        )));
+    }
+    if header.encoding != PCX_ENCODING_RLE {
+        return Err(Error::unsupported(format!(
+            "PCX: encoding byte {} not supported (only 1 = RLE is defined)",
+            header.encoding
+        )));
+    }
+    let width = header.width();
+    let height = header.height();
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX: zero dimension"));
+    }
+    if header.x_max < header.x_min || header.y_max < header.y_min {
+        return Err(Error::invalid("PCX: x_max < x_min or y_max < y_min"));
+    }
+    if header.bytes_per_line == 0 {
+        return Err(Error::invalid("PCX: bytes_per_line == 0"));
+    }
+    if header.n_planes == 0 {
+        return Err(Error::invalid("PCX: n_planes == 0"));
+    }
+    let min_bpl: u32 = match header.bits_per_pixel {
+        1 => width.div_ceil(8),
+        2 => width.div_ceil(4),
+        4 => width.div_ceil(2),
+        8 => width,
+        bpp => {
+            return Err(Error::unsupported(format!(
+                "PCX: bits_per_pixel={bpp} not in the {{1,2,4,8}} set the spec defines"
+            )))
+        }
+    };
+    if (header.bytes_per_line as u32) < min_bpl {
+        return Err(Error::invalid(format!(
+            "PCX: bytes_per_line={} too small for width={} at {} bpp (need ≥ {})",
+            header.bytes_per_line, width, header.bits_per_pixel, min_bpl
+        )));
+    }
+
+    let scanline = header.scanline_bytes();
+    let total_planar = scanline
+        .checked_mul(height as usize)
+        .ok_or_else(|| Error::invalid("PCX: scanline × height overflows usize"))?;
+    let mut cursor = PCX_HEADER_SIZE;
+    let vga_palette = find_vga_palette(input);
+    let rle_end = if vga_palette.is_some() {
+        input.len() - PCX_VGA_PALETTE_BLOCK_BYTES
+    } else {
+        input.len()
+    };
+    if rle_end < cursor {
+        return Err(Error::invalid("PCX: pixel data section is empty"));
+    }
+    let available = rle_end - cursor;
+    let max_plausible_output = available.saturating_mul(63);
+    if total_planar > max_plausible_output {
+        return Err(Error::invalid(format!(
+            "PCX: claimed pixel data ({total_planar} bytes) exceeds what {available} RLE bytes can decode"
+        )));
+    }
+    let mut pixels_planar = Vec::with_capacity(total_planar);
+    for _ in 0..height as usize {
+        let consumed = rle::decode(&input[cursor..rle_end], &mut pixels_planar, scanline)?;
+        cursor += consumed;
+    }
+    Ok((header, pixels_planar, vga_palette))
 }
 
 // ---------------------------------------------------------------------------

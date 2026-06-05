@@ -24,11 +24,19 @@
 //!     offset table that slices the bundle into per-page PCX streams,
 //!     each handed to `parse_pcx`. The offset arithmetic (range
 //!     computation, monotonicity, bounds) is its own surface.
+//!   * [`parse_pcx_indexed_8bpp`] — the typed paletted accessor for
+//!     8 bpp × 1 plane PCX. Shares the validation + RLE surface with
+//!     `parse_pcx` and additionally strips per-row padding into a
+//!     `width × height` index buffer + resolves a 256-entry palette;
+//!     fuzzed off the same input bytes so the depth/planes mismatch
+//!     reject path, the padding-strip slicing, and the palette source
+//!     dispatch are all attacker-driven.
 
 use libfuzzer_sys::fuzz_target;
-use oxideav_pcx::{parse_dcx, parse_pcx};
+use oxideav_pcx::{parse_dcx, parse_pcx, parse_pcx_indexed_8bpp};
 
 fuzz_target!(|data: &[u8]| {
     let _ = parse_pcx(data);
     let _ = parse_dcx(data);
+    let _ = parse_pcx_indexed_8bpp(data);
 });

@@ -9,6 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 237: typed 8 bpp × 1 plane paletted accessor. Spec §4.1
+  ("256 colour") + §3 ("Palette Information") describe an 8 bpp × 1
+  plane PCX as carrying either a `palette_info = 2` grayscale flag
+  (the synthetic `0..=255` ramp), an optional 256-entry VGA tail
+  palette block (marker `0x0C` 769 bytes from EOF, followed by 768 RGB
+  bytes), or neither. The canonical [`parse_pcx`] entry point flattens
+  every case to packed `Rgba`, which is convenient for display
+  pipelines but discards the on-disk palette indices.
+  * New `parse_pcx_indexed_8bpp(input) -> Result<PcxIndexed8>` typed
+    accessor returns the raw `width × height` index buffer (one byte
+    per pixel, top-down, with the spec §1 `bytes_per_line` even-rounding
+    padding stripped) alongside the resolved 256-entry RGB palette and
+    a `PcxPaletteSource` tag (`VgaTail` / `GrayscaleFlag` /
+    `GrayscaleFallback`) recording which spec §3 branch produced the
+    palette. Useful for round-tripping a paletted PCX through
+    `encode_pcx_8bpp_indexed` without re-quantising or for applying
+    palette-swap operations on the indices directly.
+  * Any (depth, planes) combination other than `(8, 1)` is rejected
+    with `PcxError::Unsupported` — the 24-bit `(8, 3)` planar path and
+    the 1/2/4 bpp EGA/CGA paths have different palette geometries and
+    are out of scope for this accessor.
+  * Internal `decode_planar_scanlines` helper centralises every
+    clean-room guard (manufacturer byte, version table, encoding byte,
+    dimension underflow, `bytes_per_line < min_bpl` mis-framing,
+    `scanline × height` overflow, decompression-bomb cap, RLE
+    truncation) so [`parse_pcx`] and `parse_pcx_indexed_8bpp` stay in
+    lockstep on input validation — a malformed file rejected by one is
+    rejected by the other.
+  * The fuzz target `decode_pcx` now exercises the typed accessor on
+    every input alongside `parse_pcx` / `parse_dcx`, so the
+    depth/planes mismatch reject path, the padding-strip slicing, and
+    the palette-source dispatch are all attacker-driven for free.
+  * Eight new tests in `tests/round237.rs` cover the three palette
+    sources (VGA tail / grayscale flag / grayscale fallback), the
+    typed-view-equals-canonical-flattener consistency check
+    (the surfaced indices flattened through the surfaced palette
+    match the byte stream `parse_pcx` produces), padding strip on
+    odd-width fixtures (spec §1 `bytes_per_line = 6` for `width = 5`),
+    rejection of every non-(8, 1) combo (1 bpp / 2 bpp / 4 bpp /
+    24-bit), shared validation surface (truncated header + bad
+    manufacturer byte rejected identically), and the invariant that
+    `parse_pcx` still returns `PcxPixelFormat::Rgba` (the typed
+    accessor is purely additive).
 - Round 231: authoring screen-size (`h_screen_size` / `v_screen_size`)
   round-trip support. Spec §3 records the header's two 16-bit screen-
   size words at offsets 70 / 72 as "Horizontal / Vertical screen size

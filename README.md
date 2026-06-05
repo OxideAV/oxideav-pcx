@@ -309,6 +309,46 @@ indistinguishable from the plain writer's output. The wrapper
 decoded fully-tagged PCX round-trips every metadata field through one
 call.
 
+## Typed 8 bpp paletted view
+
+[`parse_pcx`] always flattens to packed `Rgba` — convenient for display
+pipelines but discards the on-disk palette indices. The typed accessor
+[`parse_pcx_indexed_8bpp`] preserves them for the 8 bpp × 1 plane case:
+it returns a [`PcxIndexed8`] carrying the raw `width × height` index
+buffer (one byte per pixel, top-down, per-row padding stripped) plus
+the resolved 256-entry RGB palette and a [`PcxPaletteSource`] tag
+recording which spec §3 branch produced it.
+
+* `PcxPaletteSource::VgaTail` — optional 768-byte palette block at
+  end-of-file, marker `0x0C` 769 bytes before EOF (spec §3).
+* `PcxPaletteSource::GrayscaleFlag` — header `palette_info = 2` forces
+  the synthetic `0..=255` grayscale ramp regardless of whether a tail
+  block is also present (spec §3).
+* `PcxPaletteSource::GrayscaleFallback` — neither flag nor tail block;
+  the decoder fills the palette with the synthetic ramp deterministically.
+
+Useful for round-tripping a paletted PCX through `encode_pcx_8bpp_indexed`
+without re-quantising the pixels, or for applying palette-swap operations
+on the indices directly. Any (depth, planes) combination other than
+`(8, 1)` is rejected with `PcxError::Unsupported` — the 24-bit and
+EGA/CGA paths have different palette geometries and are not covered by
+this accessor.
+
+```rust
+use oxideav_pcx::{parse_pcx_indexed_8bpp, PcxPaletteSource};
+
+let view = parse_pcx_indexed_8bpp(bytes)?;
+let i = view.indices[0] as usize;
+let [r, g, b] = view.palette[i];
+assert!(matches!(
+    view.palette_source,
+    PcxPaletteSource::VgaTail
+        | PcxPaletteSource::GrayscaleFlag
+        | PcxPaletteSource::GrayscaleFallback
+));
+# Ok::<(), oxideav_pcx::PcxError>(())
+```
+
 ## Lacks
 
 * 4 bpp × 4 planes (16-colour planar with finer per-plane depth)
