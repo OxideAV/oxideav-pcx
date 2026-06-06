@@ -349,6 +349,45 @@ assert!(matches!(
 # Ok::<(), oxideav_pcx::PcxError>(())
 ```
 
+## Typed 4 bpp paletted view
+
+[`parse_pcx_indexed_4bpp`] is the symmetric typed accessor for the EGFF
+"4 bpp / 1 plane / 16 colours / EGA and VGA" mode: it returns a
+[`PcxIndexed4`] carrying the unpacked `width × height` nibble indices
+(one byte per pixel, low nibble = palette index `0..=15`, top-down,
+per-row padding stripped) alongside the resolved 16-entry RGB palette
+and a [`Pcx4bppPaletteSource`] tag recording which spec §3 branch
+produced the palette.
+
+* `Pcx4bppPaletteSource::Ega16InHeader` — the 48-byte header
+  `ega_palette` field carried at least one non-zero byte; the surfaced
+  palette is read straight from those 16 RGB triplets.
+* `Pcx4bppPaletteSource::Ega16Default` — the header `ega_palette`
+  field was all-zeros (common in PCX 3.0+ files even for EGA data);
+  the surfaced palette is the standard 16-entry EGA hardware palette
+  per spec table §3.1.
+
+Useful for round-tripping a 16-colour PCX through `encode_pcx_4bpp_packed`
+without re-quantising the nibbles, or for applying palette-swap
+operations on the indices directly. Any (depth, planes) combination
+other than `(4, 1)` is rejected with `PcxError::Unsupported` — the 8 bpp
+paletted path has its own typed accessor (`parse_pcx_indexed_8bpp`); the
+1 bpp × 4 planes EGA path shares the 16-entry palette geometry but the
+on-disk plane shape is different and is not covered by this accessor.
+
+```rust
+use oxideav_pcx::{parse_pcx_indexed_4bpp, Pcx4bppPaletteSource};
+
+let view = parse_pcx_indexed_4bpp(bytes)?;
+let i = view.indices[0] as usize;
+let [r, g, b] = view.palette[i];
+assert!(matches!(
+    view.palette_source,
+    Pcx4bppPaletteSource::Ega16InHeader | Pcx4bppPaletteSource::Ega16Default
+));
+# Ok::<(), oxideav_pcx::PcxError>(())
+```
+
 ## Lacks
 
 * 4 bpp × 4 planes (16-colour planar with finer per-plane depth)

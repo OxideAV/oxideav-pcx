@@ -27,7 +27,9 @@
 //! surface.
 
 use crate::error::{PcxError as Error, Result};
-use crate::image::{PcxImage, PcxIndexed8, PcxPaletteSource, PcxPixelFormat};
+use crate::image::{
+    Pcx4bppPaletteSource, PcxImage, PcxIndexed4, PcxIndexed8, PcxPaletteSource, PcxPixelFormat,
+};
 use crate::rle;
 use crate::types::*;
 
@@ -255,6 +257,92 @@ pub fn parse_pcx_indexed_8bpp(input: &[u8]) -> Result<PcxIndexed8> {
     };
 
     Ok(PcxIndexed8 {
+        width: header.width(),
+        height: header.height(),
+        indices,
+        palette,
+        palette_source,
+    })
+}
+
+/// Decode a 4 bpp × 1 plane PCX into a typed paletted view (16-colour
+/// nibble indices + resolved 16-entry palette).
+///
+/// The standard [`parse_pcx`] entry point always flattens the on-disk
+/// image to packed `Rgba`, which is convenient for display pipelines
+/// but discards the palette indices the file actually carries. This
+/// typed accessor preserves them for the 16-colour packed-bits mode
+/// listed in EGFF table entry "4 bpp / 1 plane / 16 colours / EGA and
+/// VGA": the returned [`PcxIndexed4`] surfaces one byte per pixel (low
+/// nibble = palette index `0..=15`, top-down, padding stripped)
+/// alongside the resolved 16-entry RGB palette and a
+/// [`Pcx4bppPaletteSource`] tag recording whether the header carried a
+/// non-zero `ega_palette` field or the spec table §3.1 hardware default
+/// was substituted.
+///
+/// Useful for round-tripping a 16-colour PCX through
+/// [`crate::encode_pcx_4bpp_packed`] without re-quantising the pixels,
+/// or for applying palette-swap operations on the indices directly.
+///
+/// Rejects any (depth, planes) combination other than `(4, 1)` with
+/// [`Error::unsupported`]: the 8 bpp paletted path has its own typed
+/// accessor [`parse_pcx_indexed_8bpp`]; the 1 bpp × 4 planes path
+/// shares the 16-colour palette geometry but the on-disk plane shape
+/// is different and is not covered by this accessor.
+pub fn parse_pcx_indexed_4bpp(input: &[u8]) -> Result<PcxIndexed4> {
+    let (header, scanlines, _vga_palette) = decode_planar_scanlines(input)?;
+    if (header.bits_per_pixel, header.n_planes) != (4, 1) {
+        return Err(Error::unsupported(format!(
+            "PCX: parse_pcx_indexed_4bpp expects 4 bpp × 1 plane, found {} bpp × {} planes",
+            header.bits_per_pixel, header.n_planes
+        )));
+    }
+    let width = header.width() as usize;
+    let height = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+
+    // Unpack each scanline: 4 bpp packs two pixels per byte (high
+    // nibble = even-x pixel, low nibble = odd-x pixel) per the spec
+    // §4.1 packed-bits layout. The on-disk row may carry trailing
+    // padding bytes beyond the visible width (spec §1 rounds
+    // `bytes_per_line` up to an even number); the typed view surfaces
+    // only the visible pixels so the caller's index buffer matches
+    // `width × height` exactly.
+    let mut indices = Vec::with_capacity(width * height);
+    for row in scanlines.chunks_exact(bpl) {
+        for x in 0..width {
+            let byte = row[x >> 1];
+            let nib = if x & 1 == 0 {
+                (byte >> 4) & 0x0F
+            } else {
+                byte & 0x0F
+            };
+            indices.push(nib);
+        }
+    }
+    debug_assert_eq!(indices.len(), width * height);
+
+    // Resolve the 16-entry palette: if the header `ega_palette` field
+    // carries at least one non-zero byte, surface those 48 bytes as 16
+    // RGB triplets. Otherwise fall back to the spec table §3.1
+    // hardware default — matching the symmetric branch
+    // [`ega_palette_or_default`] takes inside the canonical RGBA
+    // flattener so the typed view never diverges.
+    let (palette, palette_source) = if header.ega_palette.iter().any(|&b| b != 0) {
+        let mut out = [[0u8; 3]; 16];
+        for (i, e) in out.iter_mut().enumerate() {
+            *e = [
+                header.ega_palette[i * 3],
+                header.ega_palette[i * 3 + 1],
+                header.ega_palette[i * 3 + 2],
+            ];
+        }
+        (out, Pcx4bppPaletteSource::Ega16InHeader)
+    } else {
+        (EGA_DEFAULT_PALETTE, Pcx4bppPaletteSource::Ega16Default)
+    };
+
+    Ok(PcxIndexed4 {
         width: header.width(),
         height: header.height(),
         indices,

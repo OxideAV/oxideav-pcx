@@ -175,3 +175,77 @@ impl PcxIndexed8 {
         self.width as usize
     }
 }
+
+/// Origin of the 16-entry palette resolved by
+/// [`crate::parse_pcx_indexed_4bpp`] for a 4 bpp × 1 plane PCX (the
+/// 16-colour packed-bits / EGA mode listed in EGFF table line 442 as
+/// "4 bpp / 1 plane / 16 colours / EGA and VGA").
+///
+/// The 48-byte header `ega_palette` field carries the on-disk palette.
+/// Per spec §3 the rev-5 manual notes that PCX 3.0+ writers commonly
+/// leave the field at all-zeros even for EGA-paletted data; in that
+/// case the decoder substitutes the standard 16-entry EGA hardware
+/// palette listed in spec table §3.1. The tag below records which of
+/// the two branches the decoder took so a re-encode caller can decide
+/// whether to round-trip the header palette unchanged or rewrite it
+/// against the canonical hardware palette.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pcx4bppPaletteSource {
+    /// The 48-byte header `ega_palette` field carried at least one
+    /// non-zero byte. The 16-entry palette surfaced on
+    /// [`PcxIndexed4::palette`] is read straight from those 48 bytes
+    /// (one RGB triplet per entry, in the on-disk order).
+    Ega16InHeader,
+    /// The header `ega_palette` field was all-zeros. Per the rev-5
+    /// manual the decoder substitutes the standard 16-entry EGA
+    /// hardware palette from spec table §3.1, which is what
+    /// [`PcxIndexed4::palette`] surfaces.
+    Ega16Default,
+}
+
+/// Typed 4 bpp × 1 plane paletted view returned by
+/// [`crate::parse_pcx_indexed_4bpp`].
+///
+/// Mirrors [`PcxIndexed8`] for the 16-colour packed-bits mode (EGFF
+/// table entry "4, 1, 16, EGA and VGA"). The standard
+/// [`crate::parse_pcx`] entry point always materialises an `Rgba`
+/// buffer by walking the palette per pixel and dropping the on-disk
+/// nibble indices. This typed accessor preserves them: the returned
+/// [`PcxIndexed4`] carries one byte per pixel (the low-nibble palette
+/// index in `0..=15`, top-down, padding stripped) alongside the
+/// resolved 16-entry RGB palette and a [`Pcx4bppPaletteSource`] tag
+/// recording which spec §3 branch produced the palette.
+///
+/// Useful for round-tripping a 16-colour PCX through
+/// [`crate::encode_pcx_4bpp_packed`] without re-quantising, or for
+/// applying palette-swap operations on the indices directly.
+#[derive(Debug, Clone)]
+pub struct PcxIndexed4 {
+    /// Picture width in pixels (derived from spec §3 `x_max - x_min +
+    /// 1`, matching [`PcxImage::width`]).
+    pub width: u32,
+    /// Picture height in pixels (derived from spec §3 `y_max - y_min +
+    /// 1`, matching [`PcxImage::height`]).
+    pub height: u32,
+    /// `width × height` palette indices, row-major top-down, one byte
+    /// per pixel with the index in the low nibble (`0..=15`). The
+    /// 4-bpp on-disk format packs two pixels per byte (high nibble =
+    /// even-x pixel, low nibble = odd-x pixel); this accessor unpacks
+    /// them to one byte per pixel. Per-row padding that the encoder
+    /// added to round `bytes_per_line` up to an even number per spec
+    /// §1 is NOT included.
+    pub indices: Vec<u8>,
+    /// 16-entry RGB palette. The source (header `ega_palette` field
+    /// vs. the spec table §3.1 default) is recorded in
+    /// [`Self::palette_source`].
+    pub palette: [[u8; 3]; 16],
+    /// Origin of the [`Self::palette`] entries.
+    pub palette_source: Pcx4bppPaletteSource,
+}
+
+impl PcxIndexed4 {
+    /// Bytes per row (= `width`, one byte per pixel after unpacking).
+    pub fn stride(&self) -> usize {
+        self.width as usize
+    }
+}

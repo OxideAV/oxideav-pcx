@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 241: typed 4 bpp × 1 plane paletted accessor. EGFF video-mode
+  table entry "4 bpp / 1 plane / 16 colours / EGA and VGA" describes a
+  16-colour packed-bits PCX where each on-disk byte holds two pixels
+  (high nibble = even-x, low nibble = odd-x) and the 16-entry palette
+  rides in the header's 48-byte `ega_palette` field — with the rev-5
+  manual noting that PCX 3.0+ writers commonly leave the field at
+  all-zeros, in which case the decoder substitutes the standard EGA
+  hardware palette from spec table §3.1. The canonical [`parse_pcx`]
+  entry point flattens this to packed `Rgba`, which discards the on-
+  disk nibble indices the file actually carries.
+  * New `parse_pcx_indexed_4bpp(input) -> Result<PcxIndexed4>` typed
+    accessor returns the unpacked `width × height` index buffer (one
+    byte per pixel, low nibble = palette index `0..=15`, top-down,
+    with the spec §1 `bytes_per_line` even-rounding padding stripped)
+    alongside the resolved 16-entry RGB palette and a
+    `Pcx4bppPaletteSource` tag (`Ega16InHeader` / `Ega16Default`)
+    recording whether the on-disk `ega_palette` field or the spec
+    table §3.1 hardware default produced the palette. Symmetric to
+    `parse_pcx_indexed_8bpp` for the 256-colour `(8, 1)` mode added in
+    round 237.
+  * Any (depth, planes) combination other than `(4, 1)` is rejected
+    with `PcxError::Unsupported` — the 8 bpp paletted path has its own
+    typed accessor; the 1 bpp × 4 planes EGA path shares the 16-entry
+    palette geometry but the on-disk plane shape is different and is
+    out of scope for this accessor.
+  * Reuses the existing `decode_planar_scanlines` validation helper
+    (manufacturer byte, version table, encoding byte, dimension
+    underflow, `bytes_per_line < min_bpl` mis-framing, `scanline ×
+    height` overflow, decompression-bomb cap) so the typed view's
+    failure surface matches `parse_pcx` line-for-line.
+  * Typed view is pinned as a strict rearrangement of the canonical
+    flattener: flattening the surfaced indices through the surfaced
+    palette reproduces `parse_pcx`'s RGBA bytes exactly across both
+    the in-header and default-palette branches.
+
 - Round 237: typed 8 bpp × 1 plane paletted accessor. Spec §4.1
   ("256 colour") + §3 ("Palette Information") describe an 8 bpp × 1
   plane PCX as carrying either a `palette_info = 2` grayscale flag
