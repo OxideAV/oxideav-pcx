@@ -9,6 +9,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 244: fuzz target reaches the typed 4 bpp × 1 plane paletted
+  accessor. The r136 `fuzz/decode_pcx` cargo-fuzz harness drives the
+  canonical `parse_pcx` / `parse_dcx` entry points; r237 added
+  `parse_pcx_indexed_8bpp` to the same harness so its 256-entry palette
+  dispatch + padding-strip surface runs at fuzz cadence. r241 added the
+  symmetric `parse_pcx_indexed_4bpp` accessor (16-entry palette, EGFF
+  "4 bpp / 1 plane / 16 colours / EGA and VGA" mode) but did not extend
+  the fuzz target — meaning the nibble-unpack hot path, the (depth,
+  planes) mismatch reject, and the `Ega16InHeader` / `Ega16Default`
+  palette dispatch were attacker-driven only through the canonical
+  `parse_pcx` flattener's RGBA byte stream, not the typed view's
+  surfaced indices / palette / source tag.
+  * `fuzz/fuzz_targets/decode_pcx.rs` now calls `parse_pcx_indexed_4bpp`
+    on the same byte stream as the other three public entry points so a
+    single attacker mutation simultaneously probes the canonical
+    flattener AND every typed accessor's rejection geometry. Each call
+    discards its result — the contract under test is purely that the
+    call returns (never panics, OOMs, aborts, indexes out of bounds, or
+    pre-allocates an attacker-claimed pixel buffer beyond what the
+    input can back).
+  * New seed corpus file
+    `fuzz/corpus/decode_pcx/packed4_default_palette_8x4.pcx`
+    (148 bytes) drives the `Ega16Default` branch — the pre-existing
+    `packed4_8x4.pcx` seed has a non-zero `ega_palette` field so it
+    drives `Ega16InHeader`. Both `Pcx4bppPaletteSource` arms are now
+    reached on the seed alone, before the fuzzer has mutated anything.
+  * Eight new tests in `tests/round244.rs` validate the fuzz target's
+    contract from the in-tree test runner (the fuzz crate is a
+    separate `cargo-fuzz` workspace not built by `cargo test`):
+    * `every_seed_returns_a_result` walks every committed seed
+      through `parse_pcx_indexed_4bpp` and asserts the call returns
+      rather than panicking — the direct contract under test in the
+      fuzz target's `fuzz_target!` invocation.
+    * `seed_packed4_in_header_branch` pins the existing
+      `packed4_8x4.pcx` seed to `Ega16InHeader`.
+    * `seed_packed4_default_palette_branch` pins the new
+      `packed4_default_palette_8x4.pcx` seed to `Ega16Default` and
+      asserts the surfaced palette equals the spec table §3.1 EGA
+      hardware palette exactly.
+    * `seed_packed4_default_palette_header_geometry` pins the new
+      seed's header layout (manufacturer 0x0A, version 5, encoding 1,
+      bits_per_pixel 4, n_planes 1, ega_palette all zero,
+      bytes_per_line = round_up_to_even(ceil(width / 2))).
+    * `non_4_1_seeds_reject_with_unsupported` walks every non-(4, 1)
+      seed (mono / CGA / 1bpp×4 EGA / gray / idx8 / RGB24 / RGB24
+      windowed) and asserts the typed accessor rejects with
+      `Err(PcxError::Unsupported(_))`.
+    * `malformed_seeds_reject` walks the DCX / magic-only / empty
+      seeds and asserts both the typed accessor and the canonical
+      flattener reject — the shared validation surface holds.
+    * `seeds_typed_view_matches_canonical_flatten` pins the typed
+      view as a pure rearrangement of the canonical flattener for
+      both `(4, 1)` seeds (indices flattened through the surfaced
+      palette reproduce `parse_pcx`'s RGBA bytes exactly).
+    * `synthetic_non_4_1_combinations_reject_with_unsupported`
+      complements the seed-corpus check by generating fresh
+      mono / CGA / gray / RGB24 fixtures through the public encoder
+      API and asserting the typed accessor rejects each.
+  * Both the default registry build and the standalone
+    `--no-default-features` build stay green; `cargo fmt --check` +
+    `cargo clippy --all-targets --no-deps -- -D warnings` clean.
+
 - Round 241: typed 4 bpp × 1 plane paletted accessor. EGFF video-mode
   table entry "4 bpp / 1 plane / 16 colours / EGA and VGA" describes a
   16-colour packed-bits PCX where each on-disk byte holds two pixels

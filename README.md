@@ -184,14 +184,17 @@ byte.
 ## Fuzzing
 
 A [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) harness lives
-under `fuzz/`. The `decode_pcx` target feeds arbitrary bytes to both
-`parse_pcx` and `parse_dcx` and asserts they always return a `Result`
-rather than panicking, integer-overflowing, indexing out of bounds, or
-allocating an attacker-claimed pixel buffer. It is built with
+under `fuzz/`. The `decode_pcx` target feeds arbitrary bytes to the
+four public decode entry points — `parse_pcx`, `parse_dcx`,
+`parse_pcx_indexed_8bpp`, and `parse_pcx_indexed_4bpp` — and asserts
+each always returns a `Result` rather than panicking,
+integer-overflowing, indexing out of bounds, or allocating an
+attacker-claimed pixel buffer. It is built with
 `default-features = false` so it exercises the framework-free decode
-path. A 12-entry seed corpus covers all six (depth, planes)
-combinations, grayscale, a windowed-origin file, a DCX bundle, and
-degenerate inputs.
+path. A 13-entry seed corpus covers all six (depth, planes)
+combinations, grayscale, a windowed-origin file, a DCX bundle,
+degenerate inputs, plus a paired 4 bpp × 1 plane fixture for each
+`Pcx4bppPaletteSource` arm (in-header / spec table §3.1 default).
 
 ```sh
 cd fuzz && cargo +nightly fuzz run decode_pcx -- -max_total_time=60

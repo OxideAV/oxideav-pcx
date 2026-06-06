@@ -12,7 +12,7 @@
 //! height` pixel buffer that exceeds what the input could possibly
 //! back. The return values are intentionally discarded.
 //!
-//! Two entry points are fuzzed off the same input bytes because they
+//! Four entry points are fuzzed off the same input bytes because they
 //! are independent public surfaces with distinct offset / allocation
 //! maths:
 //!
@@ -31,12 +31,28 @@
 //!     fuzzed off the same input bytes so the depth/planes mismatch
 //!     reject path, the padding-strip slicing, and the palette source
 //!     dispatch are all attacker-driven.
+//!   * [`parse_pcx_indexed_4bpp`] — the symmetric typed accessor for
+//!     4 bpp × 1 plane (16-colour EGA/VGA packed-bits) PCX. Shares the
+//!     same validation + RLE surface as `parse_pcx` and additionally
+//!     unpacks nibbles into a `width × height` index buffer + resolves
+//!     a 16-entry palette out of the in-header `ega_palette` field (or
+//!     the spec table §3.1 hardware default when the field is all-zero);
+//!     fuzzed off the same input bytes so the depth/planes mismatch
+//!     reject path, the per-row padding strip, the nibble extraction,
+//!     and the palette-source dispatch are all attacker-driven.
+//!
+//! Sharing one byte stream across all four entry points keeps the
+//! fuzzer's mutator focused: a single byte flip can simultaneously
+//! probe the canonical flattener AND each typed accessor's rejection
+//! geometry, which is much more efficient than splitting the harness
+//! into separate targets.
 
 use libfuzzer_sys::fuzz_target;
-use oxideav_pcx::{parse_dcx, parse_pcx, parse_pcx_indexed_8bpp};
+use oxideav_pcx::{parse_dcx, parse_pcx, parse_pcx_indexed_4bpp, parse_pcx_indexed_8bpp};
 
 fuzz_target!(|data: &[u8]| {
     let _ = parse_pcx(data);
     let _ = parse_dcx(data);
     let _ = parse_pcx_indexed_8bpp(data);
+    let _ = parse_pcx_indexed_4bpp(data);
 });
