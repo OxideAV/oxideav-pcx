@@ -391,6 +391,55 @@ assert!(matches!(
 # Ok::<(), oxideav_pcx::PcxError>(())
 ```
 
+## Typed 1 bpp × 4 planes paletted view
+
+[`parse_pcx_indexed_1bpp_4planes`] is the third 16-colour typed accessor —
+covering the spec §4.1 EGA bit-plane on-disk layout where each scanline
+carries four 1-bit planes laid out one after another within the row (plane
+0, plane 1, plane 2, plane 3 — the same plane order
+`encode_pcx_1bpp_4planes_ega` writes). The bit at each x-position across
+the four planes stacks into a 4-bit palette index (`p0 | p1<<1 | p2<<2 |
+p3<<3`).
+
+The returned [`PcxIndexed1x4`] carries the resolved `width × height`
+nibble indices (one byte per pixel, low nibble = palette index `0..=15`,
+top-down, padding stripped) alongside the resolved 16-entry RGB palette
+and a [`Pcx1bpp4PlanesPaletteSource`] tag recording which spec §3 branch
+produced the palette.
+
+* `Pcx1bpp4PlanesPaletteSource::Ega16InHeader` — the 48-byte header
+  `ega_palette` field carried at least one non-zero byte; the surfaced
+  palette is read straight from those 16 RGB triplets.
+* `Pcx1bpp4PlanesPaletteSource::Ega16Default` — the header `ega_palette`
+  field was all-zeros (common in PCX 3.0+ files even for EGA data); the
+  surfaced palette is the standard 16-entry EGA hardware palette per
+  spec table §3.1.
+
+Useful for round-tripping a 16-colour EGA PCX through
+`encode_pcx_1bpp_4planes_ega` without re-quantising the pixels, or for
+applying palette-swap operations on the indices directly. Any (depth,
+planes) combination other than `(1, 4)` is rejected with
+`PcxError::Unsupported` — the 4 bpp × 1 plane path has its own typed
+accessor (`parse_pcx_indexed_4bpp`); the 8 bpp paletted path has
+`parse_pcx_indexed_8bpp`. The three 16-colour-or-greater paletted views
+share the same nibble / byte index convention so a downstream pipeline
+can hand any of them to a 16-colour code path without branching on the
+on-disk depth.
+
+```rust
+use oxideav_pcx::{parse_pcx_indexed_1bpp_4planes, Pcx1bpp4PlanesPaletteSource};
+
+let view = parse_pcx_indexed_1bpp_4planes(bytes)?;
+let i = view.indices[0] as usize;
+let [r, g, b] = view.palette[i];
+assert!(matches!(
+    view.palette_source,
+    Pcx1bpp4PlanesPaletteSource::Ega16InHeader
+        | Pcx1bpp4PlanesPaletteSource::Ega16Default
+));
+# Ok::<(), oxideav_pcx::PcxError>(())
+```
+
 ## Lacks
 
 * 4 bpp × 4 planes (16-colour planar with finer per-plane depth)

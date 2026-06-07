@@ -28,7 +28,8 @@
 
 use crate::error::{PcxError as Error, Result};
 use crate::image::{
-    Pcx4bppPaletteSource, PcxImage, PcxIndexed4, PcxIndexed8, PcxPaletteSource, PcxPixelFormat,
+    Pcx1bpp4PlanesPaletteSource, Pcx4bppPaletteSource, PcxImage, PcxIndexed1x4, PcxIndexed4,
+    PcxIndexed8, PcxPaletteSource, PcxPixelFormat,
 };
 use crate::rle;
 use crate::types::*;
@@ -343,6 +344,101 @@ pub fn parse_pcx_indexed_4bpp(input: &[u8]) -> Result<PcxIndexed4> {
     };
 
     Ok(PcxIndexed4 {
+        width: header.width(),
+        height: header.height(),
+        indices,
+        palette,
+        palette_source,
+    })
+}
+
+/// Decode a 1 bpp × 4 planes PCX into a typed paletted view (16-colour
+/// nibble indices + resolved 16-entry palette).
+///
+/// The standard [`parse_pcx`] entry point always flattens the on-disk
+/// image to packed `Rgba`, which is convenient for display pipelines
+/// but discards the per-plane bits the file actually carries. This
+/// typed accessor preserves the resolved 4-bit palette index per pixel
+/// for the 16-colour EGA bit-plane mode described in spec §4.1: the
+/// returned [`PcxIndexed1x4`] surfaces one byte per pixel (low nibble
+/// = palette index `0..=15`, top-down, padding stripped) alongside the
+/// resolved 16-entry RGB palette and a
+/// [`Pcx1bpp4PlanesPaletteSource`] tag recording whether the header
+/// carried a non-zero `ega_palette` field or the spec table §3.1
+/// hardware default was substituted.
+///
+/// Useful for round-tripping a 16-colour EGA PCX through
+/// [`crate::encode_pcx_1bpp_4planes_ega`] without re-quantising the
+/// pixels, or for applying palette-swap operations on the indices
+/// directly. The surfaced nibble values share the [`PcxIndexed4`]
+/// convention so a caller can hand either view to a 16-colour pipeline
+/// without branching on the on-disk depth.
+///
+/// Rejects any (depth, planes) combination other than `(1, 4)` with
+/// [`Error::unsupported`]: the 4 bpp × 1 plane path has its own typed
+/// accessor [`parse_pcx_indexed_4bpp`]; the 8 bpp paletted path has
+/// [`parse_pcx_indexed_8bpp`]. Both share the 16-colour palette
+/// geometry but the on-disk plane shape differs.
+pub fn parse_pcx_indexed_1bpp_4planes(input: &[u8]) -> Result<PcxIndexed1x4> {
+    let (header, scanlines, _vga_palette) = decode_planar_scanlines(input)?;
+    if (header.bits_per_pixel, header.n_planes) != (1, 4) {
+        return Err(Error::unsupported(format!(
+            "PCX: parse_pcx_indexed_1bpp_4planes expects 1 bpp × 4 planes, found {} bpp × {} planes",
+            header.bits_per_pixel, header.n_planes
+        )));
+    }
+    let width = header.width() as usize;
+    let height = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+
+    // For each scanline read four `bpl`-byte plane slices in order
+    // (plane 0, plane 1, plane 2, plane 3). Per spec §4.1 the bit at
+    // x-position `(x>>3, 7 - (x&7))` of each plane contributes one bit
+    // to the 4-bit palette index; the stack order matches the
+    // canonical RGBA flattener `unpack_1bpp_4planes` so the typed view
+    // never diverges from the byte stream `parse_pcx` produces. The
+    // on-disk row may carry trailing padding bits beyond the visible
+    // width (spec §1 rounds `bytes_per_line` up to an even number); the
+    // typed view surfaces only the visible pixels.
+    let mut indices = Vec::with_capacity(width * height);
+    for row in scanlines.chunks_exact(bpl * 4) {
+        let (p0, rest) = row.split_at(bpl);
+        let (p1, rest) = rest.split_at(bpl);
+        let (p2, p3) = rest.split_at(bpl);
+        for x in 0..width {
+            let byte = x >> 3;
+            let shift = 7 - (x & 7);
+            let idx = ((p0[byte] >> shift) & 1)
+                | (((p1[byte] >> shift) & 1) << 1)
+                | (((p2[byte] >> shift) & 1) << 2)
+                | (((p3[byte] >> shift) & 1) << 3);
+            indices.push(idx);
+        }
+    }
+    debug_assert_eq!(indices.len(), width * height);
+
+    // Resolve the 16-entry palette using the same `Ega16InHeader` /
+    // `Ega16Default` decision the 4 bpp × 1 plane accessor uses; the
+    // two modes share the spec §3 palette geometry even though the
+    // on-disk plane shape is different.
+    let (palette, palette_source) = if header.ega_palette.iter().any(|&b| b != 0) {
+        let mut out = [[0u8; 3]; 16];
+        for (i, e) in out.iter_mut().enumerate() {
+            *e = [
+                header.ega_palette[i * 3],
+                header.ega_palette[i * 3 + 1],
+                header.ega_palette[i * 3 + 2],
+            ];
+        }
+        (out, Pcx1bpp4PlanesPaletteSource::Ega16InHeader)
+    } else {
+        (
+            EGA_DEFAULT_PALETTE,
+            Pcx1bpp4PlanesPaletteSource::Ega16Default,
+        )
+    };
+
+    Ok(PcxIndexed1x4 {
         width: header.width(),
         height: header.height(),
         indices,

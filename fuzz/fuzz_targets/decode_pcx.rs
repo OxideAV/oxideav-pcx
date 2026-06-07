@@ -40,19 +40,34 @@
 //!     fuzzed off the same input bytes so the depth/planes mismatch
 //!     reject path, the per-row padding strip, the nibble extraction,
 //!     and the palette-source dispatch are all attacker-driven.
+//!   * [`parse_pcx_indexed_1bpp_4planes`] — the third 16-colour typed
+//!     accessor, covering the spec §4.1 EGA bit-plane on-disk layout
+//!     where each scanline carries four 1-bit planes whose stacked bits
+//!     form a 4-bit palette index per pixel. Shares the validation +
+//!     RLE surface with `parse_pcx` and additionally resolves the
+//!     stacked index into a `width × height` byte buffer + the same
+//!     16-entry palette dispatch (in-header `ega_palette` vs spec
+//!     table §3.1 default); fuzzed off the same input bytes so the
+//!     depth/planes mismatch reject path, the per-row padding strip,
+//!     the four-plane bit stacking, and the palette-source dispatch
+//!     are all attacker-driven.
 //!
-//! Sharing one byte stream across all four entry points keeps the
+//! Sharing one byte stream across all five entry points keeps the
 //! fuzzer's mutator focused: a single byte flip can simultaneously
 //! probe the canonical flattener AND each typed accessor's rejection
 //! geometry, which is much more efficient than splitting the harness
 //! into separate targets.
 
 use libfuzzer_sys::fuzz_target;
-use oxideav_pcx::{parse_dcx, parse_pcx, parse_pcx_indexed_4bpp, parse_pcx_indexed_8bpp};
+use oxideav_pcx::{
+    parse_dcx, parse_pcx, parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_4bpp,
+    parse_pcx_indexed_8bpp,
+};
 
 fuzz_target!(|data: &[u8]| {
     let _ = parse_pcx(data);
     let _ = parse_dcx(data);
     let _ = parse_pcx_indexed_8bpp(data);
     let _ = parse_pcx_indexed_4bpp(data);
+    let _ = parse_pcx_indexed_1bpp_4planes(data);
 });

@@ -249,3 +249,85 @@ impl PcxIndexed4 {
         self.width as usize
     }
 }
+
+/// Origin of the 16-entry palette resolved by
+/// [`crate::parse_pcx_indexed_1bpp_4planes`] for a 1 bpp × 4 planes PCX
+/// (the 16-colour EGA bit-plane mode described in spec §4.1 — each
+/// scanline carries four 1-bit planes whose stacked bits form a 4-bit
+/// palette index per pixel).
+///
+/// Same palette geometry as [`Pcx4bppPaletteSource`] — both modes draw
+/// from the same 16-entry RGB table — but the on-disk plane shape is
+/// different, so the typed accessors are kept separate. The 48-byte
+/// header `ega_palette` field is the source of record; when it is
+/// all-zeros (which PCX 3.0+ writers commonly emit even for EGA data)
+/// the decoder substitutes the standard 16-entry EGA hardware palette
+/// from spec table §3.1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pcx1bpp4PlanesPaletteSource {
+    /// The 48-byte header `ega_palette` field carried at least one
+    /// non-zero byte. The 16-entry palette surfaced on
+    /// [`PcxIndexed1x4`] `palette` is read straight from those 48
+    /// bytes (one RGB triplet per entry, in the on-disk order).
+    Ega16InHeader,
+    /// The header `ega_palette` field was all-zeros. Per the rev-5
+    /// manual the decoder substitutes the standard 16-entry EGA
+    /// hardware palette from spec table §3.1, which is what
+    /// [`PcxIndexed1x4`] `palette` surfaces.
+    Ega16Default,
+}
+
+/// Typed 1 bpp × 4 planes paletted view returned by
+/// [`crate::parse_pcx_indexed_1bpp_4planes`].
+///
+/// Spec §4.1 describes the 16-colour EGA bit-plane mode where each
+/// scanline carries four 1-bit planes laid out one after another within
+/// the row (plane 0, plane 1, plane 2, plane 3). The four bits at the
+/// same x-position across the four planes stack into a 4-bit palette
+/// index (`plane0 | plane1 << 1 | plane2 << 2 | plane3 << 3`).
+///
+/// The standard [`crate::parse_pcx`] entry point always materialises an
+/// `Rgba` buffer by walking the palette per pixel and dropping the
+/// per-plane bits. This typed accessor preserves the resolved index:
+/// the returned [`PcxIndexed1x4`] carries one byte per pixel (low
+/// nibble = palette index `0..=15`, top-down, padding stripped)
+/// alongside the resolved 16-entry RGB palette and a
+/// [`Pcx1bpp4PlanesPaletteSource`] tag recording which spec §3 branch
+/// produced the palette.
+///
+/// Useful for round-tripping a 16-colour EGA PCX through
+/// [`crate::encode_pcx_1bpp_4planes_ega`] without re-quantising, or
+/// for applying palette-swap operations on the indices directly. The
+/// nibble values share the [`PcxIndexed4`] convention so a caller can
+/// hand either typed view to a 16-colour pipeline without branching on
+/// the on-disk depth.
+#[derive(Debug, Clone)]
+pub struct PcxIndexed1x4 {
+    /// Picture width in pixels (derived from spec §3 `x_max - x_min +
+    /// 1`, matching [`PcxImage::width`]).
+    pub width: u32,
+    /// Picture height in pixels (derived from spec §3 `y_max - y_min +
+    /// 1`, matching [`PcxImage::height`]).
+    pub height: u32,
+    /// `width × height` palette indices, row-major top-down, one byte
+    /// per pixel with the index in the low nibble (`0..=15`). The
+    /// 1 bpp × 4 planes on-disk format stacks the same x-position bit
+    /// from each of the four planes into a 4-bit value; this accessor
+    /// pre-resolves that stacking so the caller receives one index per
+    /// pixel. Per-row padding bits beyond `width` (spec §1 rounds
+    /// `bytes_per_line` up to an even number) are NOT included.
+    pub indices: Vec<u8>,
+    /// 16-entry RGB palette. The source (header `ega_palette` field
+    /// vs. the spec table §3.1 default) is recorded in
+    /// [`Self::palette_source`].
+    pub palette: [[u8; 3]; 16],
+    /// Origin of the [`Self::palette`] entries.
+    pub palette_source: Pcx1bpp4PlanesPaletteSource,
+}
+
+impl PcxIndexed1x4 {
+    /// Bytes per row (= `width`, one byte per pixel after unpacking).
+    pub fn stride(&self) -> usize {
+        self.width as usize
+    }
+}

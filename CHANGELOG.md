@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 252: typed 1 bpp × 4 planes paletted accessor — the third
+  16-colour typed view, covering the spec §4.1 EGA bit-plane on-disk
+  layout where each scanline carries four 1-bit planes laid out one
+  after another within the row (plane 0, plane 1, plane 2, plane 3).
+  The four bits at the same x-position across the four planes stack
+  into a 4-bit palette index (`p0 | p1<<1 | p2<<2 | p3<<3`).
+  * New `parse_pcx_indexed_1bpp_4planes(input: &[u8]) -> Result<PcxIndexed1x4>`
+    public entry point. The `PcxIndexed1x4` shape mirrors `PcxIndexed4`:
+    a `width × height` byte buffer of resolved nibble indices (low
+    nibble = palette index `0..=15`, top-down, padding stripped) plus a
+    resolved 16-entry RGB palette and a `Pcx1bpp4PlanesPaletteSource`
+    tag recording whether the header `ega_palette` field carried
+    non-zero bytes (`Ega16InHeader`) or the spec table §3.1 hardware
+    default was substituted (`Ega16Default`). Useful for round-tripping
+    a 16-colour EGA PCX through `encode_pcx_1bpp_4planes_ega` without
+    re-quantising the pixels, or for applying palette-swap operations
+    on the indices directly.
+  * Any (depth, planes) combination other than `(1, 4)` is rejected
+    with `PcxError::Unsupported` — the 4 bpp × 1 plane path has its
+    own typed accessor `parse_pcx_indexed_4bpp`; the 8 bpp paletted
+    path has `parse_pcx_indexed_8bpp`. The three paletted views share
+    the same nibble / byte index convention so a downstream pipeline
+    can hand any of them to a 16-colour-or-greater code path without
+    branching on the on-disk depth.
+  * The accessor shares its validation surface with `parse_pcx`
+    (manufacturer byte, version table, encoding byte, dimension
+    underflow, `bytes_per_line < min_bpl` mis-framing, `scanline ×
+    height` overflow, decompression-bomb cap) via the existing
+    `decode_planar_scanlines` factoring established by the r237 / r241
+    typed accessors.
+  * Six new tests in `tests/round252.rs` validate (i) the in-header
+    palette round-trip through `encode_pcx_1bpp_4planes_ega`, (ii) the
+    all-zero `ega_palette` fallback to the spec table §3.1 hardware
+    palette, (iii) the typed-view-agrees-with-canonical-flattener
+    consistency check across both palette sources, (iv) `(8, 1)` /
+    `(8, 3)` / `(1, 1)` / `(2, 1)` / `(4, 1)` rejection paths, (v)
+    per-row padding stripping for widths that don't fall on a byte
+    boundary, and (vi) shared validation surface with `parse_pcx` on
+    truncated / bad-manufacturer fixtures.
+  * `fuzz/fuzz_targets/decode_pcx.rs` now calls
+    `parse_pcx_indexed_1bpp_4planes` on the same byte stream as the
+    other four public entry points so a single attacker mutation
+    simultaneously probes the canonical flattener AND every typed
+    accessor's rejection geometry.
+
 - Round 244: fuzz target reaches the typed 4 bpp × 1 plane paletted
   accessor. The r136 `fuzz/decode_pcx` cargo-fuzz harness drives the
   canonical `parse_pcx` / `parse_dcx` entry points; r237 added
