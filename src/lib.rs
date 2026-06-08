@@ -133,6 +133,19 @@
 //! 16-colour EGA PCX through [`encode_pcx_1bpp_4planes_ega`] without
 //! re-quantising.
 //!
+//! [`parse_pcx_indexed_2bpp_cga`] is the typed accessor for the
+//! 4-colour CGA mode (2 bpp × 1 plane, 4 pixels/byte). It returns a
+//! [`PcxIndexed2x1Cga`] carrying the unpacked `width × height` 2-bit
+//! indices (low two bits = palette index `0..=3`) alongside the
+//! resolved 4-entry RGB palette, the resolved `background_index`
+//! (`0..=15`) read from `ega_palette[16]`'s high nibble, and a
+//! [`Pcx2bppCgaPaletteSource`] tag recording which CGA palette family
+//! (palette 0 / 1 × low / high intensity) the decoder landed on. The
+//! [`Pcx2bppCgaPaletteSource::palette_selector`] helper reconstructs the
+//! byte 19 selector pattern so a round-trip caller can hand it
+//! straight back to [`encode_pcx_2bpp_cga`] without re-deriving the
+//! bit positions.
+//!
 //! ## DCX multi-page bundles
 //!
 //! [`parse_dcx`] / [`encode_dcx`] handle the Microsoft FAX multi-page
@@ -181,7 +194,8 @@ pub const CODEC_ID_STR: &str = "pcx";
 
 pub use dcx::{encode_dcx, parse_dcx, DcxImage, DCX_MAGIC, DCX_MAX_PAGES};
 pub use decoder::{
-    parse_pcx, parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_4bpp, parse_pcx_indexed_8bpp,
+    parse_pcx, parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_4bpp,
+    parse_pcx_indexed_8bpp,
 };
 pub use encoder::{
     encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono,
@@ -193,8 +207,8 @@ pub use encoder::{
 };
 pub use error::{PcxError, Result};
 pub use image::{
-    Pcx1bpp4PlanesPaletteSource, Pcx4bppPaletteSource, PcxImage, PcxIndexed1x4, PcxIndexed4,
-    PcxIndexed8, PcxPaletteSource, PcxPixelFormat,
+    Pcx1bpp4PlanesPaletteSource, Pcx2bppCgaPaletteSource, Pcx4bppPaletteSource, PcxImage,
+    PcxIndexed1x4, PcxIndexed2x1Cga, PcxIndexed4, PcxIndexed8, PcxPaletteSource, PcxPixelFormat,
 };
 pub use types::{
     find_vga_palette, parse_header, PcxHeader, PCX_ENCODING_RLE, PCX_HEADER_SIZE, PCX_MANUFACTURER,

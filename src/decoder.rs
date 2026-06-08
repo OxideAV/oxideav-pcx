@@ -28,8 +28,8 @@
 
 use crate::error::{PcxError as Error, Result};
 use crate::image::{
-    Pcx1bpp4PlanesPaletteSource, Pcx4bppPaletteSource, PcxImage, PcxIndexed1x4, PcxIndexed4,
-    PcxIndexed8, PcxPaletteSource, PcxPixelFormat,
+    Pcx1bpp4PlanesPaletteSource, Pcx2bppCgaPaletteSource, Pcx4bppPaletteSource, PcxImage,
+    PcxIndexed1x4, PcxIndexed2x1Cga, PcxIndexed4, PcxIndexed8, PcxPaletteSource, PcxPixelFormat,
 };
 use crate::rle;
 use crate::types::*;
@@ -443,6 +443,93 @@ pub fn parse_pcx_indexed_1bpp_4planes(input: &[u8]) -> Result<PcxIndexed1x4> {
         height: header.height(),
         indices,
         palette,
+        palette_source,
+    })
+}
+
+/// Decode a 2 bpp × 1 plane CGA PCX into a typed paletted view
+/// (4-colour indices + resolved 4-entry RGB palette + the CGA palette
+/// family the decoder landed on).
+///
+/// The standard [`parse_pcx`] entry point always flattens the on-disk
+/// image to packed `Rgba` by walking the palette per pixel and dropping
+/// the resolved indices. This typed accessor preserves them for the
+/// 4-colour CGA mode described in spec §4.1 (single plane of 2 bpp
+/// packed-bits data, 4 pixels/byte, palette selected from `ega_palette`
+/// bytes 16 / 19 per CGA hardware semantics).
+///
+/// The returned [`PcxIndexed2x1Cga`] surfaces one byte per pixel (low
+/// two bits = palette index `0..=3`, top-down, padding stripped)
+/// alongside the resolved 4-entry RGB palette, the resolved
+/// `background_index` (`0..=15`) used for palette entry 0, and a
+/// [`Pcx2bppCgaPaletteSource`] tag recording which CGA palette family
+/// the decoder landed on. The
+/// [`Pcx2bppCgaPaletteSource::palette_selector`] helper reconstructs
+/// the byte 19 selector pattern so a round-trip caller can hand it
+/// straight to [`crate::encode_pcx_2bpp_cga`] without re-deriving the
+/// bit positions.
+///
+/// Useful for round-tripping a 4-colour CGA PCX through
+/// [`crate::encode_pcx_2bpp_cga`] without re-quantising the indices, or
+/// for applying palette-swap operations on the indices directly.
+///
+/// Rejects any (depth, planes) combination other than `(2, 1)` with
+/// [`Error::unsupported`]: the 16-colour packed-bits path has its own
+/// typed accessor [`parse_pcx_indexed_4bpp`]; the 8 bpp paletted path
+/// has [`parse_pcx_indexed_8bpp`]; the EGA bit-plane path has
+/// [`parse_pcx_indexed_1bpp_4planes`].
+pub fn parse_pcx_indexed_2bpp_cga(input: &[u8]) -> Result<PcxIndexed2x1Cga> {
+    let (header, scanlines, _vga_palette) = decode_planar_scanlines(input)?;
+    if (header.bits_per_pixel, header.n_planes) != (2, 1) {
+        return Err(Error::unsupported(format!(
+            "PCX: parse_pcx_indexed_2bpp_cga expects 2 bpp × 1 plane, found {} bpp × {} planes",
+            header.bits_per_pixel, header.n_planes
+        )));
+    }
+    let width = header.width() as usize;
+    let height = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+
+    // Unpack each scanline: 2 bpp packs four pixels per byte (top two
+    // bits = pixel 0, then 2/3, 4/5, 6/7) per the spec §4.1 packed-bits
+    // layout. The on-disk row may carry trailing padding bytes beyond
+    // the visible width (spec §1 rounds `bytes_per_line` up to an even
+    // number); the typed view surfaces only the visible pixels so the
+    // caller's index buffer matches `width × height` exactly.
+    let mut indices = Vec::with_capacity(width * height);
+    for row in scanlines.chunks_exact(bpl) {
+        for x in 0..width {
+            let byte = row[x >> 2];
+            let shift = 6 - 2 * (x & 3);
+            indices.push((byte >> shift) & 0b11);
+        }
+    }
+    debug_assert_eq!(indices.len(), width * height);
+
+    // Resolve the 4-entry palette: same dispatch as the canonical
+    // flattener [`unpack_2bpp_1plane_cga`]. `ega_palette[16]` high
+    // nibble = EGA index for palette entry 0 (the "background"
+    // colour); `ega_palette[19]` bits 7/6 = palette select + intensity
+    // per CGA hardware semantics.
+    let palette = cga_palette_from_header(&header.ega_palette);
+    let background_index = (header.ega_palette[16] >> 4) & 0x0F;
+    let selector_bits = header.ega_palette[19] & 0xC0;
+    let palette_source = match selector_bits {
+        0x00 => Pcx2bppCgaPaletteSource::Palette1HighIntensity,
+        0x40 => Pcx2bppCgaPaletteSource::Palette1LowIntensity,
+        0x80 => Pcx2bppCgaPaletteSource::Palette0HighIntensity,
+        0xC0 => Pcx2bppCgaPaletteSource::Palette0LowIntensity,
+        // The match above is exhaustive over the two-bit selector
+        // field, but the compiler can't prove it from `& 0xC0` alone.
+        _ => unreachable!("selector_bits is masked with 0xC0"),
+    };
+
+    Ok(PcxIndexed2x1Cga {
+        width: header.width(),
+        height: header.height(),
+        indices,
+        palette,
+        background_index,
         palette_source,
     })
 }

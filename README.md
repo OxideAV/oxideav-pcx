@@ -440,6 +440,64 @@ assert!(matches!(
 # Ok::<(), oxideav_pcx::PcxError>(())
 ```
 
+## Typed 2 bpp × 1 plane CGA paletted view
+
+[`parse_pcx_indexed_2bpp_cga`] is the typed accessor for the 4-colour CGA
+mode (2 bpp × 1 plane, 4 pixels/byte). PCX repurposes the 48-byte
+`ega_palette` header region for CGA mode: byte 16's high nibble carries
+the EGA index used for palette entry 0 (the CGA "background / border"
+colour), and byte 19 carries the CGA palette selector (bit 7 = palette
+select 0 vs 1, bit 6 = intensity low vs high per CGA hardware
+semantics).
+
+The returned [`PcxIndexed2x1Cga`] surfaces the unpacked `width × height`
+2-bit indices (one byte per pixel, low two bits = palette index
+`0..=3`, top-down, padding stripped) alongside the resolved 4-entry RGB
+palette, the resolved `background_index` (`0..=15`) read from
+`ega_palette[16]`'s high nibble, and a [`Pcx2bppCgaPaletteSource`] tag
+recording which CGA palette family the decoder landed on.
+
+* `Pcx2bppCgaPaletteSource::Palette1HighIntensity` — byte 19 bits 7/6
+  both clear (selector byte 0x00); the most common CGA palette for
+  game screenshots of the era — cyan / magenta / white.
+* `Pcx2bppCgaPaletteSource::Palette1LowIntensity` — selector byte 0x40
+  — dim cyan / dim magenta / light gray.
+* `Pcx2bppCgaPaletteSource::Palette0HighIntensity` — selector byte 0x80
+  — light green / light red / yellow.
+* `Pcx2bppCgaPaletteSource::Palette0LowIntensity` — selector byte 0xC0
+  — green / red / brown.
+
+The [`Pcx2bppCgaPaletteSource::palette_selector`] helper reconstructs
+the byte 19 selector pattern so a round-trip caller can hand the
+surfaced view straight back to `encode_pcx_2bpp_cga` without
+re-deriving the bit positions — a decode → re-encode pass produces a
+byte-identical PCX file.
+
+Useful for round-tripping a 4-colour CGA PCX through
+`encode_pcx_2bpp_cga` without re-quantising the indices, or for
+applying palette-swap operations on the indices directly. Any (depth,
+planes) combination other than `(2, 1)` is rejected with
+`PcxError::Unsupported` — the 16-colour packed-bits path has its own
+typed accessor (`parse_pcx_indexed_4bpp`); the 8 bpp paletted path has
+`parse_pcx_indexed_8bpp`; the EGA bit-plane path has
+`parse_pcx_indexed_1bpp_4planes`.
+
+```rust
+use oxideav_pcx::{parse_pcx_indexed_2bpp_cga, Pcx2bppCgaPaletteSource};
+
+let view = parse_pcx_indexed_2bpp_cga(bytes)?;
+let i = view.indices[0] as usize;
+let [r, g, b] = view.palette[i];
+assert!(matches!(
+    view.palette_source,
+    Pcx2bppCgaPaletteSource::Palette1HighIntensity
+        | Pcx2bppCgaPaletteSource::Palette1LowIntensity
+        | Pcx2bppCgaPaletteSource::Palette0HighIntensity
+        | Pcx2bppCgaPaletteSource::Palette0LowIntensity
+));
+# Ok::<(), oxideav_pcx::PcxError>(())
+```
+
 ## Lacks
 
 * 4 bpp × 4 planes (16-colour planar with finer per-plane depth)

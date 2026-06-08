@@ -9,6 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 257: typed 2 bpp × 1 plane CGA paletted accessor — the fourth
+  paletted typed view, covering the 4-colour CGA mode listed in spec
+  §4.1 (single plane of 2 bpp packed-bits data, 4 pixels/byte, palette
+  selected from `ega_palette` bytes 16 / 19 per CGA hardware semantics).
+  The three pre-r257 typed accessors (`parse_pcx_indexed_8bpp` /
+  `parse_pcx_indexed_4bpp` / `parse_pcx_indexed_1bpp_4planes`) covered
+  every 8 bpp and 16-colour mode; r257 closes the last paletted gap.
+  * New `parse_pcx_indexed_2bpp_cga(input: &[u8]) -> Result<PcxIndexed2x1Cga>`
+    public entry point. The `PcxIndexed2x1Cga` shape mirrors the
+    pre-existing typed views: a `width × height` byte buffer of resolved
+    indices (low two bits = palette index `0..=3`, top-down, padding
+    stripped) plus a resolved 4-entry RGB palette, the resolved
+    `background_index` (`0..=15`) read from `ega_palette[16]`'s high
+    nibble, and a new `Pcx2bppCgaPaletteSource` tag with four arms
+    (`Palette1HighIntensity` / `Palette1LowIntensity` /
+    `Palette0HighIntensity` / `Palette0LowIntensity`) recording which
+    CGA palette family the decoder landed on per `ega_palette[19]` bits
+    7/6.
+  * `Pcx2bppCgaPaletteSource::palette_selector()` helper reconstructs
+    the byte 19 selector pattern (0x00 / 0x40 / 0x80 / 0xC0) so a
+    round-trip caller can hand the typed view straight back into
+    `encode_pcx_2bpp_cga` without re-deriving the bit positions —
+    decode → re-encode produces a byte-identical PCX file across all
+    four palette families (covered by
+    `palette_selector_helper_round_trips_to_byte_identical_output`).
+  * Any (depth, planes) combination other than `(2, 1)` is rejected
+    with `PcxError::Unsupported` — the 16-colour packed-bits path has
+    its own typed accessor `parse_pcx_indexed_4bpp`; the 8 bpp paletted
+    path has `parse_pcx_indexed_8bpp`; the EGA bit-plane path has
+    `parse_pcx_indexed_1bpp_4planes`.
+  * The accessor shares its validation surface with `parse_pcx`
+    (manufacturer byte, version table, encoding byte, dimension
+    underflow, `bytes_per_line < min_bpl` mis-framing, `scanline ×
+    height` overflow, decompression-bomb cap) via the existing
+    `decode_planar_scanlines` factoring established by the r237 / r241
+    / r252 typed accessors.
+  * Six new tests in `tests/round257.rs` validate (i) the round-trip
+    through `encode_pcx_2bpp_cga` for all four CGA palette families ×
+    background indices, (ii) the typed-view-agrees-with-canonical-
+    flattener consistency check across four selectors × three
+    background indices = 12 fixtures, (iii) the `palette_selector`
+    helper round-trips to a byte-identical file across all four
+    families × three backgrounds, (iv) `(8, 1)` / `(8, 3)` / `(1, 1)` /
+    `(4, 1)` / `(1, 4)` rejection paths, (v) per-row padding stripping
+    for a width-13 fixture where `bytes_per_line` is rounded up to even,
+    and (vi) shared validation surface with `parse_pcx` on
+    truncated / bad-manufacturer fixtures.
+
 - Round 252: typed 1 bpp × 4 planes paletted accessor — the third
   16-colour typed view, covering the spec §4.1 EGA bit-plane on-disk
   layout where each scanline carries four 1-bit planes laid out one

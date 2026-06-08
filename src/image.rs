@@ -331,3 +331,111 @@ impl PcxIndexed1x4 {
         self.width as usize
     }
 }
+
+/// Origin of the 4-entry palette resolved by
+/// [`crate::parse_pcx_indexed_2bpp_cga`] for a 2 bpp × 1 plane PCX (the
+/// 4-colour CGA mode described in spec §4.1, packed 4 pixels/byte with
+/// the palette selected from the `ega_palette` header bytes 16 / 19 per
+/// CGA hardware semantics).
+///
+/// PCX repurposes the 48-byte `ega_palette` header region for CGA mode:
+/// byte 16's high nibble holds the EGA index used for palette entry 0
+/// (the "background / border" colour), and byte 19 carries the
+/// CGA palette selector (bit 7 = palette select 0 vs 1, bit 6 =
+/// intensity low vs high). The tag below records which CGA palette
+/// family the decoder landed on, so a re-encode caller can pass the
+/// matching `palette_selector` byte back into
+/// [`crate::encode_pcx_2bpp_cga`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pcx2bppCgaPaletteSource {
+    /// Palette 1, high-intensity (cyan / magenta / white). The decoder
+    /// lands here when `ega_palette[19] & 0xC0 == 0x00` — both palette-
+    /// select and intensity bits are clear. This is the most common CGA
+    /// palette for game screenshots of the era and is what PCX 3.0+
+    /// writers that leave the field at all-zeros effectively request.
+    Palette1HighIntensity,
+    /// Palette 1, low-intensity (dim cyan / dim magenta / light gray).
+    /// `ega_palette[19] & 0xC0 == 0x40`.
+    Palette1LowIntensity,
+    /// Palette 0, high-intensity (light green / light red / yellow).
+    /// `ega_palette[19] & 0xC0 == 0x80`.
+    Palette0HighIntensity,
+    /// Palette 0, low-intensity (green / red / brown).
+    /// `ega_palette[19] & 0xC0 == 0xC0`.
+    Palette0LowIntensity,
+}
+
+impl Pcx2bppCgaPaletteSource {
+    /// Reconstruct the `palette_selector` byte
+    /// [`crate::encode_pcx_2bpp_cga`] expects from the resolved source
+    /// tag, so a round-trip caller can hand it straight back to the
+    /// writer without re-deriving the bit pattern.
+    pub fn palette_selector(self) -> u8 {
+        match self {
+            Self::Palette1HighIntensity => 0x00,
+            Self::Palette1LowIntensity => 0x40,
+            Self::Palette0HighIntensity => 0x80,
+            Self::Palette0LowIntensity => 0xC0,
+        }
+    }
+}
+
+/// Typed 2 bpp × 1 plane CGA paletted view returned by
+/// [`crate::parse_pcx_indexed_2bpp_cga`].
+///
+/// Spec §4.1 describes the 4-colour CGA mode as a single plane of 2 bpp
+/// packed-bits data (4 pixels/byte, the top two bits = pixel 0). The
+/// 4-entry palette is selected from `ega_palette` byte 16 (high nibble
+/// = EGA index for palette entry 0, the "background" colour) and byte
+/// 19 (bits 7/6 = palette select + intensity per CGA hardware
+/// semantics).
+///
+/// The standard [`crate::parse_pcx`] entry point always flattens the
+/// on-disk image to packed `Rgba` by walking the palette per pixel and
+/// dropping the resolved indices. This typed accessor preserves them:
+/// the returned [`PcxIndexed2x1Cga`] surfaces one byte per pixel (low
+/// two bits = palette index `0..=3`, top-down, padding stripped)
+/// alongside the resolved 4-entry RGB palette, the resolved
+/// `background_index` (`0..=15`) used for palette entry 0, and a
+/// [`Pcx2bppCgaPaletteSource`] tag recording which CGA palette family
+/// the decoder landed on.
+///
+/// Useful for round-tripping a 4-colour CGA PCX through
+/// [`crate::encode_pcx_2bpp_cga`] without re-quantising the indices.
+#[derive(Debug, Clone)]
+pub struct PcxIndexed2x1Cga {
+    /// Picture width in pixels (derived from spec §3 `x_max - x_min +
+    /// 1`, matching [`PcxImage::width`]).
+    pub width: u32,
+    /// Picture height in pixels (derived from spec §3 `y_max - y_min +
+    /// 1`, matching [`PcxImage::height`]).
+    pub height: u32,
+    /// `width × height` palette indices, row-major top-down, one byte
+    /// per pixel with the index in the low two bits (`0..=3`). The
+    /// 2-bpp on-disk format packs four pixels per byte (top two bits =
+    /// pixel 0, then 2/3, etc.); this accessor unpacks them to one
+    /// byte per pixel. Per-row padding bytes the encoder added to
+    /// round `bytes_per_line` up to an even number per spec §1 are NOT
+    /// included.
+    pub indices: Vec<u8>,
+    /// 4-entry RGB palette. Entry 0 is the resolved
+    /// [`Self::background_index`] EGA colour; entries 1..=3 come from
+    /// the CGA palette family selected by
+    /// [`Self::palette_source`].
+    pub palette: [[u8; 3]; 4],
+    /// EGA index `0..=15` used for palette entry 0 (the CGA "background
+    /// / border" colour), read from `ega_palette` byte 16's high
+    /// nibble. Round-trips straight back into the
+    /// [`crate::encode_pcx_2bpp_cga`] `background_index` argument.
+    pub background_index: u8,
+    /// Origin of the [`Self::palette`] entries 1..=3 — the CGA palette
+    /// family selected by `ega_palette` byte 19's bits 7/6.
+    pub palette_source: Pcx2bppCgaPaletteSource,
+}
+
+impl PcxIndexed2x1Cga {
+    /// Bytes per row (= `width`, one byte per pixel after unpacking).
+    pub fn stride(&self) -> usize {
+        self.width as usize
+    }
+}
