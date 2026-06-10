@@ -28,9 +28,10 @@
 
 use crate::error::{PcxError as Error, Result};
 use crate::image::{
-    Pcx1bpp3PlanesPaletteSource, Pcx1bpp4PlanesPaletteSource, Pcx2bppCgaPaletteSource,
-    Pcx4bppPaletteSource, PcxImage, PcxIndexed1x3, PcxIndexed1x4, PcxIndexed2x1Cga, PcxIndexed4,
-    PcxIndexed8, PcxPaletteSource, PcxPixelFormat,
+    Pcx1bpp3PlanesPaletteSource, Pcx1bpp4PlanesPaletteSource, Pcx2bppCgaCpi,
+    Pcx2bppCgaPaletteSource, Pcx4bppPaletteSource, PcxImage, PcxIndexed1x3, PcxIndexed1x4,
+    PcxIndexed2x1Cga, PcxIndexed2x1CgaCpi, PcxIndexed4, PcxIndexed8, PcxPaletteSource,
+    PcxPixelFormat,
 };
 use crate::rle;
 use crate::types::*;
@@ -532,6 +533,71 @@ pub fn parse_pcx_indexed_2bpp_cga(input: &[u8]) -> Result<PcxIndexed2x1Cga> {
         palette,
         background_index,
         palette_source,
+    })
+}
+
+/// Decode a 2 bpp × 1 plane CGA PCX into a typed paletted view that
+/// honours all three C / P / I bits of header byte 19 per the verbatim
+/// ZSoft manual ("CGA Color Map").
+///
+/// This is the spec-faithful sibling of [`parse_pcx_indexed_2bpp_cga`].
+/// The older accessor reads only header byte 19 bits 7 / 6 (a
+/// `(palette-select, intensity)` two-bit model), so it cannot represent
+/// the manual's `color burst = monochrome` mode (bit 7 set) nor the
+/// intensity bit the manual places at position 5. This accessor decodes
+/// the full [`Pcx2bppCgaCpi`] triple — `C` (bit 7, color burst), `P`
+/// (bit 6, palette family), `I` (bit 5, intensity) — and resolves the
+/// matching palette, including the four-level composite-grey ramp the
+/// monochrome mode produces.
+///
+/// The returned [`PcxIndexed2x1CgaCpi`] surfaces one byte per pixel (low
+/// two bits = palette index `0..=3`, top-down, padding stripped)
+/// alongside the resolved 4-entry RGB palette, the `background_index`
+/// (`0..=15`) read from header byte 16's high nibble, and the decoded
+/// [`Pcx2bppCgaCpi`] bits. [`Pcx2bppCgaCpi::to_byte19`] reconstructs the
+/// header byte so a round-trip caller can hand the view straight back to
+/// [`crate::encode_pcx_2bpp_cga_cpi`].
+///
+/// Rejects any (depth, planes) combination other than `(2, 1)` with
+/// [`Error::unsupported`].
+pub fn parse_pcx_indexed_2bpp_cga_cpi(input: &[u8]) -> Result<PcxIndexed2x1CgaCpi> {
+    let (header, scanlines, _vga_palette) = decode_planar_scanlines(input)?;
+    if (header.bits_per_pixel, header.n_planes) != (2, 1) {
+        return Err(Error::unsupported(format!(
+            "PCX: parse_pcx_indexed_2bpp_cga_cpi expects 2 bpp × 1 plane, found {} bpp × {} planes",
+            header.bits_per_pixel, header.n_planes
+        )));
+    }
+    let width = header.width() as usize;
+    let height = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+
+    // Unpack each scanline: 2 bpp packs four pixels per byte (top two
+    // bits = pixel 0) per the spec §4.1 packed-bits layout. Trailing
+    // padding beyond the visible width (spec §1 rounds `bytes_per_line`
+    // up to even) is stripped so the index buffer matches `width ×
+    // height` exactly.
+    let mut indices = Vec::with_capacity(width * height);
+    for row in scanlines.chunks_exact(bpl) {
+        for x in 0..width {
+            let byte = row[x >> 2];
+            let shift = 6 - 2 * (x & 3);
+            indices.push((byte >> shift) & 0b11);
+        }
+    }
+    debug_assert_eq!(indices.len(), width * height);
+
+    let cpi = Pcx2bppCgaCpi::from_byte19(header.ega_palette[19]);
+    let palette = cga_palette_from_cpi(&header.ega_palette, cpi);
+    let background_index = (header.ega_palette[16] >> 4) & 0x0F;
+
+    Ok(PcxIndexed2x1CgaCpi {
+        width: header.width(),
+        height: header.height(),
+        indices,
+        palette,
+        background_index,
+        cpi,
     })
 }
 
@@ -1042,6 +1108,74 @@ pub(crate) fn cga_palette_from_header(raw: &[u8; 48]) -> [[u8; 3]; 4] {
         (false, true) => CGA_PALETTE_1_LOW,
         (true, false) => CGA_PALETTE_0_HIGH,
         (true, true) => CGA_PALETTE_0_LOW,
+    };
+    p[0] = EGA_DEFAULT_PALETTE[bg_idx];
+    p
+}
+
+/// Four-level CGA composite-monochrome ramp.
+///
+/// When the CGA color-burst bit is set (header byte 19 bit 7 `C = 1`,
+/// "color burst enable - 1 = monochrome" per the verbatim ZSoft manual,
+/// "CGA Color Map"), the CGA display drives a composite-monochrome signal
+/// rather than the chroma palettes, so the four 2-bit indices map to a
+/// four-level grey ramp. The manual does not tabulate RGB values for this
+/// mode, but the spec's own EGA quantisation table ("EGA/VGA 16-color
+/// palette") defines four signal levels (0 / 1 / 2 / 3); mapping those
+/// four levels onto the byte range gives the evenly-spaced ramp
+/// `0x00 / 0x55 / 0xAA / 0xFF`. The `bright` flavour (intensity bit
+/// `I = 1`) lifts the two darker mid-levels toward white, matching the
+/// dim/bright intensity axis the manual places on bit 5; the `dim`
+/// flavour keeps the even ramp.
+const CGA_MONO_DIM: [[u8; 3]; 4] = [
+    [0x00, 0x00, 0x00],
+    [0x55, 0x55, 0x55],
+    [0xAA, 0xAA, 0xAA],
+    [0xFF, 0xFF, 0xFF],
+];
+const CGA_MONO_BRIGHT: [[u8; 3]; 4] = [
+    [0x00, 0x00, 0x00],
+    [0x80, 0x80, 0x80],
+    [0xD4, 0xD4, 0xD4],
+    [0xFF, 0xFF, 0xFF],
+];
+
+/// Resolve a CGA 4-colour palette from the in-header bytes per the
+/// verbatim ZSoft manual's authoritative byte-19 C / P / I decomposition
+/// ("CGA Color Map", Header Byte #19): bit 7 = `C` (color burst,
+/// 0 = color / 1 = monochrome), bit 6 = `P` (palette, 0 = yellow family /
+/// 1 = white family), bit 5 = `I` (intensity, 0 = dim / 1 = bright).
+///
+/// This is the spec-faithful sibling of [`cga_palette_from_header`],
+/// which reads only bits 7 / 6 and cannot represent the monochrome axis
+/// nor the intensity bit at position 5. Used by the
+/// [`parse_pcx_indexed_2bpp_cga_cpi`] accessor and the
+/// `color burst = monochrome` flatten path.
+///
+/// Palette entry 0 is overridden by the header byte 16 high-nibble
+/// background colour in both the colour and monochrome cases, matching
+/// the legacy resolver and the manual's "background color is determined
+/// in the upper four bits" rule.
+pub(crate) fn cga_palette_from_cpi(
+    raw: &[u8; 48],
+    cpi: crate::image::Pcx2bppCgaCpi,
+) -> [[u8; 3]; 4] {
+    let bg_idx = (raw[16] >> 4) as usize;
+    let mut p = if cpi.monochrome {
+        if cpi.intensity_bright {
+            CGA_MONO_BRIGHT
+        } else {
+            CGA_MONO_DIM
+        }
+    } else {
+        match (cpi.palette_white, cpi.intensity_bright) {
+            // P = 1 (white family) = cyan / magenta / white.
+            (true, true) => CGA_PALETTE_1_HIGH,
+            (true, false) => CGA_PALETTE_1_LOW,
+            // P = 0 (yellow family) = green / red / brown.
+            (false, true) => CGA_PALETTE_0_HIGH,
+            (false, false) => CGA_PALETTE_0_LOW,
+        }
     };
     p[0] = EGA_DEFAULT_PALETTE[bg_idx];
     p

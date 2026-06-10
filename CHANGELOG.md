@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 275: spec-faithful CGA C / P / I selector decode + the
+  color-burst monochrome mode. The verbatim ZSoft PCX Technical Reference
+  Manual, Revision 5 ("CGA Color Map", Header Byte #19) defines the CGA
+  palette byte as three significant bits ordered C, P, I — `C` (bit 7,
+  color burst: 0 = color / 1 = monochrome), `P` (bit 6, palette family),
+  `I` (bit 5, intensity: 0 = dim / 1 = bright). The pre-r275
+  `parse_pcx_indexed_2bpp_cga` accessor reads only bits 7 / 6 and never
+  the intensity bit at position 5, so it could not represent the manual's
+  `color burst = monochrome` mode nor the dim/bright distinction.
+  * New `parse_pcx_indexed_2bpp_cga_cpi(input) -> Result<PcxIndexed2x1CgaCpi>`
+    decode accessor and `encode_pcx_2bpp_cga_cpi(w, h, &indices, cpi, bg)`
+    writer, exchanging a `Pcx2bppCgaCpi { monochrome, palette_white,
+    intensity_bright }` triple (with `from_byte19` / `to_byte19` helpers
+    that mask off the lower five "ignored" bits per the manual).
+  * The monochrome (color-burst) mode resolves a four-level composite-grey
+    ramp derived from the spec's own EGA quantisation table ("EGA/VGA
+    16-color palette", four signal levels), in dim and bright flavours;
+    entry 0 is still overridden by the header byte 16 background nibble.
+    Round-trips byte-for-byte through the new writer.
+  * The legacy `parse_pcx_indexed_2bpp_cga` accessor, `parse_pcx`'s `(2, 1)`
+    flatten path, and the `encode_pcx_2bpp_cga` writer are unchanged — the
+    new C / P / I pair is strictly additive.
+
 - Round 267: typed 1 bpp × 3 planes 8-colour EGA RGB paletted accessor —
   the fifth (and final) paletted typed view, covering the 8-colour EGA
   RGB mode described in spec §4 (each scanline carries three 1-bit planes

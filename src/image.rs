@@ -440,6 +440,105 @@ impl PcxIndexed2x1Cga {
     }
 }
 
+/// The three significant bits of the CGA palette byte (header byte 19 /
+/// `ega_palette[19]`) decoded per the verbatim ZSoft PCX Technical
+/// Reference Manual, Revision 5 ("CGA Color Map", Header Byte #19):
+///
+/// > Only upper 3 bits are used, lower 5 bits are ignored. The first
+/// > three bits that are used are ordered C, P, I.
+/// > * c: color burst enable — 0 = color; 1 = monochrome
+/// > * p: palette — 0 = yellow; 1 = white
+/// > * i: intensity — 0 = dim; 1 = bright
+///
+/// `C` is bit 7 (`0x80`), `P` is bit 6 (`0x40`), `I` is bit 5 (`0x20`).
+///
+/// This is the spec's authoritative three-bit decomposition surfaced by
+/// [`crate::parse_pcx_indexed_2bpp_cga_cpi`]. It is the full
+/// degree-of-freedom set the manual defines: the legacy
+/// [`Pcx2bppCgaPaletteSource`] tag returned by the older
+/// [`crate::parse_pcx_indexed_2bpp_cga`] accessor reads only bits 7 / 6
+/// and never the intensity bit at position 5, so it cannot represent the
+/// `color burst = monochrome` axis nor the dim/bright distinction the
+/// manual places on bit 5. This typed view exists to carry all three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pcx2bppCgaCpi {
+    /// Color-burst bit (`C`, header byte 19 bit 7). `false` = color (the
+    /// chroma palettes), `true` = monochrome (the composite-grey ramp).
+    pub monochrome: bool,
+    /// Palette bit (`P`, header byte 19 bit 6). In the spec's wording
+    /// `false` = "yellow" family (green / red / brown), `true` = "white"
+    /// family (cyan / magenta / white). Ignored when [`Self::monochrome`]
+    /// is set (the monochrome ramp carries no chroma palette).
+    pub palette_white: bool,
+    /// Intensity bit (`I`, header byte 19 bit 5). `false` = dim, `true` =
+    /// bright. Applies to both the chroma palettes and the monochrome
+    /// ramp.
+    pub intensity_bright: bool,
+}
+
+impl Pcx2bppCgaCpi {
+    /// Decode the C / P / I bits from a raw header byte 19 value, masking
+    /// off the lower five bits the manual says are ignored.
+    pub fn from_byte19(byte19: u8) -> Self {
+        Self {
+            monochrome: byte19 & 0x80 != 0,
+            palette_white: byte19 & 0x40 != 0,
+            intensity_bright: byte19 & 0x20 != 0,
+        }
+    }
+
+    /// Reconstruct the header byte 19 value (upper three C / P / I bits
+    /// set, lower five zero) so a re-encode caller can hand the surfaced
+    /// view straight back to [`crate::encode_pcx_2bpp_cga_cpi`] without
+    /// re-deriving the bit positions.
+    pub fn to_byte19(self) -> u8 {
+        (u8::from(self.monochrome) << 7)
+            | (u8::from(self.palette_white) << 6)
+            | (u8::from(self.intensity_bright) << 5)
+    }
+}
+
+/// Typed 2 bpp × 1 plane CGA paletted view returned by
+/// [`crate::parse_pcx_indexed_2bpp_cga_cpi`] — the spec-faithful sibling
+/// of [`PcxIndexed2x1Cga`] that decodes all three C / P / I bits of
+/// header byte 19 per the verbatim ZSoft manual ("CGA Color Map").
+///
+/// The older [`crate::parse_pcx_indexed_2bpp_cga`] accessor reads only
+/// header byte 19 bits 7 / 6, so it cannot represent the manual's
+/// `color burst = monochrome` mode (bit 7 set) nor the intensity bit the
+/// manual places at position 5. This view carries the full
+/// [`Pcx2bppCgaCpi`] decomposition and resolves the matching palette,
+/// including the four-level composite-grey ramp the monochrome mode
+/// produces.
+#[derive(Debug, Clone)]
+pub struct PcxIndexed2x1CgaCpi {
+    /// Picture width in pixels.
+    pub width: u32,
+    /// Picture height in pixels.
+    pub height: u32,
+    /// `width × height` palette indices, row-major top-down, one byte per
+    /// pixel with the index in the low two bits (`0..=3`). Per-row padding
+    /// bytes are stripped.
+    pub indices: Vec<u8>,
+    /// 4-entry resolved RGB palette. Entry 0 is the resolved
+    /// [`Self::background_index`] EGA colour; entries 1..=3 come from the
+    /// CGA palette family (or composite-grey ramp) the C / P / I bits
+    /// select.
+    pub palette: [[u8; 3]; 4],
+    /// EGA index `0..=15` used for palette entry 0, read from header byte
+    /// 16's high nibble.
+    pub background_index: u8,
+    /// The decoded C / P / I bits of header byte 19.
+    pub cpi: Pcx2bppCgaCpi,
+}
+
+impl PcxIndexed2x1CgaCpi {
+    /// Bytes per row (= `width`, one byte per pixel after unpacking).
+    pub fn stride(&self) -> usize {
+        self.width as usize
+    }
+}
+
 /// Origin of the 8-entry palette resolved by
 /// [`crate::parse_pcx_indexed_1bpp_3planes`] for a 1 bpp × 3 planes PCX
 /// (the 8-colour EGA RGB bit-plane mode described in spec §4 — one 1-bit

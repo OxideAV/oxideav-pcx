@@ -35,7 +35,7 @@
 //! decoder won't mistake it for a run header.
 
 use crate::error::{PcxError as Error, Result};
-use crate::image::{PcxImage, PcxPixelFormat};
+use crate::image::{Pcx2bppCgaCpi, PcxImage, PcxPixelFormat};
 use crate::rle;
 use crate::types::*;
 
@@ -646,6 +646,65 @@ pub fn encode_pcx_2bpp_cga(
     let mut ega = [0u8; 48];
     ega[16] = background_index << 4;
     ega[19] = palette_selector;
+    let mut out = Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * height as usize);
+    write_header_with_palette(&mut out, width, height, 2, 1, bytes_per_line, &ega);
+    let mut row = vec![0u8; bytes_per_line as usize];
+    for y in 0..height as usize {
+        for v in row.iter_mut() {
+            *v = 0;
+        }
+        for x in 0..width as usize {
+            let v = indices[y * width as usize + x] & 0b11;
+            let byte_off = x / 4;
+            let pix_in_byte = x % 4;
+            let shift = 6 - 2 * pix_in_byte;
+            row[byte_off] |= v << shift;
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
+/// Encode `width × height` 2-bit-index pixels (low 2 bits = palette
+/// index 0..3, row-major, top-down) into a PCX 5.0 2 bpp CGA file,
+/// stamping the full C / P / I selector triple into header byte 19 per
+/// the verbatim ZSoft manual ("CGA Color Map").
+///
+/// This is the spec-faithful sibling of [`encode_pcx_2bpp_cga`]. Where
+/// that writer takes a raw two-bit (bits 7 / 6) `palette_selector` byte,
+/// this one takes a [`Pcx2bppCgaCpi`] and writes all three significant
+/// bits: `C` (bit 7, color burst — set for the monochrome composite-grey
+/// ramp), `P` (bit 6, palette family), `I` (bit 5, intensity). The
+/// resulting file round-trips through
+/// [`crate::parse_pcx_indexed_2bpp_cga_cpi`] with the same C / P / I
+/// bits and resolved palette.
+///
+/// `background_index` is the EGA index used for palette entry 0 (header
+/// byte 16 high nibble).
+pub fn encode_pcx_2bpp_cga_cpi(
+    width: u16,
+    height: u16,
+    indices: &[u8],
+    cpi: Pcx2bppCgaCpi,
+    background_index: u8,
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if indices.len() < width as usize * height as usize {
+        return Err(Error::invalid(
+            "PCX encoder: 2bpp input shorter than width × height",
+        ));
+    }
+    if background_index > 0x0F {
+        return Err(Error::invalid(format!(
+            "PCX encoder: CGA background_index must be 0..15, got {background_index}"
+        )));
+    }
+    let bytes_per_line = round_up_to_even(width.div_ceil(4));
+    let mut ega = [0u8; 48];
+    ega[16] = background_index << 4;
+    ega[19] = cpi.to_byte19();
     let mut out = Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * height as usize);
     write_header_with_palette(&mut out, width, height, 2, 1, bytes_per_line, &ega);
     let mut row = vec![0u8; bytes_per_line as usize];

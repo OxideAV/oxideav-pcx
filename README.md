@@ -498,6 +498,40 @@ assert!(matches!(
 # Ok::<(), oxideav_pcx::PcxError>(())
 ```
 
+### Spec-faithful CGA C / P / I selector (`parse_pcx_indexed_2bpp_cga_cpi`)
+
+The [`Pcx2bppCgaPaletteSource`] accessor above reads only the top two bits
+of header byte 19. The verbatim ZSoft manual ("CGA Color Map", Header Byte
+#19) actually defines **three** significant bits ordered **C, P, I**:
+
+* **C** — bit 7 — color burst enable: `0` = color, `1` = monochrome.
+* **P** — bit 6 — palette: `0` = yellow family (green / red / brown),
+  `1` = white family (cyan / magenta / white).
+* **I** — bit 5 — intensity: `0` = dim, `1` = bright.
+
+[`parse_pcx_indexed_2bpp_cga_cpi`] decodes all three into a
+[`Pcx2bppCgaCpi`] (`from_byte19` / `to_byte19` mask off the lower five
+"ignored" bits per the manual) and resolves the matching palette. The
+**color-burst monochrome** mode (`C = 1`) — which the two-bit accessor
+cannot represent — resolves a four-level composite-grey ramp derived from
+the spec's own EGA quantisation table (the four signal levels in
+"EGA/VGA 16-color palette"), in dim and bright flavours; palette entry 0
+is still overridden by the header byte 16 background nibble. The matching
+[`encode_pcx_2bpp_cga_cpi`] writer round-trips every C / P / I combination
+byte-for-byte. The legacy [`parse_pcx_indexed_2bpp_cga`] /
+[`encode_pcx_2bpp_cga`] pair and `parse_pcx`'s `(2, 1)` flatten path are
+unchanged — the C / P / I pair is strictly additive.
+
+```rust
+use oxideav_pcx::{encode_pcx_2bpp_cga_cpi, parse_pcx_indexed_2bpp_cga_cpi, Pcx2bppCgaCpi};
+
+let cpi = Pcx2bppCgaCpi { monochrome: true, palette_white: false, intensity_bright: true };
+let pcx = encode_pcx_2bpp_cga_cpi(8, 4, &[0u8; 8 * 4], cpi, 0)?;
+let view = parse_pcx_indexed_2bpp_cga_cpi(&pcx)?;
+assert_eq!(view.cpi, cpi);
+# Ok::<(), oxideav_pcx::PcxError>(())
+```
+
 ## Typed 1 bpp × 3 planes 8-colour EGA RGB view
 
 [`parse_pcx_indexed_1bpp_3planes`] is the fifth (and final) paletted typed
