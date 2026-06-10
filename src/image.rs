@@ -439,3 +439,87 @@ impl PcxIndexed2x1Cga {
         self.width as usize
     }
 }
+
+/// Origin of the 8-entry palette resolved by
+/// [`crate::parse_pcx_indexed_1bpp_3planes`] for a 1 bpp × 3 planes PCX
+/// (the 8-colour EGA RGB bit-plane mode described in spec §4 — one 1-bit
+/// plane per primary, plane order R, G, B).
+///
+/// Unlike the 16-colour EGA / 256-colour VGA / CGA modes — which read a
+/// palette out of the header `ega_palette` field or a VGA tail block —
+/// the 8-colour RGB mode carries *no* on-disk palette at all. Each of
+/// the three plane bits directly toggles its channel between `0x00` and
+/// `0xFF`, so the eight colours are the on/off primary combinations
+/// enumerated by the plane bits themselves (per the spec §4 bit-plane
+/// example). This enum therefore has a single arm; it exists to keep the
+/// typed-view API symmetric with the other paletted accessors (each of
+/// which carries a `*PaletteSource` tag) and to document the
+/// no-header-palette property explicitly rather than leaving it implicit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pcx1bpp3PlanesPaletteSource {
+    /// The 8-entry palette is the fixed set of on/off RGB primaries
+    /// (`bit 0 = R`, `bit 1 = G`, `bit 2 = B`, each channel either
+    /// `0x00` or `0xFF`). No header `ega_palette` field or VGA tail
+    /// block is consulted — the spec §4 8-colour RGB mode defines the
+    /// colours intrinsically from the plane bits.
+    FixedPrimaries,
+}
+
+/// Typed 1 bpp × 3 planes paletted view returned by
+/// [`crate::parse_pcx_indexed_1bpp_3planes`].
+///
+/// Spec §4 describes the 8-colour EGA RGB mode where each scanline
+/// carries three 1-bit planes laid out one after another within the row
+/// (plane 0 = R, plane 1 = G, plane 2 = B — the same plane order
+/// [`crate::encode_pcx_1bpp_3planes_ega_rgb`] writes). The three bits at
+/// the same x-position across the three planes stack into a 3-bit colour
+/// index (`r_bit | g_bit << 1 | b_bit << 2`), and each plane bit toggles
+/// its channel between `0x00` and `0xFF`.
+///
+/// The standard [`crate::parse_pcx`] entry point always materialises an
+/// `Rgba` buffer by toggling each channel per plane bit and dropping the
+/// resolved index. This typed accessor preserves the index: the returned
+/// [`PcxIndexed1x3`] carries one byte per pixel (low three bits = colour
+/// index `0..=7`, top-down, padding stripped) alongside the fixed
+/// 8-entry RGB palette and a [`Pcx1bpp3PlanesPaletteSource`] tag.
+///
+/// Useful for round-tripping an 8-colour EGA RGB PCX through
+/// [`crate::encode_pcx_1bpp_3planes_ega_rgb`] without re-thresholding, or
+/// for applying colour-swap operations on the indices directly. This is
+/// the fifth paletted typed view, closing the EGA/CGA/VGA paletted-mode
+/// series alongside [`PcxIndexed8`] (8 bpp), [`PcxIndexed4`] (4 bpp),
+/// [`PcxIndexed1x4`] (1 bpp × 4 planes), and [`PcxIndexed2x1Cga`]
+/// (2 bpp CGA).
+#[derive(Debug, Clone)]
+pub struct PcxIndexed1x3 {
+    /// Picture width in pixels (derived from spec §3 `x_max - x_min +
+    /// 1`, matching [`PcxImage::width`]).
+    pub width: u32,
+    /// Picture height in pixels (derived from spec §3 `y_max - y_min +
+    /// 1`, matching [`PcxImage::height`]).
+    pub height: u32,
+    /// `width × height` colour indices, row-major top-down, one byte
+    /// per pixel with the index in the low three bits (`0..=7`). The
+    /// 1 bpp × 3 planes on-disk format stacks the same x-position bit
+    /// from each of the three planes into a 3-bit value (`r | g << 1 |
+    /// b << 2`); this accessor pre-resolves that stacking so the caller
+    /// receives one index per pixel. Per-row padding bits beyond `width`
+    /// (spec §1 rounds `bytes_per_line` up to an even number) are NOT
+    /// included.
+    pub indices: Vec<u8>,
+    /// Fixed 8-entry RGB palette of on/off primaries. Entry `i` is
+    /// `[0xFF if i & 1, 0xFF if i & 2, 0xFF if i & 4]` — the colour the
+    /// matching 3-bit plane index resolves to. The source is always
+    /// [`Pcx1bpp3PlanesPaletteSource::FixedPrimaries`].
+    pub palette: [[u8; 3]; 8],
+    /// Origin of the [`Self::palette`] entries — always
+    /// [`Pcx1bpp3PlanesPaletteSource::FixedPrimaries`] for this mode.
+    pub palette_source: Pcx1bpp3PlanesPaletteSource,
+}
+
+impl PcxIndexed1x3 {
+    /// Bytes per row (= `width`, one byte per pixel after unpacking).
+    pub fn stride(&self) -> usize {
+        self.width as usize
+    }
+}

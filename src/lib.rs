@@ -146,6 +146,19 @@
 //! straight back to [`encode_pcx_2bpp_cga`] without re-deriving the
 //! bit positions.
 //!
+//! [`parse_pcx_indexed_1bpp_3planes`] is the fifth (and final) paletted
+//! typed view — covering the 8-colour EGA RGB mode described in spec §4
+//! where each scanline carries three 1-bit planes (plane order R, G, B,
+//! the same order [`encode_pcx_1bpp_3planes_ega_rgb`] writes). The three
+//! bits at the same x-position stack into a 3-bit colour index
+//! (`r | g << 1 | b << 2`). It returns a [`PcxIndexed1x3`] carrying one
+//! byte per pixel (low three bits = colour index `0..=7`, top-down,
+//! padding stripped) alongside the fixed 8-entry on/off-primary RGB
+//! palette + a [`Pcx1bpp3PlanesPaletteSource`] tag. Unlike the other
+//! paletted modes this carries no on-disk palette — the eight colours
+//! are intrinsic to the plane bits — so the source tag has a single
+//! [`Pcx1bpp3PlanesPaletteSource::FixedPrimaries`] arm.
+//!
 //! ## DCX multi-page bundles
 //!
 //! [`parse_dcx`] / [`encode_dcx`] handle the Microsoft FAX multi-page
@@ -194,8 +207,8 @@ pub const CODEC_ID_STR: &str = "pcx";
 
 pub use dcx::{encode_dcx, parse_dcx, DcxImage, DCX_MAGIC, DCX_MAX_PAGES};
 pub use decoder::{
-    parse_pcx, parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_4bpp,
-    parse_pcx_indexed_8bpp,
+    parse_pcx, parse_pcx_indexed_1bpp_3planes, parse_pcx_indexed_1bpp_4planes,
+    parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_4bpp, parse_pcx_indexed_8bpp,
 };
 pub use encoder::{
     encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono,
@@ -207,8 +220,9 @@ pub use encoder::{
 };
 pub use error::{PcxError, Result};
 pub use image::{
-    Pcx1bpp4PlanesPaletteSource, Pcx2bppCgaPaletteSource, Pcx4bppPaletteSource, PcxImage,
-    PcxIndexed1x4, PcxIndexed2x1Cga, PcxIndexed4, PcxIndexed8, PcxPaletteSource, PcxPixelFormat,
+    Pcx1bpp3PlanesPaletteSource, Pcx1bpp4PlanesPaletteSource, Pcx2bppCgaPaletteSource,
+    Pcx4bppPaletteSource, PcxImage, PcxIndexed1x3, PcxIndexed1x4, PcxIndexed2x1Cga, PcxIndexed4,
+    PcxIndexed8, PcxPaletteSource, PcxPixelFormat,
 };
 pub use types::{
     find_vga_palette, parse_header, PcxHeader, PCX_ENCODING_RLE, PCX_HEADER_SIZE, PCX_MANUFACTURER,

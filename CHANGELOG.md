@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 267: typed 1 bpp × 3 planes 8-colour EGA RGB paletted accessor —
+  the fifth (and final) paletted typed view, covering the 8-colour EGA
+  RGB mode described in spec §4 (each scanline carries three 1-bit planes
+  laid out one after another within the row, plane order R, G, B). The
+  four pre-r267 typed accessors (`parse_pcx_indexed_8bpp` /
+  `parse_pcx_indexed_4bpp` / `parse_pcx_indexed_1bpp_4planes` /
+  `parse_pcx_indexed_2bpp_cga`) covered every 8 bpp / 16-colour / CGA
+  mode; r267 closes the last paletted gap (8-colour RGB).
+  * New `parse_pcx_indexed_1bpp_3planes(input: &[u8]) -> Result<PcxIndexed1x3>`
+    public entry point. The `PcxIndexed1x3` shape mirrors the pre-existing
+    typed views: a `width × height` byte buffer of resolved colour indices
+    (low three bits = colour index `0..=7` in the order `r | g << 1 | b
+    << 2`, top-down, padding stripped) plus the fixed 8-entry on/off-
+    primary RGB palette and a new `Pcx1bpp3PlanesPaletteSource` tag.
+  * Unlike the 16-colour EGA / 256-colour VGA / CGA modes — which read a
+    palette out of the header `ega_palette` field or a VGA tail block —
+    the 8-colour RGB mode carries no on-disk palette: each plane bit
+    directly toggles its channel between `0x00` and `0xFF`, so the eight
+    colours are intrinsic to the plane bits (spec §4 bit-plane example).
+    `Pcx1bpp3PlanesPaletteSource` therefore has a single `FixedPrimaries`
+    arm — present for API symmetry with the other `*PaletteSource` tags
+    and to document the no-header-palette property explicitly.
+  * The typed view is a strict rearrangement (NOT a divergence) of the
+    canonical `parse_pcx` RGBA flattener: flattening the surfaced indices
+    through the surfaced palette reproduces the exact bytes `parse_pcx`
+    emits (covered by `typed_view_agrees_with_canonical_flattener`). A
+    decode → re-encode pass through `encode_pcx_1bpp_3planes_ega_rgb`
+    round-trips byte-exactly when the source is already on the
+    `{0x00, 0xFF}` channel cut.
+  * Any (depth, planes) combination other than `(1, 3)` is rejected with
+    `PcxError::Unsupported` (covered by `rejects_non_1bpp_3planes_inputs`
+    against the 24-bit / mono / grayscale / 4 bpp / 1 bpp × 4 planes /
+    2 bpp CGA modes). Per-row padding for non-byte-aligned widths is
+    stripped (`strips_per_row_padding_for_non_byte_aligned_width`), and
+    the accessor shares `parse_pcx`'s validation surface
+    (`shares_validation_surface_with_parse_pcx`).
+  * Six-test `tests/round267.rs` harness.
+
 - Round 257: typed 2 bpp × 1 plane CGA paletted accessor — the fourth
   paletted typed view, covering the 4-colour CGA mode listed in spec
   §4.1 (single plane of 2 bpp packed-bits data, 4 pixels/byte, palette

@@ -28,8 +28,9 @@
 
 use crate::error::{PcxError as Error, Result};
 use crate::image::{
-    Pcx1bpp4PlanesPaletteSource, Pcx2bppCgaPaletteSource, Pcx4bppPaletteSource, PcxImage,
-    PcxIndexed1x4, PcxIndexed2x1Cga, PcxIndexed4, PcxIndexed8, PcxPaletteSource, PcxPixelFormat,
+    Pcx1bpp3PlanesPaletteSource, Pcx1bpp4PlanesPaletteSource, Pcx2bppCgaPaletteSource,
+    Pcx4bppPaletteSource, PcxImage, PcxIndexed1x3, PcxIndexed1x4, PcxIndexed2x1Cga, PcxIndexed4,
+    PcxIndexed8, PcxPaletteSource, PcxPixelFormat,
 };
 use crate::rle;
 use crate::types::*;
@@ -533,6 +534,99 @@ pub fn parse_pcx_indexed_2bpp_cga(input: &[u8]) -> Result<PcxIndexed2x1Cga> {
         palette_source,
     })
 }
+
+/// Decode a 1 bpp × 3 planes PCX into a typed paletted view (8-colour
+/// EGA RGB indices + the fixed 8-entry on/off-primary palette).
+///
+/// The standard [`parse_pcx`] entry point always flattens the on-disk
+/// image to packed `Rgba` by toggling each channel per plane bit and
+/// dropping the resolved colour index. This typed accessor preserves it
+/// for the 8-colour EGA RGB mode described in spec §4 (each scanline
+/// carries three 1-bit planes laid out one after another within the row,
+/// plane order R, G, B — the same order
+/// [`crate::encode_pcx_1bpp_3planes_ega_rgb`] writes). The three bits at
+/// the same x-position stack into a 3-bit index (`r | g << 1 | b << 2`).
+///
+/// The returned [`PcxIndexed1x3`] surfaces one byte per pixel (low three
+/// bits = colour index `0..=7`, top-down, padding stripped) alongside
+/// the fixed 8-entry RGB palette and a [`Pcx1bpp3PlanesPaletteSource`]
+/// tag. Unlike the other paletted accessors, this mode carries no
+/// on-disk palette — the eight colours are the on/off primaries
+/// enumerated by the plane bits themselves, so the source tag has a
+/// single [`Pcx1bpp3PlanesPaletteSource::FixedPrimaries`] arm.
+///
+/// Useful for round-tripping an 8-colour EGA RGB PCX through
+/// [`crate::encode_pcx_1bpp_3planes_ega_rgb`] without re-thresholding,
+/// or for applying colour-swap operations on the indices directly.
+///
+/// Rejects any (depth, planes) combination other than `(1, 3)` with
+/// [`Error::unsupported`]: the 16-colour bit-plane path has its own
+/// typed accessor [`parse_pcx_indexed_1bpp_4planes`]; the 8 bpp paletted
+/// path has [`parse_pcx_indexed_8bpp`]; the 4 bpp path has
+/// [`parse_pcx_indexed_4bpp`]; the CGA path has
+/// [`parse_pcx_indexed_2bpp_cga`].
+pub fn parse_pcx_indexed_1bpp_3planes(input: &[u8]) -> Result<PcxIndexed1x3> {
+    let (header, scanlines, _vga_palette) = decode_planar_scanlines(input)?;
+    if (header.bits_per_pixel, header.n_planes) != (1, 3) {
+        return Err(Error::unsupported(format!(
+            "PCX: parse_pcx_indexed_1bpp_3planes expects 1 bpp × 3 planes, found {} bpp × {} planes",
+            header.bits_per_pixel, header.n_planes
+        )));
+    }
+    let width = header.width() as usize;
+    let height = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+
+    // For each scanline read three `bpl`-byte plane slices in order
+    // (plane 0 = R, plane 1 = G, plane 2 = B). Per spec §4 the bit at
+    // x-position `(x>>3, 7 - (x&7))` of each plane contributes one bit to
+    // the 3-bit colour index in the order `r | g << 1 | b << 2`; the
+    // stack order matches the canonical RGBA flattener
+    // `unpack_1bpp_3planes` so the typed view never diverges from the
+    // byte stream `parse_pcx` produces. The on-disk row may carry
+    // trailing padding bits beyond the visible width (spec §1 rounds
+    // `bytes_per_line` up to an even number); the typed view surfaces
+    // only the visible pixels.
+    let mut indices = Vec::with_capacity(width * height);
+    for row in scanlines.chunks_exact(bpl * 3) {
+        let (rp, rest) = row.split_at(bpl);
+        let (gp, bp) = rest.split_at(bpl);
+        for x in 0..width {
+            let byte = x >> 3;
+            let shift = 7 - (x & 7);
+            let idx = ((rp[byte] >> shift) & 1)
+                | (((gp[byte] >> shift) & 1) << 1)
+                | (((bp[byte] >> shift) & 1) << 2);
+            indices.push(idx);
+        }
+    }
+    debug_assert_eq!(indices.len(), width * height);
+
+    Ok(PcxIndexed1x3 {
+        width: header.width(),
+        height: header.height(),
+        indices,
+        palette: RGB_PRIMARIES_PALETTE,
+        palette_source: Pcx1bpp3PlanesPaletteSource::FixedPrimaries,
+    })
+}
+
+/// The fixed 8-entry RGB palette of on/off primaries the 1 bpp × 3
+/// planes 8-colour EGA RGB mode resolves to (spec §4 bit-plane example).
+/// Entry `i` has channel `c` set to `0xFF` iff the matching plane bit is
+/// set: `r = i & 1`, `g = i & 2`, `b = i & 4`. Matches the per-pixel
+/// `0x00` / `0xFF` toggling in [`unpack_1bpp_3planes`] so the typed view
+/// flattens to byte-identical RGBA.
+const RGB_PRIMARIES_PALETTE: [[u8; 3]; 8] = [
+    [0x00, 0x00, 0x00], // 0: black
+    [0xFF, 0x00, 0x00], // 1: red
+    [0x00, 0xFF, 0x00], // 2: green
+    [0xFF, 0xFF, 0x00], // 3: yellow
+    [0x00, 0x00, 0xFF], // 4: blue
+    [0xFF, 0x00, 0xFF], // 5: magenta
+    [0x00, 0xFF, 0xFF], // 6: cyan
+    [0xFF, 0xFF, 0xFF], // 7: white
+];
 
 fn grayscale_palette_256() -> [[u8; 3]; 256] {
     let mut out = [[0u8; 3]; 256];

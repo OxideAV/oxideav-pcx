@@ -498,6 +498,43 @@ assert!(matches!(
 # Ok::<(), oxideav_pcx::PcxError>(())
 ```
 
+## Typed 1 bpp × 3 planes 8-colour EGA RGB view
+
+[`parse_pcx_indexed_1bpp_3planes`] is the fifth (and final) paletted typed
+accessor — covering the 8-colour EGA RGB mode described in spec §4 where
+each scanline carries three 1-bit planes laid out one after another within
+the row (plane 0 = R, plane 1 = G, plane 2 = B — the same plane order
+`encode_pcx_1bpp_3planes_ega_rgb` writes). The three bits at the same
+x-position stack into a 3-bit colour index (`r | g << 1 | b << 2`), and
+each plane bit toggles its channel between `0x00` and `0xFF`.
+
+Unlike the other paletted modes, this carries **no on-disk palette** — the
+eight colours are the on/off primary combinations enumerated by the plane
+bits themselves, so the [`Pcx1bpp3PlanesPaletteSource`] tag has a single
+`FixedPrimaries` arm (present for API symmetry + to document the
+no-header-palette property explicitly). The returned [`PcxIndexed1x3`]
+carries the unpacked `width × height` colour indices (one byte per pixel,
+low three bits = colour index `0..=7`, top-down, padding stripped)
+alongside the fixed 8-entry RGB palette.
+
+Useful for round-tripping an 8-colour EGA RGB PCX through
+`encode_pcx_1bpp_3planes_ega_rgb` without re-thresholding, or for applying
+colour-swap operations on the indices directly. Any (depth, planes)
+combination other than `(1, 3)` is rejected with `PcxError::Unsupported`.
+
+```rust
+use oxideav_pcx::{parse_pcx_indexed_1bpp_3planes, Pcx1bpp3PlanesPaletteSource};
+
+let view = parse_pcx_indexed_1bpp_3planes(bytes)?;
+let i = view.indices[0] as usize;
+let [r, g, b] = view.palette[i];
+assert!(matches!(
+    view.palette_source,
+    Pcx1bpp3PlanesPaletteSource::FixedPrimaries
+));
+# Ok::<(), oxideav_pcx::PcxError>(())
+```
+
 ## Lacks
 
 * 4 bpp × 4 planes (16-colour planar with finer per-plane depth)
