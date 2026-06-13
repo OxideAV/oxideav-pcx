@@ -160,6 +160,15 @@ cargo bench -p oxideav-pcx --bench encode
 cargo bench -p oxideav-pcx --bench roundtrip
 ```
 
+Round 286 (depth-mode benchmark) added a **phase-split** probe to the
+`decode` harness (`decode_phase_rle_*`, timing the RLE-decode phase in
+isolation via the `#[doc(hidden)]` `__bench_decode_planar_len`) and
+captured the full ranked baseline in
+[`BENCHMARKS.md`](BENCHMARKS.md). The split shows the spec §3.2
+run-length codec (`rle::decode`) is ~95% of 24bpp decode time while
+per-plane assembly is already cheap (post-r209), naming `rle::decode`
+the next profile-optimisation target.
+
 Round 209 (depth-mode profile / optimisation) reworked the six planar
 unpack hot paths in `src/decoder.rs` against the r197 baseline. Single
 threaded apple-silicon medians (3 s measurement / 30 samples / fresh

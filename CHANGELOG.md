@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 286 (depth-mode benchmark): a phase-split probe in the `decode`
+  Criterion harness plus a ranked-hotspot `BENCHMARKS.md`.
+  * New `decode_phase_rle_24bpp_640x480` / `decode_phase_rle_8bpp_grayscale_512x512`
+    benches call a new `#[doc(hidden)]` `__bench_decode_planar_len`
+    accessor that runs only the header-validation + RLE-decode phase
+    (`decode_planar_scanlines`) — the exact code the production decoder
+    calls, returning just the planar-buffer byte count so the public
+    type surface is unchanged. Timing it next to the full `parse_pcx`
+    attributes decode cost to each phase (RLE-decode vs per-plane
+    assembly). `src/` decode/encode output bytes are byte-identical to
+    the pre-r286 tree.
+  * `BENCHMARKS.md`: the full r286 baseline (decode / encode /
+    roundtrip across every (depth, planes) layout + DCX) and a ranked
+    hotspot table. Finding: the spec §3.2 RLE codec (`rle::decode`) is
+    ~95% of 24bpp decode time while per-plane assembly is already cheap
+    post-r209 — `rle::decode` is named the next profile-optimisation
+    target, with `encode_1bpp_4planes_ega` the close secondary.
+
 - Round 275: spec-faithful CGA C / P / I selector decode + the
   color-burst monochrome mode. The verbatim ZSoft PCX Technical Reference
   Manual, Revision 5 ("CGA Color Map", Header Byte #19) defines the CGA

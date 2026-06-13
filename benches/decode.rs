@@ -57,8 +57,8 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
 use oxideav_pcx::{
-    encode_dcx, encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono, encode_pcx_24bpp,
-    encode_pcx_2bpp_cga, encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale,
+    __bench_decode_planar_len, encode_dcx, encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono,
+    encode_pcx_24bpp, encode_pcx_2bpp_cga, encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale,
     encode_pcx_8bpp_indexed, parse_dcx, parse_pcx,
 };
 
@@ -312,8 +312,47 @@ fn bench_decode_dcx_4_pages_320x240(c: &mut Criterion) {
     g.finish();
 }
 
+// --- Phase-split probes -------------------------------------------------
+//
+// `parse_pcx` is two sequential phases: (1) header-validation + RLE
+// byte-stream decode into the planar scanline buffer, and (2) per-plane
+// assembly of that buffer into packed RGBA. `__bench_decode_planar_len`
+// runs only phase (1) (the exact `decode_planar_scanlines` the
+// production decoder calls), so timing it next to the full `parse_pcx`
+// on the same input attributes the cost to each phase: the assembly cost
+// is (full parse − planar decode). These two scenarios bound the split
+// for the two extremes — 24 bpp × 3 planes (heaviest assembly: planar→
+// packed re-pack across three planes) and 8 bpp grayscale × 1 plane
+// (lightest assembly: a direct (g,g,g,0xFF) blit).
+
+fn bench_decode_phase_rle_24bpp_640x480(c: &mut Criterion) {
+    let rgb = build_rgb(640, 480);
+    let bytes = encode_pcx_24bpp(640, 480, &rgb).expect("encode_pcx_24bpp");
+    let mut g = c.benchmark_group("decode_phase_rle_24bpp_640x480");
+    // Planar buffer is bytes_per_line(=640)*3 planes * 480 rows.
+    g.throughput(Throughput::Bytes(640u64 * 3 * 480));
+    g.sample_size(20);
+    g.bench_function(BenchmarkId::from_parameter("rle/640x480"), |b| {
+        b.iter(|| __bench_decode_planar_len(criterion::black_box(&bytes)).expect("planar decode"));
+    });
+    g.finish();
+}
+
+fn bench_decode_phase_rle_8bpp_grayscale_512x512(c: &mut Criterion) {
+    let pixels = build_grayscale(512, 512);
+    let bytes = encode_pcx_8bpp_grayscale(512, 512, &pixels).expect("encode_pcx_8bpp_grayscale");
+    let mut g = c.benchmark_group("decode_phase_rle_8bpp_grayscale_512x512");
+    g.throughput(Throughput::Bytes(512u64 * 512));
+    g.bench_function(BenchmarkId::from_parameter("rle/512x512"), |b| {
+        b.iter(|| __bench_decode_planar_len(criterion::black_box(&bytes)).expect("planar decode"));
+    });
+    g.finish();
+}
+
 criterion_group!(
     benches,
+    bench_decode_phase_rle_24bpp_640x480,
+    bench_decode_phase_rle_8bpp_grayscale_512x512,
     bench_decode_24bpp_1920x1080,
     bench_decode_24bpp_320x240,
     bench_decode_24bpp_640x480,

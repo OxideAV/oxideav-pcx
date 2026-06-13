@@ -798,6 +798,24 @@ fn decode_planar_scanlines(input: &[u8]) -> Result<PlanarDecode<'_>> {
     Ok((header, pixels_planar, vga_palette))
 }
 
+/// Benchmark probe: run only the header-validation + RLE-decode phase
+/// of [`parse_pcx`] and return the length of the resulting planar
+/// scanline buffer (`n_planes × bytes_per_line × height` bytes).
+///
+/// This exists so the Criterion suite can time the RLE-unpack phase in
+/// isolation from the per-plane assembly phase, making the BENCHMARKS.md
+/// hotspot ranking a measured split rather than an inference. It runs
+/// the exact same `decode_planar_scanlines` the production decoder
+/// calls — no parallel code path — so the timing is faithful. Returning
+/// only the byte count (not the buffer or the private `PcxHeader`) keeps
+/// the crate's public type surface unchanged. Not part of the stable
+/// API; hidden from docs and intended for benches only.
+#[doc(hidden)]
+pub fn __bench_decode_planar_len(input: &[u8]) -> Result<usize> {
+    let (_header, pixels_planar, _vga) = decode_planar_scanlines(input)?;
+    Ok(pixels_planar.len())
+}
+
 // ---------------------------------------------------------------------------
 // Plane-unpack paths
 // ---------------------------------------------------------------------------

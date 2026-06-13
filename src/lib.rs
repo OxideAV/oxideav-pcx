@@ -206,6 +206,8 @@ pub mod types;
 pub const CODEC_ID_STR: &str = "pcx";
 
 pub use dcx::{encode_dcx, parse_dcx, DcxImage, DCX_MAGIC, DCX_MAX_PAGES};
+#[doc(hidden)]
+pub use decoder::__bench_decode_planar_len;
 pub use decoder::{
     parse_pcx, parse_pcx_indexed_1bpp_3planes, parse_pcx_indexed_1bpp_4planes,
     parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_2bpp_cga_cpi, parse_pcx_indexed_4bpp,
