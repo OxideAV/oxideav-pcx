@@ -214,12 +214,14 @@ pub use decoder::{
     parse_pcx_indexed_8bpp,
 };
 pub use encoder::{
-    encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono,
+    encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_3planes_ega_rgb_dpi,
+    encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_4planes_ega_dpi, encode_pcx_1bpp_mono,
     encode_pcx_1bpp_mono_dpi, encode_pcx_24bpp, encode_pcx_24bpp_dpi, encode_pcx_24bpp_image,
     encode_pcx_24bpp_screen, encode_pcx_24bpp_window, encode_pcx_24bpp_window_dpi,
     encode_pcx_24bpp_window_dpi_screen, encode_pcx_2bpp_cga, encode_pcx_2bpp_cga_cpi,
-    encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_grayscale_dpi,
-    encode_pcx_8bpp_indexed, encode_pcx_8bpp_indexed_dpi,
+    encode_pcx_2bpp_cga_dpi, encode_pcx_4bpp_packed, encode_pcx_4bpp_packed_dpi,
+    encode_pcx_8bpp_grayscale, encode_pcx_8bpp_grayscale_dpi, encode_pcx_8bpp_indexed,
+    encode_pcx_8bpp_indexed_dpi,
 };
 pub use error::{PcxError, Result};
 pub use image::{

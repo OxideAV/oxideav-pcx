@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 295: authoring-DPI override for the four EGA / CGA palette-mode
+  writers, completing the `*_dpi` writer suite the r219 work started.
+  * New `encode_pcx_4bpp_packed_dpi`, `encode_pcx_2bpp_cga_dpi`,
+    `encode_pcx_1bpp_3planes_ega_rgb_dpi`, and
+    `encode_pcx_1bpp_4planes_ega_dpi`. Each mirrors its non-DPI sibling
+    byte-for-byte except for the header `h_dpi` / `v_dpi` words (spec §3
+    offsets 12 / 14). The DPI field is a format-independent header word
+    per spec §3 — "the resolutions at which the image was created
+    (printer or scanner)" — so a 16-colour EGA / 4-colour CGA image
+    scanned at e.g. 300 × 300 is as spec-conformant as a 24-bit one. A
+    decode → re-encode of a scanned palette-mode PCX now preserves the
+    authoring resolution instead of flattening it to the historical
+    72×72 default. A 0 in either component is rejected at the writer
+    boundary per the spec §3 "0 = unset" sentinel, matching the existing
+    `_dpi` writers. The pixel-data region is untouched, so the decode
+    path and the typed paletted accessors produce identical output;
+    `src/` decode/encode output bytes for the non-DPI paths are
+    byte-identical to the pre-r295 tree.
+
 - Round 286 (depth-mode benchmark): a phase-split probe in the `decode`
   Criterion harness plus a ranked-hotspot `BENCHMARKS.md`.
   * New `decode_phase_rle_24bpp_640x480` / `decode_phase_rle_8bpp_grayscale_512x512`

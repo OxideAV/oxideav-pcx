@@ -1184,6 +1184,257 @@ pub fn encode_pcx_1bpp_mono_dpi(
     Ok(out)
 }
 
+/// Encode a 4 bpp × 1 plane 16-colour packed-bits PCX with a custom
+/// authoring DPI. Mirrors [`encode_pcx_4bpp_packed`] except the header
+/// `h_dpi` / `v_dpi` words (spec §3 offsets 12 / 14 — "the resolutions
+/// at which the image was created (printer or scanner)") carry the
+/// caller's pair instead of the historical 72×72 default. The DPI field
+/// is a format-independent header word per spec §3, so a 16-colour image
+/// scanned at e.g. 300 × 300 is just as valid as a 24-bit one.
+pub fn encode_pcx_4bpp_packed_dpi(
+    width: u16,
+    height: u16,
+    indices: &[u8],
+    palette: &[u8],
+    dpi: (u16, u16),
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if indices.len() < width as usize * height as usize {
+        return Err(Error::invalid(
+            "PCX encoder: 4bpp input shorter than width × height",
+        ));
+    }
+    if palette.len() != 48 {
+        return Err(Error::invalid(format!(
+            "PCX encoder: 4bpp palette must be exactly 48 bytes (16 RGB triplets), got {}",
+            palette.len()
+        )));
+    }
+    check_dpi(dpi)?;
+    let bytes_per_line = round_up_to_even(width.div_ceil(2));
+    let mut ega = [0u8; 48];
+    ega.copy_from_slice(palette);
+    let mut out = Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * height as usize);
+    write_header_full(
+        &mut out,
+        0,
+        0,
+        width,
+        height,
+        4,
+        1,
+        bytes_per_line,
+        &ega,
+        1,
+        dpi,
+        DEFAULT_SCREEN_SIZE,
+    );
+    let mut row = vec![0u8; bytes_per_line as usize];
+    for y in 0..height as usize {
+        for v in row.iter_mut() {
+            *v = 0;
+        }
+        for x in 0..width as usize {
+            let v = indices[y * width as usize + x] & 0x0F;
+            let byte_off = x / 2;
+            if x % 2 == 0 {
+                row[byte_off] |= v << 4;
+            } else {
+                row[byte_off] |= v;
+            }
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
+/// Encode a 2 bpp × 1 plane 4-colour CGA PCX with a custom authoring
+/// DPI. Mirrors [`encode_pcx_2bpp_cga`] except the header `h_dpi` /
+/// `v_dpi` words (spec §3 offsets 12 / 14) carry the caller's pair
+/// instead of the historical 72×72 default. The CGA palette selector
+/// (header byte 19) and background index (header byte 16 high nibble)
+/// are stamped exactly as the non-DPI writer does.
+pub fn encode_pcx_2bpp_cga_dpi(
+    width: u16,
+    height: u16,
+    indices: &[u8],
+    palette_selector: u8,
+    background_index: u8,
+    dpi: (u16, u16),
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if indices.len() < width as usize * height as usize {
+        return Err(Error::invalid(
+            "PCX encoder: 2bpp input shorter than width × height",
+        ));
+    }
+    if background_index > 0x0F {
+        return Err(Error::invalid(format!(
+            "PCX encoder: CGA background_index must be 0..15, got {background_index}"
+        )));
+    }
+    check_dpi(dpi)?;
+    let bytes_per_line = round_up_to_even(width.div_ceil(4));
+    let mut ega = [0u8; 48];
+    ega[16] = background_index << 4;
+    ega[19] = palette_selector;
+    let mut out = Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * height as usize);
+    write_header_full(
+        &mut out,
+        0,
+        0,
+        width,
+        height,
+        2,
+        1,
+        bytes_per_line,
+        &ega,
+        1,
+        dpi,
+        DEFAULT_SCREEN_SIZE,
+    );
+    let mut row = vec![0u8; bytes_per_line as usize];
+    for y in 0..height as usize {
+        for v in row.iter_mut() {
+            *v = 0;
+        }
+        for x in 0..width as usize {
+            let v = indices[y * width as usize + x] & 0b11;
+            let byte_off = x / 4;
+            let pix_in_byte = x % 4;
+            let shift = 6 - 2 * pix_in_byte;
+            row[byte_off] |= v << shift;
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
+/// Encode an 8-colour EGA RGB PCX at 1 bpp × 3 planes with a custom
+/// authoring DPI. Mirrors [`encode_pcx_1bpp_3planes_ega_rgb`] except the
+/// header `h_dpi` / `v_dpi` words (spec §3 offsets 12 / 14) carry the
+/// caller's pair instead of the historical 72×72 default. Plane order is
+/// R, G, B (spec §4) and each input channel is thresholded at 0x80.
+pub fn encode_pcx_1bpp_3planes_ega_rgb_dpi(
+    width: u16,
+    height: u16,
+    rgb: &[u8],
+    dpi: (u16, u16),
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if rgb.len() < width as usize * height as usize * 3 {
+        return Err(Error::invalid(
+            "PCX encoder: rgb input shorter than width × height × 3",
+        ));
+    }
+    check_dpi(dpi)?;
+    let bytes_per_line = round_up_to_even(width.div_ceil(8));
+    let mut out =
+        Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * 3 * height as usize);
+    write_header_full(
+        &mut out,
+        0,
+        0,
+        width,
+        height,
+        1,
+        3,
+        bytes_per_line,
+        &[0u8; 48],
+        1,
+        dpi,
+        DEFAULT_SCREEN_SIZE,
+    );
+    let mut row = vec![0u8; bytes_per_line as usize * 3];
+    for y in 0..height as usize {
+        for v in row.iter_mut() {
+            *v = 0;
+        }
+        for x in 0..width as usize {
+            let off = (y * width as usize + x) * 3;
+            for (plane, &b) in rgb[off..off + 3].iter().enumerate() {
+                if b >= 0x80 {
+                    row[plane * bytes_per_line as usize + x / 8] |= 1 << (7 - (x % 8));
+                }
+            }
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
+/// Encode a 16-colour EGA PCX at 1 bpp × 4 planes with a custom
+/// authoring DPI. Mirrors [`encode_pcx_1bpp_4planes_ega`] except the
+/// header `h_dpi` / `v_dpi` words (spec §3 offsets 12 / 14) carry the
+/// caller's pair instead of the historical 72×72 default. The 16-entry
+/// palette is stamped into the header `ega_palette` field exactly as the
+/// non-DPI writer does.
+pub fn encode_pcx_1bpp_4planes_ega_dpi(
+    width: u16,
+    height: u16,
+    indices: &[u8],
+    palette: &[u8],
+    dpi: (u16, u16),
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if indices.len() < width as usize * height as usize {
+        return Err(Error::invalid(
+            "PCX encoder: EGA input shorter than width × height",
+        ));
+    }
+    if palette.len() != 48 {
+        return Err(Error::invalid(format!(
+            "PCX encoder: EGA palette must be exactly 48 bytes (16 RGB triplets), got {}",
+            palette.len()
+        )));
+    }
+    check_dpi(dpi)?;
+    let bytes_per_line = round_up_to_even(width.div_ceil(8));
+    let mut ega = [0u8; 48];
+    ega.copy_from_slice(palette);
+    let mut out =
+        Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * 4 * height as usize);
+    write_header_full(
+        &mut out,
+        0,
+        0,
+        width,
+        height,
+        1,
+        4,
+        bytes_per_line,
+        &ega,
+        1,
+        dpi,
+        DEFAULT_SCREEN_SIZE,
+    );
+    let mut row = vec![0u8; bytes_per_line as usize * 4];
+    for y in 0..height as usize {
+        for v in row.iter_mut() {
+            *v = 0;
+        }
+        for x in 0..width as usize {
+            let idx = indices[y * width as usize + x] & 0x0F;
+            for plane in 0..4 {
+                let bit = (idx >> plane) & 1;
+                if bit != 0 {
+                    row[plane * bytes_per_line as usize + x / 8] |= 1 << (7 - (x % 8));
+                }
+            }
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
 /// Encode 24-bit packed RGB to PCX 5.0 with both a non-zero window
 /// origin AND a custom authoring DPI in one call. Mirrors the
 /// combination of [`encode_pcx_24bpp_window`] (window origin from spec

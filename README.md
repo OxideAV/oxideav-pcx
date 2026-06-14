@@ -256,6 +256,21 @@ the plain writers default to:
 * `encode_pcx_8bpp_indexed_dpi(w, h, &indices, &palette, dpi)`
 * `encode_pcx_8bpp_grayscale_dpi(w, h, &pixels, dpi)`
 * `encode_pcx_1bpp_mono_dpi(w, h, &pixels, dpi)`
+* `encode_pcx_4bpp_packed_dpi(w, h, &indices, &palette, dpi)`
+* `encode_pcx_2bpp_cga_dpi(w, h, &indices, palette_selector, background_index, dpi)`
+* `encode_pcx_1bpp_3planes_ega_rgb_dpi(w, h, &rgb, dpi)`
+* `encode_pcx_1bpp_4planes_ega_dpi(w, h, &indices, &palette, dpi)`
+
+The four EGA / CGA palette-mode `_dpi` writers (r295) mirror their
+non-DPI siblings byte-for-byte except for the header `h_dpi` / `v_dpi`
+words (spec §3 offsets 12 / 14), so the `_dpi` suite now spans every
+encode path. Per spec §3 the DPI field is format-independent — "the
+resolutions at which the image was created (printer or scanner)" — so a
+scanned 16-colour EGA or 4-colour CGA image preserves its authoring
+resolution through decode → re-encode instead of being flattened to the
+historical 72×72 default. As with the existing `_dpi` writers a 0 in
+either component is rejected at the writer boundary per the spec §3
+"0 = unset" sentinel.
 
 The wrapper `encode_pcx_24bpp_image` automatically threads
 `PcxImage::dpi` through into the new header when the decoded image
@@ -591,10 +606,9 @@ assert!(matches!(
   `encode_pcx_8bpp_indexed` / `encode_pcx_4bpp_packed` /
   `encode_pcx_2bpp_cga` / `encode_pcx_1bpp_4planes_ega` directly
   with an explicit palette argument.
-* Per-pixel-region authoring DPI override for the EGA/CGA / 4 bpp /
-  1 bpp × 3 / 1 bpp × 4 writers (these still emit 72×72). The
-  `_dpi` writer suite covers the four formats consumers actually
-  scan into PCX (24-bit, 8 bpp indexed, 8 bpp grayscale, 1 bpp mono);
-  the EGA/CGA palette-mode writers stay at the historical default
-  because EGA / CGA hardware never had a non-screen authoring DPI to
-  carry.
+* 4 bpp × 4 planes (16-colour planar with finer per-plane depth)
+  remains the one `(bpp, planes)` slot the EGFF PCX summary doesn't
+  list as a formal video mode (see the first bullet above). No other
+  documented header / writer feature is outstanding — the `_dpi`
+  writer suite now spans every encode path including the EGA / CGA /
+  packed-bits palette modes (r295).
