@@ -724,6 +724,67 @@ pub fn encode_pcx_2bpp_cga_cpi(
     Ok(out)
 }
 
+/// Encode `width × height` 2-bit-index pixels (low 2 bits = palette
+/// index 0..3, row-major, top-down) into a PCX 5.0 1 bpp × 2-plane CGA
+/// file — the plane-oriented CGA layout the EGFF canonical mode matrix
+/// lists as `BitsPerPixel = 1, NumBitPlanes = 2`.
+///
+/// This is the plane-oriented sibling of [`encode_pcx_2bpp_cga`]: where
+/// that writer packs four pixels per byte into a single 2 bpp plane,
+/// this one writes two 1-bit planes per scanline (plane 0 then plane 1
+/// within the row). Bit `k` of each index goes to plane `k`, so palette
+/// index `p0 | p1 << 1` round-trips through
+/// [`crate::parse_pcx_indexed_1bpp_2planes_cga`] and the canonical
+/// [`crate::parse_pcx`] flatten path. The CGA palette is carried in the
+/// header exactly as [`encode_pcx_2bpp_cga`] does: `background_index`
+/// (`0..=15`) into byte 16's high nibble, `palette_selector` into byte
+/// 19 (bits 7/6 = palette family + intensity).
+pub fn encode_pcx_1bpp_2planes_cga(
+    width: u16,
+    height: u16,
+    indices: &[u8],
+    palette_selector: u8,
+    background_index: u8,
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if indices.len() < width as usize * height as usize {
+        return Err(Error::invalid(
+            "PCX encoder: CGA input shorter than width × height",
+        ));
+    }
+    if background_index > 0x0F {
+        return Err(Error::invalid(format!(
+            "PCX encoder: CGA background_index must be 0..15, got {background_index}"
+        )));
+    }
+    let bytes_per_line = round_up_to_even(width.div_ceil(8));
+    let mut ega = [0u8; 48];
+    ega[16] = background_index << 4;
+    ega[19] = palette_selector;
+    let mut out =
+        Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * 2 * height as usize);
+    write_header_with_palette(&mut out, width, height, 1, 2, bytes_per_line, &ega);
+    let mut row = vec![0u8; bytes_per_line as usize * 2];
+    for y in 0..height as usize {
+        for v in row.iter_mut() {
+            *v = 0;
+        }
+        for x in 0..width as usize {
+            let idx = indices[y * width as usize + x] & 0b11;
+            for plane in 0..2 {
+                let bit = (idx >> plane) & 1;
+                if bit != 0 {
+                    row[plane * bytes_per_line as usize + x / 8] |= 1 << (7 - (x % 8));
+                }
+            }
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
 /// Encode `width × height` 4-bit-index pixels (low nibble = palette
 /// index 0..15, row-major, top-down) into a PCX 5.0 1 bpp × 4-plane
 /// EGA file.
@@ -1308,6 +1369,71 @@ pub fn encode_pcx_2bpp_cga_dpi(
             let pix_in_byte = x % 4;
             let shift = 6 - 2 * pix_in_byte;
             row[byte_off] |= v << shift;
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
+/// Encode a 4-colour CGA PCX at 1 bpp × 2 planes with a custom
+/// authoring DPI. Mirrors [`encode_pcx_1bpp_2planes_cga`] except the
+/// header `h_dpi` / `v_dpi` words (spec §3 offsets 12 / 14) carry the
+/// caller's pair instead of the historical 72×72 default.
+pub fn encode_pcx_1bpp_2planes_cga_dpi(
+    width: u16,
+    height: u16,
+    indices: &[u8],
+    palette_selector: u8,
+    background_index: u8,
+    dpi: (u16, u16),
+) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if indices.len() < width as usize * height as usize {
+        return Err(Error::invalid(
+            "PCX encoder: CGA input shorter than width × height",
+        ));
+    }
+    if background_index > 0x0F {
+        return Err(Error::invalid(format!(
+            "PCX encoder: CGA background_index must be 0..15, got {background_index}"
+        )));
+    }
+    check_dpi(dpi)?;
+    let bytes_per_line = round_up_to_even(width.div_ceil(8));
+    let mut ega = [0u8; 48];
+    ega[16] = background_index << 4;
+    ega[19] = palette_selector;
+    let mut out =
+        Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * 2 * height as usize);
+    write_header_full(
+        &mut out,
+        0,
+        0,
+        width,
+        height,
+        1,
+        2,
+        bytes_per_line,
+        &ega,
+        1,
+        dpi,
+        DEFAULT_SCREEN_SIZE,
+    );
+    let mut row = vec![0u8; bytes_per_line as usize * 2];
+    for y in 0..height as usize {
+        for v in row.iter_mut() {
+            *v = 0;
+        }
+        for x in 0..width as usize {
+            let idx = indices[y * width as usize + x] & 0b11;
+            for plane in 0..2 {
+                let bit = (idx >> plane) & 1;
+                if bit != 0 {
+                    row[plane * bytes_per_line as usize + x / 8] |= 1 << (7 - (x % 8));
+                }
+            }
         }
         rle::encode(&row, &mut out);
     }

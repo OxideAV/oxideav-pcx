@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 301: 4-colour CGA in the plane-oriented `1 bpp × 2 planes`
+  layout — the last uncovered row of the EGFF canonical PCX video-mode
+  matrix (`BitsPerPixel = 1, NumBitPlanes = 2`), the bit-plane sibling
+  of the packed `2 bpp × 1 plane` CGA mode the crate already had.
+  * New decode arm in `parse_pcx` (each scanline carries plane 0 then
+    plane 1; the bit at each x-position stacks into the 2-bit index
+    `p0 | p1 << 1`, the same bit ordering the 1 bpp × 4 planes EGA path
+    uses). The 4-entry CGA palette resolution from header bytes 16 / 19
+    is shared verbatim with the packed mode, so identical indices
+    flatten to identical pixels through either layout.
+  * New typed accessor `parse_pcx_indexed_1bpp_2planes_cga` returning
+    `PcxIndexed1x2Cga` (indices + resolved palette + background index +
+    the shared `Pcx2bppCgaPaletteSource` tag), mirroring the packed
+    `parse_pcx_indexed_2bpp_cga` accessor.
+  * New writers `encode_pcx_1bpp_2planes_cga` and
+    `encode_pcx_1bpp_2planes_cga_dpi`, mirroring the
+    `encode_pcx_2bpp_cga` / `_dpi` pair but emitting two 1-bit planes
+    per scanline. A decode → re-encode round-trip is byte-identical.
+  * Every row of the EGFF canonical mode matrix (monochrome / CGA / EGA
+    / EGA-VGA / Extended-VGA / Extended-VGA-XGA) is now covered on both
+    decode and encode.
+
 - Round 295: authoring-DPI override for the four EGA / CGA palette-mode
   writers, completing the `*_dpi` writer suite the r219 work started.
   * New `encode_pcx_4bpp_packed_dpi`, `encode_pcx_2bpp_cga_dpi`,

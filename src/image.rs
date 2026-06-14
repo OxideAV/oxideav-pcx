@@ -440,6 +440,58 @@ impl PcxIndexed2x1Cga {
     }
 }
 
+/// Typed 1 bpp × 2 planes CGA paletted view returned by
+/// [`crate::parse_pcx_indexed_1bpp_2planes_cga`].
+///
+/// The EGFF canonical PCX mode matrix lists 4-colour CGA as
+/// `BitsPerPixel = 1, NumBitPlanes = 2` — the plane-oriented sibling of
+/// the `2 bpp × 1 plane` packed-bits CGA layout that
+/// [`PcxIndexed2x1Cga`] covers. Each on-disk scanline carries plane 0
+/// then plane 1 one after another within the row; the bit at the same
+/// x-position in each plane stacks into the 2-bit palette index
+/// (`p0 | p1 << 1`). The 4-entry palette resolution is identical to the
+/// packed mode (header byte 16 high nibble = background, byte 19 bits
+/// 7/6 = palette family + intensity), so this view reuses the same
+/// [`Pcx2bppCgaPaletteSource`] tag and `background_index`.
+///
+/// Useful for round-tripping a plane-oriented 4-colour CGA PCX through
+/// [`crate::encode_pcx_1bpp_2planes_cga`] without re-quantising the
+/// indices, or for applying palette-swap operations on the indices
+/// directly.
+#[derive(Debug, Clone)]
+pub struct PcxIndexed1x2Cga {
+    /// Picture width in pixels (spec §3 `x_max - x_min + 1`).
+    pub width: u32,
+    /// Picture height in pixels (spec §3 `y_max - y_min + 1`).
+    pub height: u32,
+    /// `width × height` palette indices, row-major top-down, one byte
+    /// per pixel with the index in the low two bits (`0..=3`). The
+    /// on-disk format stores two 1-bit planes per scanline; this
+    /// accessor stacks the matching bit from each plane into one byte
+    /// per pixel. Per-row padding bytes the encoder added to round
+    /// `bytes_per_line` up to an even number per spec §1 are NOT
+    /// included.
+    pub indices: Vec<u8>,
+    /// 4-entry RGB palette. Entry 0 is the resolved
+    /// [`Self::background_index`] EGA colour; entries 1..=3 come from
+    /// the CGA palette family selected by [`Self::palette_source`].
+    pub palette: [[u8; 3]; 4],
+    /// EGA index `0..=15` used for palette entry 0 (the CGA "background
+    /// / border" colour), read from `ega_palette` byte 16's high
+    /// nibble.
+    pub background_index: u8,
+    /// Origin of the [`Self::palette`] entries 1..=3 — the CGA palette
+    /// family selected by `ega_palette` byte 19's bits 7/6.
+    pub palette_source: Pcx2bppCgaPaletteSource,
+}
+
+impl PcxIndexed1x2Cga {
+    /// Bytes per row (= `width`, one byte per pixel after unpacking).
+    pub fn stride(&self) -> usize {
+        self.width as usize
+    }
+}
+
 /// The three significant bits of the CGA palette byte (header byte 19 /
 /// `ega_palette[19]`) decoded per the verbatim ZSoft PCX Technical
 /// Reference Manual, Revision 5 ("CGA Color Map", Header Byte #19):

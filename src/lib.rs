@@ -9,6 +9,7 @@
 //! | bits/pixel | n_planes | Source meaning              | Output |
 //! | ---------- | -------- | --------------------------- | ------ |
 //! | 1          | 1        | Monochrome (1-bit)          | `Rgba` |
+//! | 1          | 2        | 4-colour CGA (planar)       | `Rgba` |
 //! | 1          | 3        | 8-colour EGA RGB            | `Rgba` |
 //! | 1          | 4        | 16-colour EGA               | `Rgba` |
 //! | 2          | 1        | 4-colour CGA (packed)       | `Rgba` |
@@ -40,6 +41,8 @@
 //!   1 plane.
 //! * [`encode_pcx_2bpp_cga`] — 4-colour CGA packed-bits at 2 bpp ×
 //!   1 plane.
+//! * [`encode_pcx_1bpp_2planes_cga`] — 4-colour CGA in the plane-
+//!   oriented 1 bpp × 2 planes layout (EGFF canonical CGA mode).
 //! * [`encode_pcx_8bpp_grayscale`] — 8 bpp × 1 plane grayscale with
 //!   spec §3 `palette_info = 2` flag set, no tail palette appended.
 //! * [`encode_pcx_24bpp_window`] — like [`encode_pcx_24bpp`] but lets
@@ -209,26 +212,26 @@ pub use dcx::{encode_dcx, parse_dcx, DcxImage, DCX_MAGIC, DCX_MAX_PAGES};
 #[doc(hidden)]
 pub use decoder::__bench_decode_planar_len;
 pub use decoder::{
-    parse_pcx, parse_pcx_indexed_1bpp_3planes, parse_pcx_indexed_1bpp_4planes,
-    parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_2bpp_cga_cpi, parse_pcx_indexed_4bpp,
-    parse_pcx_indexed_8bpp,
+    parse_pcx, parse_pcx_indexed_1bpp_2planes_cga, parse_pcx_indexed_1bpp_3planes,
+    parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_2bpp_cga_cpi,
+    parse_pcx_indexed_4bpp, parse_pcx_indexed_8bpp,
 };
 pub use encoder::{
-    encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_3planes_ega_rgb_dpi,
-    encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_4planes_ega_dpi, encode_pcx_1bpp_mono,
-    encode_pcx_1bpp_mono_dpi, encode_pcx_24bpp, encode_pcx_24bpp_dpi, encode_pcx_24bpp_image,
-    encode_pcx_24bpp_screen, encode_pcx_24bpp_window, encode_pcx_24bpp_window_dpi,
-    encode_pcx_24bpp_window_dpi_screen, encode_pcx_2bpp_cga, encode_pcx_2bpp_cga_cpi,
-    encode_pcx_2bpp_cga_dpi, encode_pcx_4bpp_packed, encode_pcx_4bpp_packed_dpi,
-    encode_pcx_8bpp_grayscale, encode_pcx_8bpp_grayscale_dpi, encode_pcx_8bpp_indexed,
-    encode_pcx_8bpp_indexed_dpi,
+    encode_pcx_1bpp_2planes_cga, encode_pcx_1bpp_2planes_cga_dpi, encode_pcx_1bpp_3planes_ega_rgb,
+    encode_pcx_1bpp_3planes_ega_rgb_dpi, encode_pcx_1bpp_4planes_ega,
+    encode_pcx_1bpp_4planes_ega_dpi, encode_pcx_1bpp_mono, encode_pcx_1bpp_mono_dpi,
+    encode_pcx_24bpp, encode_pcx_24bpp_dpi, encode_pcx_24bpp_image, encode_pcx_24bpp_screen,
+    encode_pcx_24bpp_window, encode_pcx_24bpp_window_dpi, encode_pcx_24bpp_window_dpi_screen,
+    encode_pcx_2bpp_cga, encode_pcx_2bpp_cga_cpi, encode_pcx_2bpp_cga_dpi, encode_pcx_4bpp_packed,
+    encode_pcx_4bpp_packed_dpi, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_grayscale_dpi,
+    encode_pcx_8bpp_indexed, encode_pcx_8bpp_indexed_dpi,
 };
 pub use error::{PcxError, Result};
 pub use image::{
     Pcx1bpp3PlanesPaletteSource, Pcx1bpp4PlanesPaletteSource, Pcx2bppCgaCpi,
-    Pcx2bppCgaPaletteSource, Pcx4bppPaletteSource, PcxImage, PcxIndexed1x3, PcxIndexed1x4,
-    PcxIndexed2x1Cga, PcxIndexed2x1CgaCpi, PcxIndexed4, PcxIndexed8, PcxPaletteSource,
-    PcxPixelFormat,
+    Pcx2bppCgaPaletteSource, Pcx4bppPaletteSource, PcxImage, PcxIndexed1x2Cga, PcxIndexed1x3,
+    PcxIndexed1x4, PcxIndexed2x1Cga, PcxIndexed2x1CgaCpi, PcxIndexed4, PcxIndexed8,
+    PcxPaletteSource, PcxPixelFormat,
 };
 pub use types::{
     find_vga_palette, parse_header, PcxHeader, PCX_ENCODING_RLE, PCX_HEADER_SIZE, PCX_MANUFACTURER,

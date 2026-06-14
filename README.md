@@ -12,6 +12,7 @@ truth for bitstream behaviour in this crate.
 | bits/pixel | n_planes | Source meaning                | Output |
 | ---------- | -------- | ----------------------------- | ------ |
 | 1          | 1        | Monochrome (1-bit)            | `Rgba` |
+| 1          | 2        | 4-colour CGA (planar planes)  | `Rgba` |
 | 1          | 3        | 8-colour EGA RGB              | `Rgba` |
 | 1          | 4        | 16-colour EGA                 | `Rgba` |
 | 2          | 1        | 4-colour CGA (packed bits)    | `Rgba` |
@@ -90,6 +91,13 @@ Standalone helpers:
   packed-bits at 4 bpp × 1 plane (2 pixels/byte).
 * `encode_pcx_2bpp_cga(w, h, &indices, palette_selector,
   background_index)` — 4-colour CGA packed-bits.
+* `encode_pcx_1bpp_2planes_cga(w, h, &indices, palette_selector,
+  background_index)` — 4-colour CGA in the plane-oriented 1 bpp × 2
+  planes layout (the EGFF canonical CGA mode `BitsPerPixel = 1,
+  NumBitPlanes = 2`). Bit `k` of each 2-bit index goes to plane `k`;
+  the CGA palette is carried in the header bytes 16 / 19 exactly as the
+  packed `encode_pcx_2bpp_cga` writer does, so identical indices flatten
+  to identical pixels through either path.
 * `encode_pcx_8bpp_grayscale(w, h, &pixels)` — 8 bpp × 1 plane
   grayscale with spec §3 `palette_info = 2` flag set and no tail
   palette appended. The decoder honours the flag and emits
@@ -593,22 +601,62 @@ assert!(matches!(
 # Ok::<(), oxideav_pcx::PcxError>(())
 ```
 
+## Typed 1 bpp × 2 planes CGA paletted view
+
+[`parse_pcx_indexed_1bpp_2planes_cga`] is the typed accessor for the
+plane-oriented 4-colour CGA mode the EGFF canonical PCX mode matrix
+lists as `BitsPerPixel = 1, NumBitPlanes = 2` — the bit-plane sibling
+of the packed `2 bpp × 1 plane` CGA layout. Each on-disk scanline
+carries plane 0 then plane 1 one after another within the row; the bit
+at the same x-position in each plane stacks into the 2-bit palette index
+(`p0 | p1 << 1`), the same bit ordering the 1 bpp × 4 planes EGA path
+uses.
+
+The returned [`PcxIndexed1x2Cga`] surfaces one byte per pixel (low two
+bits = palette index `0..=3`, top-down, padding stripped) alongside the
+resolved 4-entry RGB palette, the `background_index` (`0..=15`) read
+from `ega_palette[16]`'s high nibble, and the same
+[`Pcx2bppCgaPaletteSource`] tag the packed accessor uses (the palette
+resolution from header bytes 16 / 19 is shared verbatim, so the two CGA
+layouts resolve identical colours from identical header bytes). The
+[`Pcx2bppCgaPaletteSource::palette_selector`] helper reconstructs the
+byte 19 selector so a decode → re-encode pass through
+[`encode_pcx_1bpp_2planes_cga`] is byte-identical. Any (depth, planes)
+combination other than `(1, 2)` is rejected with `PcxError::Unsupported`
+— the packed CGA layout has its own typed accessor
+([`parse_pcx_indexed_2bpp_cga`]).
+
+```rust
+use oxideav_pcx::{parse_pcx_indexed_1bpp_2planes_cga, Pcx2bppCgaPaletteSource};
+
+let view = parse_pcx_indexed_1bpp_2planes_cga(bytes)?;
+let i = view.indices[0] as usize;
+let [r, g, b] = view.palette[i];
+assert!(matches!(
+    view.palette_source,
+    Pcx2bppCgaPaletteSource::Palette1HighIntensity
+        | Pcx2bppCgaPaletteSource::Palette1LowIntensity
+        | Pcx2bppCgaPaletteSource::Palette0HighIntensity
+        | Pcx2bppCgaPaletteSource::Palette0LowIntensity
+));
+# Ok::<(), oxideav_pcx::PcxError>(())
+```
+
 ## Lacks
 
 * 4 bpp × 4 planes (16-colour planar with finer per-plane depth)
   is the one remaining `(bpp, planes)` slot the EGFF PCX summary
   doesn't list as a formal video mode; real-world files at this
-  depth are vanishingly rare and the existing 1 bpp × 4 / 4 bpp ×
-  1 / 1 bpp × 3 paths cover every EGA/VGA fixture we've seen.
+  depth are vanishingly rare and the existing 1 bpp × 2 / 1 bpp × 4 /
+  4 bpp × 1 / 1 bpp × 3 paths cover every EGA/VGA/CGA fixture we've
+  seen. With r301's `1 bpp × 2 planes` CGA mode landed, every row of
+  the EGFF canonical mode matrix (monochrome / CGA / EGA / EGA-VGA /
+  Extended-VGA / Extended-VGA-XGA) is now covered on both decode and
+  encode.
 * `PixelFormat::Pal8` input to the framework `Encoder`. The
   out-of-band palette companion needed by `Pal8` isn't currently
   carried by `VideoFrame`; standalone callers can still reach
   `encode_pcx_8bpp_indexed` / `encode_pcx_4bpp_packed` /
-  `encode_pcx_2bpp_cga` / `encode_pcx_1bpp_4planes_ega` directly
-  with an explicit palette argument.
-* 4 bpp × 4 planes (16-colour planar with finer per-plane depth)
-  remains the one `(bpp, planes)` slot the EGFF PCX summary doesn't
-  list as a formal video mode (see the first bullet above). No other
-  documented header / writer feature is outstanding — the `_dpi`
-  writer suite now spans every encode path including the EGA / CGA /
-  packed-bits palette modes (r295).
+  `encode_pcx_2bpp_cga` / `encode_pcx_1bpp_2planes_cga` /
+  `encode_pcx_1bpp_4planes_ega` directly with an explicit palette
+  argument.

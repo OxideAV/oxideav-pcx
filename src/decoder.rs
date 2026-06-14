@@ -11,6 +11,12 @@
 //! * 1 bpp × 4 planes — 16-colour EGA. Each plane carries the matching
 //!   bit-position of an EGA colour index; planes are read in BGR-IRGB
 //!   order per the spec table.
+//! * 1 bpp × 2 planes — 4-colour CGA, plane-oriented (the EGFF
+//!   canonical mode matrix lists CGA as `BitsPerPixel = 1,
+//!   NumBitPlanes = 2`). Each scanline carries plane 0 then plane 1;
+//!   the bit at the same x-position in each plane stacks into the 2-bit
+//!   palette index (`p0 | p1 << 1`). Same CGA palette resolution as the
+//!   packed `2 bpp × 1 plane` mode.
 //! * 2 bpp × 1 plane — 4-colour CGA, packed (4 pixels/byte). Palette is
 //!   the legacy CGA palette selected from `ega_palette[16]` (palette
 //!   number bit) + `ega_palette[19]` (foreground intensity / palette
@@ -29,9 +35,9 @@
 use crate::error::{PcxError as Error, Result};
 use crate::image::{
     Pcx1bpp3PlanesPaletteSource, Pcx1bpp4PlanesPaletteSource, Pcx2bppCgaCpi,
-    Pcx2bppCgaPaletteSource, Pcx4bppPaletteSource, PcxImage, PcxIndexed1x3, PcxIndexed1x4,
-    PcxIndexed2x1Cga, PcxIndexed2x1CgaCpi, PcxIndexed4, PcxIndexed8, PcxPaletteSource,
-    PcxPixelFormat,
+    Pcx2bppCgaPaletteSource, Pcx4bppPaletteSource, PcxImage, PcxIndexed1x2Cga, PcxIndexed1x3,
+    PcxIndexed1x4, PcxIndexed2x1Cga, PcxIndexed2x1CgaCpi, PcxIndexed4, PcxIndexed8,
+    PcxPaletteSource, PcxPixelFormat,
 };
 use crate::rle;
 use crate::types::*;
@@ -124,6 +130,7 @@ pub fn parse_pcx(input: &[u8]) -> Result<PcxImage> {
     // (depth, n_planes) combination.
     let data = match (header.bits_per_pixel, header.n_planes) {
         (1, 1) => unpack_1bpp_1plane(&header, &pixels_planar),
+        (1, 2) => unpack_1bpp_2planes_cga(&header, &pixels_planar),
         (1, 3) => unpack_1bpp_3planes(&header, &pixels_planar),
         (1, 4) => unpack_1bpp_4planes(&header, &pixels_planar),
         (2, 1) => unpack_2bpp_1plane_cga(&header, &pixels_planar),
@@ -527,6 +534,85 @@ pub fn parse_pcx_indexed_2bpp_cga(input: &[u8]) -> Result<PcxIndexed2x1Cga> {
     };
 
     Ok(PcxIndexed2x1Cga {
+        width: header.width(),
+        height: header.height(),
+        indices,
+        palette,
+        background_index,
+        palette_source,
+    })
+}
+
+/// Decode a 1 bpp × 2 planes CGA PCX into a typed paletted view
+/// (indices + resolved 4-entry palette).
+///
+/// This is the plane-oriented sibling of [`parse_pcx_indexed_2bpp_cga`]:
+/// the EGFF canonical PCX mode matrix lists 4-colour CGA as
+/// `BitsPerPixel = 1, NumBitPlanes = 2`, the bit-plane layout that
+/// matches CGA hardware's two display planes, distinct from the
+/// `2 bpp × 1 plane` packed-bits layout the other accessor reads. Each
+/// on-disk scanline carries plane 0 then plane 1 one after another; the
+/// bit at the same x-position in each plane stacks into the 2-bit
+/// palette index (`p0 | p1 << 1`), the same bit ordering the 4-plane
+/// EGA path uses (plane k contributes bit k).
+///
+/// The 4-entry palette resolution is identical to
+/// [`parse_pcx_indexed_2bpp_cga`] — `ega_palette[16]` high nibble =
+/// background EGA index for palette entry 0, `ega_palette[19]` bits 7/6
+/// = palette family + intensity — so the returned [`PcxIndexed1x2Cga`]
+/// reuses the [`Pcx2bppCgaPaletteSource`] tag and surfaces the same
+/// `background_index`. The [`Pcx2bppCgaPaletteSource::palette_selector`]
+/// helper reconstructs the byte 19 selector pattern so a round-trip
+/// caller can hand the view straight back to
+/// [`crate::encode_pcx_1bpp_2planes_cga`].
+///
+/// Rejects any (depth, planes) combination other than `(1, 2)` with
+/// [`Error::unsupported`]: the packed `2 bpp × 1 plane` CGA layout has
+/// its own typed accessor [`parse_pcx_indexed_2bpp_cga`].
+pub fn parse_pcx_indexed_1bpp_2planes_cga(input: &[u8]) -> Result<PcxIndexed1x2Cga> {
+    let (header, scanlines, _vga_palette) = decode_planar_scanlines(input)?;
+    if (header.bits_per_pixel, header.n_planes) != (1, 2) {
+        return Err(Error::unsupported(format!(
+            "PCX: parse_pcx_indexed_1bpp_2planes_cga expects 1 bpp × 2 planes, found {} bpp × {} planes",
+            header.bits_per_pixel, header.n_planes
+        )));
+    }
+    let width = header.width() as usize;
+    let height = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+
+    // Unpack each scanline: plane 0 followed by plane 1 within the row.
+    // The bit at the same x-position in each plane stacks into the 2-bit
+    // palette index (`p0 | p1 << 1`). On-disk rows may carry trailing
+    // padding bytes beyond the visible width (spec §1 rounds
+    // `bytes_per_line` up to an even number); the typed view surfaces
+    // only the visible pixels.
+    let mut indices = Vec::with_capacity(width * height);
+    for row in scanlines.chunks_exact(bpl * 2) {
+        let (p0, p1) = row.split_at(bpl);
+        for x in 0..width {
+            let byte = x >> 3;
+            let shift = 7 - (x & 7);
+            let idx = ((p0[byte] >> shift) & 1) | (((p1[byte] >> shift) & 1) << 1);
+            indices.push(idx);
+        }
+    }
+    debug_assert_eq!(indices.len(), width * height);
+
+    // Resolve the 4-entry palette: identical dispatch to the packed
+    // `2 bpp × 1 plane` accessor (see `cga_palette_from_header`).
+    let palette = cga_palette_from_header(&header.ega_palette);
+    let background_index = (header.ega_palette[16] >> 4) & 0x0F;
+    let selector_bits = header.ega_palette[19] & 0xC0;
+    let palette_source = match selector_bits {
+        0x00 => Pcx2bppCgaPaletteSource::Palette1HighIntensity,
+        0x40 => Pcx2bppCgaPaletteSource::Palette1LowIntensity,
+        0x80 => Pcx2bppCgaPaletteSource::Palette0HighIntensity,
+        0xC0 => Pcx2bppCgaPaletteSource::Palette0LowIntensity,
+        _ => unreachable!("selector_bits is masked with 0xC0"),
+    };
+
+    Ok(PcxIndexed1x2Cga {
         width: header.width(),
         height: header.height(),
         indices,
@@ -982,6 +1068,42 @@ fn unpack_8bpp_3planes(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
             dst[1] = g;
             dst[2] = b;
             dst[3] = 0xFF;
+        }
+    }
+    out
+}
+
+fn unpack_1bpp_2planes_cga(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
+    // 4-colour CGA stored as TWO 1-bit planes (the EGFF canonical mode
+    // matrix lists CGA as `BitsPerPixel = 1, NumBitPlanes = 2`, the
+    // plane-oriented sibling of the `2 bpp × 1 plane` packed-bits CGA
+    // layout). Each on-disk scanline carries plane 0 then plane 1, one
+    // after another within the row. The bit at the same x-position in
+    // each plane stacks into the 2-bit palette index
+    // (`p0 | p1 << 1`), matching the bit ordering the 4-plane EGA path
+    // uses (plane k contributes bit k of the index). The 4-entry CGA
+    // palette is resolved from the same header bytes 16/19 the packed
+    // `2 bpp × 1 plane` path uses (see `cga_palette_from_header`).
+    let w = header.width() as usize;
+    let h = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+    let cga = cga_palette_from_header(&header.ega_palette);
+    let palette: [[u8; 4]; 4] = [
+        [cga[0][0], cga[0][1], cga[0][2], 0xFF],
+        [cga[1][0], cga[1][1], cga[1][2], 0xFF],
+        [cga[2][0], cga[2][1], cga[2][2], 0xFF],
+        [cga[3][0], cga[3][1], cga[3][2], 0xFF],
+    ];
+    let mut out = vec![0u8; w * h * 4];
+    let src_rows = planar.chunks_exact(bpl * 2);
+    let dst_rows = out.chunks_exact_mut(w * 4);
+    for (row, dst_row) in src_rows.zip(dst_rows) {
+        let (p0, p1) = row.split_at(bpl);
+        for (x, dst) in dst_row.chunks_exact_mut(4).enumerate() {
+            let byte = x >> 3;
+            let shift = 7 - (x & 7);
+            let idx = (((p0[byte] >> shift) & 1) | (((p1[byte] >> shift) & 1) << 1)) as usize;
+            dst.copy_from_slice(&palette[idx]);
         }
     }
     out
