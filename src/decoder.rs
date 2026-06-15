@@ -366,6 +366,114 @@ pub fn parse_pcx_indexed_4bpp(input: &[u8]) -> Result<PcxIndexed4> {
     })
 }
 
+/// Snap a stored 0..=255 RGB component to the EGA hardware level it
+/// resolves to per the spec §"EGA/VGA 16-color palette" quantisation
+/// table.
+///
+/// The rev-5 manual notes that "on an IBM EGA there are only 4 levels of
+/// RGB for each color. Since 256/4 = 64, the following is a list of the
+/// settings and levels":
+///
+/// | Setting   | Level |
+/// | --------- | ----: |
+/// | 0–63      | 0     |
+/// | 64–127    | 1     |
+/// | 128–192   | 2     |
+/// | 193–254   | 3     |
+///
+/// A PCX `Colormap` triple stores 0..=255 component values, but the EGA
+/// display only has the four levels above, so the value the hardware
+/// actually shows is one of four buckets. The manual's table stops at
+/// 254; value `255` falls in the same top bucket as `193–254` (it is
+/// above the level-3 threshold), so this function maps `193..=255` to
+/// level 3.
+///
+/// Returns the **level** (`0..=3`). For the level → output-intensity
+/// mapping the EGA DAC uses, see [`ega_quantize_component`].
+#[must_use]
+pub fn ega_quantize_level(value: u8) -> u8 {
+    match value {
+        0..=63 => 0,
+        64..=127 => 1,
+        128..=192 => 2,
+        // The manual's table ends at 254; 255 is above the level-3
+        // threshold and lands in the same top bucket.
+        193..=255 => 3,
+    }
+}
+
+/// EGA DAC output intensities for the four levels in
+/// [`ega_quantize_level`].
+///
+/// The spec §"EGA/VGA 16-color palette" table defines the four input
+/// buckets (the *levels*) but not the analogue intensity each level
+/// drives. The standard EGA hardware palette the rev-5 manual lists as
+/// the default 16-colour set (the one this crate exposes as
+/// [`Pcx4bppPaletteSource::Ega16Default`]) is built entirely from the
+/// four evenly-spaced byte values `0x00`, `0x55`, `0xAA`, `0xFF` — those
+/// are exactly the analogue levels the EGA DAC emits for levels
+/// `0`, `1`, `2`, `3`. So the level → component map is that even ramp.
+const EGA_LEVEL_OUTPUT: [u8; 4] = [0x00, 0x55, 0xAA, 0xFF];
+
+/// Snap a stored 0..=255 RGB component to the byte value an IBM EGA
+/// display actually shows for it.
+///
+/// This is [`ega_quantize_level`] composed with the EGA DAC output ramp
+/// (`0x00 / 0x55 / 0xAA / 0xFF`). A scanner or editor may store an
+/// arbitrary 0..=255 component in the header `Colormap`, but on real EGA
+/// hardware only the four levels are displayable, so the on-screen colour
+/// is the quantised one. Round-tripping a stored value already on the
+/// ramp is idempotent.
+#[must_use]
+pub fn ega_quantize_component(value: u8) -> u8 {
+    EGA_LEVEL_OUTPUT[ega_quantize_level(value) as usize]
+}
+
+/// Snap a 16-entry RGB palette to the colours an IBM EGA display shows,
+/// per spec §"EGA/VGA 16-color palette" — every component routed through
+/// [`ega_quantize_component`].
+#[must_use]
+pub fn ega_quantize_palette(palette: &[[u8; 3]; 16]) -> [[u8; 3]; 16] {
+    let mut out = [[0u8; 3]; 16];
+    for (dst, src) in out.iter_mut().zip(palette.iter()) {
+        *dst = [
+            ega_quantize_component(src[0]),
+            ega_quantize_component(src[1]),
+            ega_quantize_component(src[2]),
+        ];
+    }
+    out
+}
+
+/// Decode a 4 bpp × 1 plane PCX into a typed paletted view whose palette
+/// is snapped to the colours an IBM EGA display actually shows.
+///
+/// [`parse_pcx_indexed_4bpp`] surfaces the raw header `ega_palette`
+/// triples verbatim (0..=255 per component). The rev-5 manual's
+/// §"EGA/VGA 16-color palette" section notes that an IBM EGA can only
+/// display four levels per channel, so a file authored on (or for) EGA
+/// hardware whose header palette stores arbitrary 0..=255 values is shown
+/// with each component snapped to one of `0x00 / 0x55 / 0xAA / 0xFF`.
+/// This accessor returns the EGA-hardware-accurate palette by routing
+/// every component of the resolved palette through
+/// [`ega_quantize_component`]; the indices and the
+/// [`Pcx4bppPaletteSource`] tag are identical to
+/// [`parse_pcx_indexed_4bpp`].
+///
+/// When the header field is all-zeros the spec table §3.1 default is
+/// substituted first (exactly as [`parse_pcx_indexed_4bpp`] does); that
+/// default is already on the EGA ramp, so quantising it is a no-op — the
+/// difference only shows for the `Ega16InHeader` branch carrying
+/// off-ramp scanner / editor values.
+///
+/// Rejects any (depth, planes) combination other than `(4, 1)` with
+/// [`Error::unsupported`], the same scope as [`parse_pcx_indexed_4bpp`].
+pub fn parse_pcx_indexed_4bpp_ega_hw(input: &[u8]) -> Result<PcxIndexed4> {
+    let mut view = parse_pcx_indexed_4bpp(input)?;
+    view.palette = ega_quantize_palette(&view.palette);
+    Ok(view)
+}
+
 /// Decode a 1 bpp × 4 planes PCX into a typed paletted view (16-colour
 /// nibble indices + resolved 16-entry palette).
 ///

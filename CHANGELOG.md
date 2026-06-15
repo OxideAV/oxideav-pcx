@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- *(decode)* EGA hardware 4-level palette quantisation per spec
+  §"EGA/VGA 16-color palette" (the rev-5 manual's "on an IBM EGA there
+  are only 4 levels of RGB for each color" table). New public helpers
+  `ega_quantize_level` (stored 0..=255 component → EGA level 0..=3),
+  `ega_quantize_component` (level → EGA DAC output ramp
+  `0x00 / 0x55 / 0xAA / 0xFF`), and `ega_quantize_palette` (whole
+  16-entry palette), plus the typed accessor
+  `parse_pcx_indexed_4bpp_ega_hw` — the EGA-hardware sibling of
+  `parse_pcx_indexed_4bpp` that surfaces the same indices and
+  palette-source tag with the palette snapped to the colours an IBM EGA
+  actually displays. Strictly additive — the raw `parse_pcx_indexed_4bpp`
+  view and the canonical `parse_pcx` flatten path are unchanged.
 - *(decode)* `parse_pcx_cga_cpi` — spec-faithful CGA flatten-to-`Rgba`
   entry point honouring the full C / P / I decomposition of header byte 19
   (incl. the color-burst monochrome composite-grey ramp) across both the

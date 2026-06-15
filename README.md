@@ -400,6 +400,50 @@ assert!(matches!(
 # Ok::<(), oxideav_pcx::PcxError>(())
 ```
 
+### EGA hardware 4-level palette quantisation (`*_ega_hw`)
+
+Spec §"EGA/VGA 16-color palette" notes that "on an IBM EGA there are only
+4 levels of RGB for each color. Since 256/4 = 64" — and tabulates the
+input buckets:
+
+| Setting   | Level |
+| --------- | ----: |
+| 0–63      | 0     |
+| 64–127    | 1     |
+| 128–192   | 2     |
+| 193–254   | 3     |
+
+A PCX header `Colormap` stores 0–255 per component, but an EGA display
+resolves only those four levels, so a file authored on (or for) EGA
+hardware whose header palette carries arbitrary 0–255 values is shown
+with each component snapped to one of the four EGA DAC output intensities
+(`0x00 / 0x55 / 0xAA / 0xFF` — exactly the values the rev-5 manual's
+default 16-colour EGA palette, surfaced as
+[`Pcx4bppPaletteSource::Ega16Default`], is built from). The manual's
+table ends at 254; value 255 falls in the same top bucket.
+
+* [`ega_quantize_level`] — stored 0–255 component → EGA level `0..=3`.
+* [`ega_quantize_component`] — level composed with the EGA DAC output
+  ramp; idempotent for values already on the ramp.
+* [`ega_quantize_palette`] — routes every component of a 16-entry palette.
+* [`parse_pcx_indexed_4bpp_ega_hw`] — the EGA-hardware sibling of
+  [`parse_pcx_indexed_4bpp`]: identical indices and
+  [`Pcx4bppPaletteSource`] tag, palette snapped to the EGA-displayable
+  colours. When the header field is all-zeros the spec table §3.1
+  default is substituted first (as the raw accessor does); that default
+  is already on the ramp, so the quantised view differs from the raw one
+  only for the `Ega16InHeader` branch carrying off-ramp scanner / editor
+  values. Strictly additive — the raw [`parse_pcx_indexed_4bpp`] view and
+  the canonical [`parse_pcx`] flatten path are unchanged.
+
+```rust
+use oxideav_pcx::{ega_quantize_component, ega_quantize_level};
+
+assert_eq!(ega_quantize_level(100), 1); // 64–127 bucket
+assert_eq!(ega_quantize_component(100), 0x55); // level 1 → DAC ramp
+assert_eq!(ega_quantize_component(0xAA), 0xAA); // on-ramp → fixed
+```
+
 ## Typed 1 bpp × 4 planes paletted view
 
 [`parse_pcx_indexed_1bpp_4planes`] is the third 16-colour typed accessor —
