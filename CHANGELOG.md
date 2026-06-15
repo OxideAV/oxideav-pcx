@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3](https://github.com/OxideAV/oxideav-pcx/compare/v0.0.2...v0.0.3) - 2026-06-15
+
+### Fixed
+
+- *(decode)* confine VGA tail-palette probe to 8 bpp × 1 plane mode
+
+### Other
+
+- *(rle)* bulk run-fill via Vec::resize in spec §3.2 RLE decode
+- 4-colour CGA in the plane-oriented 1 bpp × 2 planes layout
+- authoring-DPI override for the EGA/CGA palette-mode writers
+- Round 286: decode phase-split bench probe + ranked-hotspot BENCHMARKS.md
+- Round 275: spec-faithful CGA C/P/I selector + color-burst monochrome mode
+- untrack fuzz/Cargo.lock (was committed + gitignored, blocking release-plz)
+- Round 267: typed 1 bpp × 3 planes 8-colour EGA RGB paletted accessor
+- Round 257: typed 2 bpp × 1 plane CGA paletted accessor
+- Round 252: typed 1 bpp × 4 planes paletted accessor
+- drop release-plz.toml — use release-plz defaults across the workspace
+- Round 244: fuzz target extends to parse_pcx_indexed_4bpp
+- Round 241: typed 4 bpp × 1 plane paletted accessor
+- Round 237: typed 8 bpp × 1 plane paletted accessor
+- Round 231: authoring screen-size (h_screen_size / v_screen_size) round-trip
+- Round 225: window-origin ('x_min' / 'y_min') round-trip
+- Round 219: authoring DPI (h_dpi / v_dpi) round-trip
+- Round 215: 1 bpp × 3 planes (8-colour EGA RGB) decode + encode
+- Round 209: planar-unpack hot-path rewrite — 10-39% decode speedup
+- Round 203: scrub enumerated-denial prose in lib.rs + README
+- Round 197: Criterion bench harness (decode + encode + roundtrip)
+- Round 185: framework Encoder accepts Bgr24/Bgra/MonoBlack/MonoWhite
+- add decode_pcx cargo-fuzz target + fix 2 decoder crashes
+- Round 88: framework Encoder accepts Gray8 frames
+- Round 82: palette_info=2 grayscale flag, windowed 24bpp writer, bytes_per_line guard
+- Round 75: DCX container as a registered Demuxer/Muxer
+- move round-2 entry under [Unreleased] (rebase fix)
+- Round 2: 2/4 bpp packed-bits decode + CGA palette + DCX + indexed/EGA writers
+
 ### Fixed
 
 - Round 308: confine the appended VGA tail-palette probe to the
