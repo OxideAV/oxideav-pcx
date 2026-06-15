@@ -541,6 +541,38 @@ assert_eq!(view.cpi, cpi);
 # Ok::<(), oxideav_pcx::PcxError>(())
 ```
 
+### Spec-faithful CGA flatten entry point (`parse_pcx_cga_cpi`)
+
+[`parse_pcx_indexed_2bpp_cga_cpi`] above preserves the on-disk *indices*;
+[`parse_pcx_cga_cpi`] is its **flatten**-to-`Rgba` sibling for callers that
+want packed pixels directly. It resolves the 4-colour palette through the
+same full C / P / I decomposition of header byte 19, so the
+**color-burst monochrome** mode (`C = 1`) flattens to the four-level
+composite-grey ramp instead of being mis-coloured as a chroma palette —
+the gap the legacy `parse_pcx` flatten path (a `(palette-select,
+intensity)` two-bit model of bits 7 / 6) cannot close. It covers **both**
+CGA on-disk layouts: `2 bpp × 1 plane` packed (4 px/byte) and
+`1 bpp × 2 planes` plane-oriented; identical indices + header palette
+bytes flatten to identical pixels through either layout. The surfaced
+`dpi` / `window_origin` / `screen_size` fields follow the same spec §3
+"0 = unset" sentinel rules as [`parse_pcx`]. Any `(bpp, planes)` other
+than `(2, 1)` or `(1, 2)` is rejected with `PcxError::Unsupported` — every
+non-CGA mode already flattens spec-faithfully through [`parse_pcx`], which
+honours its header palette directly. The legacy [`parse_pcx`] flatten path
+and the legacy CGA typed accessors are unchanged — the C / P / I flatten
+entry point is strictly additive.
+
+```rust
+use oxideav_pcx::{encode_pcx_2bpp_cga_cpi, parse_pcx_cga_cpi, Pcx2bppCgaCpi};
+
+let cpi = Pcx2bppCgaCpi { monochrome: true, palette_white: false, intensity_bright: false };
+let pcx = encode_pcx_2bpp_cga_cpi(8, 4, &[0u8; 8 * 4], cpi, 0)?;
+let img = parse_pcx_cga_cpi(&pcx)?;
+// Monochrome mode → every pixel is grey (R == G == B).
+assert!(img.data.chunks_exact(4).all(|px| px[0] == px[1] && px[1] == px[2]));
+# Ok::<(), oxideav_pcx::PcxError>(())
+```
+
 ## Typed 1 bpp × 3 planes 8-colour EGA RGB view
 
 [`parse_pcx_indexed_1bpp_3planes`] is the fifth (and final) paletted typed

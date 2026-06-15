@@ -162,6 +162,13 @@
 //! are intrinsic to the plane bits — so the source tag has a single
 //! [`Pcx1bpp3PlanesPaletteSource::FixedPrimaries`] arm.
 //!
+//! [`parse_pcx_cga_cpi`] is the spec-faithful *flatten*-to-`Rgba` sibling
+//! of [`parse_pcx_indexed_2bpp_cga_cpi`]: it resolves the 4-colour CGA
+//! palette through the full C / P / I decomposition of header byte 19
+//! (incl. the color-burst monochrome composite-grey ramp, the mode the
+//! legacy [`parse_pcx`] flatten path cannot express), across both the
+//! `2 bpp × 1 plane` packed and `1 bpp × 2 planes` planar CGA layouts.
+//!
 //! ## DCX multi-page bundles
 //!
 //! [`parse_dcx`] / [`encode_dcx`] handle the Microsoft FAX multi-page
@@ -212,9 +219,9 @@ pub use dcx::{encode_dcx, parse_dcx, DcxImage, DCX_MAGIC, DCX_MAX_PAGES};
 #[doc(hidden)]
 pub use decoder::__bench_decode_planar_len;
 pub use decoder::{
-    parse_pcx, parse_pcx_indexed_1bpp_2planes_cga, parse_pcx_indexed_1bpp_3planes,
-    parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_2bpp_cga_cpi,
-    parse_pcx_indexed_4bpp, parse_pcx_indexed_8bpp,
+    parse_pcx, parse_pcx_cga_cpi, parse_pcx_indexed_1bpp_2planes_cga,
+    parse_pcx_indexed_1bpp_3planes, parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga,
+    parse_pcx_indexed_2bpp_cga_cpi, parse_pcx_indexed_4bpp, parse_pcx_indexed_8bpp,
 };
 pub use encoder::{
     encode_pcx_1bpp_2planes_cga, encode_pcx_1bpp_2planes_cga_dpi, encode_pcx_1bpp_3planes_ega_rgb,

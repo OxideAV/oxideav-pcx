@@ -157,43 +157,7 @@ pub fn parse_pcx(input: &[u8]) -> Result<PcxImage> {
         }
     };
 
-    // Surface the authoring DPI only when BOTH fields carry a non-zero
-    // value: per spec §3 the 0 sentinel means "unset" (many drawing
-    // programs leave the field at zero rather than 72×72), so an
-    // asymmetric (0, 300) header would not be a sensible printer/scanner
-    // reading.
-    let dpi = if header.h_dpi != 0 && header.v_dpi != 0 {
-        Some((header.h_dpi, header.v_dpi))
-    } else {
-        None
-    };
-
-    // Surface the window origin only when at least one of `x_min` /
-    // `y_min` is non-zero: PCX 3.0+ allows a non-zero origin to record
-    // the source crop region the pixel buffer came from (spec §3 derives
-    // visible width / height as `x_max - x_min + 1` / `y_max - y_min +
-    // 1`). The overwhelmingly common screen-authored case sits at
-    // `(0, 0)` — surfacing that as `None` keeps the re-encode wrapper
-    // emitting the conventional zero-origin header rather than restating
-    // an implicit default.
-    let window_origin = if header.x_min != 0 || header.y_min != 0 {
-        Some((header.x_min, header.y_min))
-    } else {
-        None
-    };
-
-    // Surface the authoring screen size only when BOTH header words
-    // carry a non-zero value: per spec §3 the `h_screen_size` /
-    // `v_screen_size` fields are PB IV / IV Plus additions and pre-PB-IV
-    // writers leave them at zero, so an asymmetric (0, 600) header
-    // would not be a meaningful display-size annotation. Treating both-
-    // non-zero as the sentinel keeps the round-trip wrapper from
-    // restating an implicit default.
-    let screen_size = if header.h_screen_size != 0 && header.v_screen_size != 0 {
-        Some((header.h_screen_size, header.v_screen_size))
-    } else {
-        None
-    };
+    let (dpi, window_origin, screen_size) = surface_header_metadata(&header);
 
     Ok(PcxImage {
         width,
@@ -205,6 +169,47 @@ pub fn parse_pcx(input: &[u8]) -> Result<PcxImage> {
         window_origin,
         screen_size,
     })
+}
+
+/// The three optional authoring-metadata pairs surfaced on a decoded
+/// [`PcxImage`]: `(dpi, window_origin, screen_size)`, each `Some((h, v))`
+/// or `None` per the spec §3 sentinel rules in [`surface_header_metadata`].
+type HeaderMetadata = (Option<(u16, u16)>, Option<(u16, u16)>, Option<(u16, u16)>);
+
+/// Resolve the three optional authoring-metadata pairs PCX records in its
+/// header — printer/scanner DPI (`h_dpi` / `v_dpi`), the source crop
+/// origin (`x_min` / `y_min`), and the PB IV authoring screen size
+/// (`h_screen_size` / `v_screen_size`) — applying the spec §3 "0 = unset"
+/// sentinel uniformly so every flatten entry point surfaces the same
+/// `Option` shape.
+///
+/// * DPI and screen size require BOTH components non-zero: per spec §3 a
+///   0 in either means "unset" (many drawing programs leave the field at
+///   zero rather than 72×72), so an asymmetric `(0, 300)` would not be a
+///   sensible reading.
+/// * Window origin surfaces when EITHER `x_min` / `y_min` is non-zero —
+///   PCX 3.0+ allows a non-zero origin to record the source crop region
+///   (spec §3 derives visible width/height as `x_max - x_min + 1` /
+///   `y_max - y_min + 1`); the common screen-authored `(0, 0)` collapses
+///   to `None` so a re-encode wrapper doesn't restate an implicit
+///   default.
+fn surface_header_metadata(header: &PcxHeader) -> HeaderMetadata {
+    let dpi = if header.h_dpi != 0 && header.v_dpi != 0 {
+        Some((header.h_dpi, header.v_dpi))
+    } else {
+        None
+    };
+    let window_origin = if header.x_min != 0 || header.y_min != 0 {
+        Some((header.x_min, header.y_min))
+    } else {
+        None
+    };
+    let screen_size = if header.h_screen_size != 0 && header.v_screen_size != 0 {
+        Some((header.h_screen_size, header.v_screen_size))
+    } else {
+        None
+    };
+    (dpi, window_origin, screen_size)
 }
 
 /// Decode an 8 bpp × 1 plane PCX into a typed paletted view (indices +
@@ -684,6 +689,102 @@ pub fn parse_pcx_indexed_2bpp_cga_cpi(input: &[u8]) -> Result<PcxIndexed2x1CgaCp
         palette,
         background_index,
         cpi,
+    })
+}
+
+/// Flatten a 4-colour CGA PCX to packed `Rgba`, resolving the palette
+/// via the verbatim ZSoft manual's full C / P / I decomposition of header
+/// byte 19 ("CGA Color Map", Header Byte #19) — the spec-faithful flatten
+/// sibling of [`parse_pcx_indexed_2bpp_cga_cpi`].
+///
+/// The standard [`parse_pcx`] entry point flattens the two CGA layouts
+/// (`2 bpp × 1 plane` packed and `1 bpp × 2 planes`) through the legacy
+/// `(palette-select, intensity)` two-bit model of byte 19 (bits 7 / 6),
+/// which cannot represent the manual's `color burst = monochrome` mode
+/// (`C = 1`, bit 7) and assigns the intensity bit to position 6 rather
+/// than the position 5 the manual specifies. This accessor honours all
+/// three bits per the spec — `C` (bit 7, color burst: 0 = chroma palette,
+/// 1 = composite-grey monochrome), `P` (bit 6, palette family: 0 =
+/// yellow, 1 = white), `I` (bit 5, intensity: 0 = dim, 1 = bright) — so a
+/// real-world monochrome-CGA capture flattens to the four-level
+/// composite-grey ramp instead of being mis-coloured as a chroma palette.
+///
+/// Palette entry 0 is the header byte 16 high-nibble background colour in
+/// both the colour and monochrome cases (the manual's "background color
+/// is determined in the upper four bits" rule). Both on-disk CGA layouts
+/// resolve identical colours from identical header bytes, so a `(2, 1)`
+/// and a `(1, 2)` file carrying the same indices flatten to the same
+/// pixels.
+///
+/// The returned [`PcxImage`] surfaces the same `Rgba` buffer shape and
+/// the same authoring-metadata fields (`dpi` / `window_origin` /
+/// `screen_size`) as [`parse_pcx`]. Rejects any (depth, planes)
+/// combination other than `(2, 1)` or `(1, 2)` with [`Error::unsupported`]
+/// — every non-CGA mode is already spec-faithful through [`parse_pcx`],
+/// which honours their header palettes directly.
+pub fn parse_pcx_cga_cpi(input: &[u8]) -> Result<PcxImage> {
+    let (header, pixels_planar, _vga_palette) = decode_planar_scanlines(input)?;
+    let cpi = Pcx2bppCgaCpi::from_byte19(header.ega_palette[19]);
+    let cga = cga_palette_from_cpi(&header.ega_palette, cpi);
+    let palette: [[u8; 4]; 4] = [
+        [cga[0][0], cga[0][1], cga[0][2], 0xFF],
+        [cga[1][0], cga[1][1], cga[1][2], 0xFF],
+        [cga[2][0], cga[2][1], cga[2][2], 0xFF],
+        [cga[3][0], cga[3][1], cga[3][2], 0xFF],
+    ];
+
+    let w = header.width() as usize;
+    let h = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+    let mut data = vec![0u8; w * h * 4];
+
+    match (header.bits_per_pixel, header.n_planes) {
+        (2, 1) => {
+            // Packed: 4 pixels per byte, MSB first (spec §4.1).
+            let src_rows = pixels_planar.chunks_exact(bpl);
+            let dst_rows = data.chunks_exact_mut(w * 4);
+            for (row, dst_row) in src_rows.zip(dst_rows) {
+                for (x, dst) in dst_row.chunks_exact_mut(4).enumerate() {
+                    let shift = 6 - 2 * (x & 3);
+                    let idx = ((row[x >> 2] >> shift) & 0b11) as usize;
+                    dst.copy_from_slice(&palette[idx]);
+                }
+            }
+        }
+        (1, 2) => {
+            // Plane-oriented: plane 0 then plane 1 within the row; the bit
+            // at each x-position stacks into the 2-bit index
+            // (`p0 | p1 << 1`).
+            let src_rows = pixels_planar.chunks_exact(bpl * 2);
+            let dst_rows = data.chunks_exact_mut(w * 4);
+            for (row, dst_row) in src_rows.zip(dst_rows) {
+                let (p0, p1) = row.split_at(bpl);
+                for (x, dst) in dst_row.chunks_exact_mut(4).enumerate() {
+                    let byte = x >> 3;
+                    let shift = 7 - (x & 7);
+                    let idx =
+                        (((p0[byte] >> shift) & 1) | (((p1[byte] >> shift) & 1) << 1)) as usize;
+                    dst.copy_from_slice(&palette[idx]);
+                }
+            }
+        }
+        (bpp, n) => {
+            return Err(Error::unsupported(format!(
+                "PCX: parse_pcx_cga_cpi expects a CGA layout ((2, 1) packed or (1, 2) planar), found {bpp} bpp × {n} planes"
+            )))
+        }
+    }
+
+    let (dpi, window_origin, screen_size) = surface_header_metadata(&header);
+    Ok(PcxImage {
+        width: header.width(),
+        height: header.height(),
+        pixel_format: PcxPixelFormat::Rgba,
+        data,
+        pts: None,
+        dpi,
+        window_origin,
+        screen_size,
     })
 }
 
@@ -1308,8 +1409,9 @@ const CGA_MONO_BRIGHT: [[u8; 3]; 4] = [
 /// This is the spec-faithful sibling of [`cga_palette_from_header`],
 /// which reads only bits 7 / 6 and cannot represent the monochrome axis
 /// nor the intensity bit at position 5. Used by the
-/// [`parse_pcx_indexed_2bpp_cga_cpi`] accessor and the
-/// `color burst = monochrome` flatten path.
+/// [`parse_pcx_indexed_2bpp_cga_cpi`] typed accessor and the
+/// [`parse_pcx_cga_cpi`] flatten entry point (which together cover the
+/// `color burst = monochrome` mode neither legacy path can express).
 ///
 /// Palette entry 0 is overridden by the header byte 16 high-nibble
 /// background colour in both the colour and monochrome cases, matching

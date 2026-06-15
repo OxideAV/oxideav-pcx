@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- *(decode)* `parse_pcx_cga_cpi` — spec-faithful CGA flatten-to-`Rgba`
+  entry point honouring the full C / P / I decomposition of header byte 19
+  (incl. the color-burst monochrome composite-grey ramp) across both the
+  `2 bpp × 1 plane` packed and `1 bpp × 2 planes` planar CGA layouts; the
+  flatten sibling of `parse_pcx_indexed_2bpp_cga_cpi`. Strictly additive —
+  the legacy `parse_pcx` flatten path is unchanged.
+
 ## [0.0.3](https://github.com/OxideAV/oxideav-pcx/compare/v0.0.2...v0.0.3) - 2026-06-15
 
 ### Fixed
