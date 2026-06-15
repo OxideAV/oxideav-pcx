@@ -26,7 +26,16 @@ truth for bitstream behaviour in this crate.
   into packed RGBA at decode time.
 * The 256-colour VGA tail palette (PCX 3.0+, leading `0x0C` marker
   769 bytes from EOF) is honoured for 8 bpp × 1 plane images. When
-  absent, an 8-bit grayscale ramp is used as a fallback.
+  absent, an 8-bit grayscale ramp is used as a fallback. The tail
+  probe is confined to that mode: spec §"VGA 256-color palette"
+  introduces the appended block only for "more than 16 colors" and
+  spec §"24-bit .PCX files" states 24-bit (8 bpp × 3 plane) images
+  "do **not** contain a palette". For every other `(bpp, planes)`
+  mode the whole post-header region is treated as RLE pixel data, so
+  a 24-bit / EGA / CGA stream whose RLE payload happens to carry a
+  `0x0C` byte 769 bytes from EOF is no longer mis-framed into
+  stripping 769 bytes of real pixels (the coincidental-marker hazard
+  the EGFF cross-reference flags for v3.0 files).
 * Header field `palette_info` (spec §3): value `2` is the grayscale
   flag — the decoder honours it for 8 bpp × 1 plane images and
   produces a grayscale ramp regardless of any tail palette. The

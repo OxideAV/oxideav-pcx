@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Round 308: confine the appended VGA tail-palette probe to the
+  256-colour Extended VGA mode (`8 bpp × 1 plane`). Spec §"VGA 256-color
+  palette" introduces the appended 768-byte block only for images with
+  "more than 16 colors", and spec §"24-bit .PCX files" states 24-bit
+  (8 bpp × 3 plane) images "do **not** contain a palette"; every
+  sub-256-colour mode carries its palette in the header `Colormap`
+  field. The decoder previously ran the `0x0C`-marker-769-bytes-from-EOF
+  probe for *every* `(bpp, planes)` mode, so a 24-bit / EGA / CGA stream
+  whose RLE payload happened to carry that byte pattern had 769 bytes of
+  real pixel data mis-claimed as a palette and stripped from the RLE
+  region — corrupting the decode or failing it as a truncated stream.
+  This is exactly the coincidental-marker hazard the EGFF cross-reference
+  flags for v3.0 files ("24-bit PCX images are always marked as v3.0,
+  yet never have an attached color palette" / the marker "might be 0Ch
+  by coincidence"). Regression-pinned by `tests/round308.rs` with a
+  hand-crafted 24-bit fixture that plants the marker inside the real
+  pixel region.
+
 ### Added
 
 - Round 301: 4-colour CGA in the plane-oriented `1 bpp × 2 planes`

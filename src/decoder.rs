@@ -860,7 +860,26 @@ fn decode_planar_scanlines(input: &[u8]) -> Result<PlanarDecode<'_>> {
         .checked_mul(height as usize)
         .ok_or_else(|| Error::invalid("PCX: scanline × height overflows usize"))?;
     let mut cursor = PCX_HEADER_SIZE;
-    let vga_palette = find_vga_palette(input);
+    // The appended 768-byte VGA palette (marker `0x0C` 769 bytes from EOF)
+    // belongs to the 256-colour Extended VGA mode *only* — spec §"VGA
+    // 256-color palette" introduces it as the carrier for "more than 16
+    // colors", and spec §"24-bit .PCX files" states 24-bit (8 bpp ×
+    // 3-plane) images "do **not** contain a palette". Every sub-256-colour
+    // mode (mono / CGA / EGA / 16-colour) carries its palette in the header
+    // `Colormap` field, never as a tail block. So the tail-palette probe is
+    // confined to `(8 bpp, 1 plane)`. The cross-reference summary
+    // (`docs/image/pcx/pcx-egff-fileformat-info.html`) flags exactly why
+    // this matters: "24-bit PCX images are always marked as v3.0, yet never
+    // have an attached color palette" and the `0x0C` marker byte "might be
+    // 0Ch by coincidence" — a 24-bit (or CGA/EGA) stream whose RLE data
+    // happens to end with that pattern would otherwise have 769 bytes of
+    // real pixel data mis-claimed as a palette and stripped from the RLE
+    // region, corrupting the decode.
+    let vga_palette = if (header.bits_per_pixel, header.n_planes) == (8, 1) {
+        find_vga_palette(input)
+    } else {
+        None
+    };
     let rle_end = if vga_palette.is_some() {
         input.len() - PCX_VGA_PALETTE_BLOCK_BYTES
     } else {
