@@ -22,36 +22,62 @@ use crate::error::{PcxError as Error, Result};
 /// scanline boundaries in well-formed files, but the decoder doesn't
 /// enforce that — it just reads exactly `out_len` output bytes.
 pub fn decode(input: &[u8], out: &mut Vec<u8>, out_len: usize) -> Result<usize> {
+    // `produced` is tracked as a delta from the buffer's starting length
+    // so the run-fill fast path below can grow `out` in bulk via
+    // `Vec::resize` (the allocator's `memset`) rather than one `push` per
+    // emitted byte. `decode` is called once per scanline against a
+    // caller-pre-`reserve`d planar `Vec`, so a bulk grow that stays
+    // within the reservation never reallocates.
+    let base = out.len();
     let mut produced = 0usize;
     let mut cursor = 0usize;
+    let n = input.len();
     while produced < out_len {
-        if cursor >= input.len() {
+        if cursor >= n {
             return Err(Error::invalid(
                 "PCX RLE stream truncated (no more packet bytes)",
             ));
         }
         let b = input[cursor];
-        cursor += 1;
         if (b & 0xC0) == 0xC0 {
+            // Run packet: header byte + one literal, emitted `count`
+            // times. `resize` hands the run length to the allocator's
+            // memset fast path rather than `push`-ing one byte at a
+            // time through a bounds + capacity check per copy.
             let count = (b & 0x3F) as usize;
-            if cursor >= input.len() {
+            if cursor + 1 >= n {
                 return Err(Error::invalid(
                     "PCX RLE stream truncated mid-packet (count without literal)",
                 ));
             }
-            let lit = input[cursor];
-            cursor += 1;
+            let lit = input[cursor + 1];
+            cursor += 2;
             if produced + count > out_len {
                 return Err(Error::invalid(format!(
                     "PCX RLE packet overruns scanline (produced={produced}, packet count={count}, target={out_len})"
                 )));
             }
-            for _ in 0..count {
-                out.push(lit);
+            // Short runs (the common case on high-entropy bit-packed
+            // planar layouts) `push` cheaper than they `resize` — the
+            // resize bookkeeping doesn't amortise below a few bytes. Long
+            // runs (smooth 24-bit channels) take the `resize` memset fast
+            // path. The threshold is empirical against the decode bench.
+            if count <= 2 {
+                for _ in 0..count {
+                    out.push(lit);
+                }
+            } else {
+                out.resize(base + produced + count, lit);
             }
             produced += count;
         } else {
+            // Literal byte: emit it directly. (A maximal-span
+            // `extend_from_slice` copy was measured slower here — the
+            // per-span scan loop costs more than it saves on the
+            // singleton-heavy literal streams the bit-packed low-bpp
+            // planar layouts produce.)
             out.push(b);
+            cursor += 1;
             produced += 1;
         }
     }

@@ -524,6 +524,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Round 311 (depth-mode profile / optimisation): reworked the spec §3.2
+  RLE byte-stream decoder (`rle::decode` in `src/rle.rs`) — the #1
+  measured decode hotspot the r286 `BENCHMARKS.md` phase-split named
+  (~95% of 24bpp decode time). The per-scanline run-fill previously
+  emitted a run of `count` identical bytes via a scalar
+  `for _ in 0..count { out.push(lit) }` loop, paying a length + capacity
+  check per byte even though the caller pre-`reserve`s the planar `Vec`
+  to its exact size (so no run-fill ever reallocates). The run-fill now
+  takes a length-thresholded path: runs of `count > 2` grow the buffer
+  in one `Vec::resize`, letting the allocator's `memset` fast path fill
+  the run, while runs of `count <= 2` keep the cheaper `push` (the
+  resize bookkeeping doesn't amortise below a few bytes — the threshold
+  is empirical against the decode bench, where high-entropy bit-packed
+  planar layouts are dominated by very short runs + singleton literals).
+  The literal path is unchanged (`push` per byte; a maximal-span
+  `extend_from_slice` copy was measured slower because the per-span scan
+  loop costs more than it saves on the singleton-heavy literal streams
+  the low-bpp modes produce). Output bytes are bit-identical to the
+  pre-r311 implementation — all 187 registry tests + the standalone
+  `--no-default-features` build (roundtrip / cross_validate cover the
+  byte-exact contract) stay green unmodified. r286 `decode` Criterion
+  bench, median wall-clock (3 s measurement / longer runs for the
+  bit-packed paths), against the r311 pre-change baseline:
+  decode_24bpp_320×240 −25.5%, decode_24bpp_640×480 −11.8%,
+  decode_24bpp_1920×1080 −13.5%, decode_8bpp_indexed_320×240 −12.6%,
+  decode_dcx_4_pages −20.5%, phase-split decode_phase_rle_24bpp_640×480
+  −12.9%, phase-split decode_phase_rle_8bpp_grayscale_512×512 −7.1%,
+  decode_4bpp_packed_320×240 −5.2%, decode_1bpp_4planes_ega_320×240
+  −2.6%; decode_2bpp_cga / decode_1bpp_mono within run-to-run variance
+  (≤ ~1% in an uncontended run). No new dependencies, no `unsafe`, no
+  SIMD intrinsics. Encoder + per-plane-assembly hot paths unchanged.
 - Round 209: Restructured the six planar-unpack hot paths in
   `src/decoder.rs` to walk both source scanlines and the destination
   RGBA buffer via `chunks_exact_mut`, with pre-sliced per-plane row

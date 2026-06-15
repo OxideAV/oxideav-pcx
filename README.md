@@ -177,14 +177,31 @@ cargo bench -p oxideav-pcx --bench encode
 cargo bench -p oxideav-pcx --bench roundtrip
 ```
 
+Round 311 (depth-mode profile / optimisation) acted on the r286
+finding: the spec §3.2 RLE run-fill in `src/rle.rs` now grows the
+planar buffer in one `Vec::resize` (the allocator's `memset` fast path)
+for runs of `count > 2`, keeping the cheaper `push` for runs of
+`count <= 2` where the resize bookkeeping doesn't amortise. The caller
+pre-`reserve`s the planar `Vec` to its exact size so a resize never
+reallocates. Single-threaded apple-silicon medians vs the r311
+pre-change baseline: 24-bit 320×240 decode −25.5% (1.52 → 2.11 GiB/s),
+24-bit 1920×1080 −13.5% (1.56 → 1.88 GiB/s), 8-bit indexed 320×240
+−12.6%, DCX 4-page −20.5%, and the phase-split RLE-only probes −12.9%
+(24bpp) / −7.1% (grayscale); the bit-packed `mono` / `2bpp CGA` rows
+stay neutral (their high-entropy streams are short-run / literal
+dominated). Output bytes stay bit-identical (roundtrip + cross_validate
+green). Full ranked baseline in [`BENCHMARKS.md`](BENCHMARKS.md), which
+now names the encode side (`encode_1bpp_4planes_ega`) as the next
+profile-optimisation target.
+
 Round 286 (depth-mode benchmark) added a **phase-split** probe to the
 `decode` harness (`decode_phase_rle_*`, timing the RLE-decode phase in
 isolation via the `#[doc(hidden)]` `__bench_decode_planar_len`) and
 captured the full ranked baseline in
-[`BENCHMARKS.md`](BENCHMARKS.md). The split shows the spec §3.2
-run-length codec (`rle::decode`) is ~95% of 24bpp decode time while
+[`BENCHMARKS.md`](BENCHMARKS.md). The split showed the spec §3.2
+run-length codec (`rle::decode`) was ~95% of 24bpp decode time while
 per-plane assembly is already cheap (post-r209), naming `rle::decode`
-the next profile-optimisation target.
+the next profile-optimisation target (acted on in r311 above).
 
 Round 209 (depth-mode profile / optimisation) reworked the six planar
 unpack hot paths in `src/decoder.rs` against the r197 baseline. Single

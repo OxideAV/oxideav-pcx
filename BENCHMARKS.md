@@ -39,6 +39,33 @@ or the private `PcxHeader`), so the crate's public type surface is
 unchanged; `src/` decode/encode bytes are byte-identical to the
 pre-r286 tree.
 
+## Round 311 decode baseline (Apple M-series, `--measurement-time 3.0`)
+
+Median throughput / time reported by Criterion **after the r311
+`rle::decode` run-fill optimisation** (see "Round 311" below). Single
+dev-machine numbers — use them as a regression guard, not cross-platform
+specs. Decode/roundtrip `Throughput::Bytes` counts output RGBA bytes
+(`w·h·4`); the `decode_phase_rle_*` probes count the planar-buffer bytes
+produced. The `Δ vs r286` column is the wall-clock change against the
+r286 row beside it (run-to-run variance ≈ ±3% for the sub-100 µs rows).
+
+### Decode
+
+| Scenario                              | Time (r311) | Throughput (r311) | Δ vs r286 |
+| ------------------------------------- | ----------- | ----------------- | --------- |
+| `decode_24bpp_1920x1080`              | 4.11 ms     | 1.88 GiB/s        | −13.5%    |
+| `decode_24bpp_640x480`                | 627 µs      | 1.83 GiB/s        | −11.8%    |
+| `decode_24bpp_320x240`                | 135 µs      | 2.11 GiB/s        | −25.5%    |
+| `decode_8bpp_indexed_320x240`         | 79 µs       | 3.62 GiB/s        | −12.6%    |
+| `decode_8bpp_grayscale_512x512`       | 317 µs      | 3.08 GiB/s        | neutral   |
+| `decode_1bpp_mono_512x512`            | 173 µs      | 5.65 GiB/s        | neutral   |
+| `decode_4bpp_packed_320x240`          | 69 µs       | 4.13 GiB/s        | −5.2%     |
+| `decode_2bpp_cga_320x240`             | 46 µs       | 6.22 GiB/s        | neutral   |
+| `decode_1bpp_4planes_ega_320x240`     | 119 µs      | 2.41 GiB/s        | −2.6%     |
+| `decode_dcx_4_pages_320x240`          | 534 µs      | 2.14 GiB/s        | −20.5%    |
+| **phase-split:** `decode_phase_rle_24bpp_640x480`         | 595 µs | 1.44 GiB/s (planar) | −12.9% |
+| **phase-split:** `decode_phase_rle_8bpp_grayscale_512x512`| 263 µs | 950 MiB/s (planar)  | −7.1%  |
+
 ## Round 286 baseline (Apple M-series, `--measurement-time 2.0`)
 
 Median throughput / time reported by Criterion. Single dev-machine
@@ -109,31 +136,36 @@ assembly is already cheap** (the r209 row-slice rewrite did its job).
 | 4    | per-plane assembly (`unpack_*`)            | full − RLE: ~38 µs (24bpp 640×480), ~55 µs (8bpp gray 512²). Already fast post-r209; **not** the next target.            | ~5% of decode         |
 | 5    | DCX offset-table walk / assembler          | `encode_dcx` 60 GiB/s (memcpy-bound concat), `parse_dcx` ≈ 4× `parse_pcx` (page-parse-bound, no per-bundle overhead).     | negligible            |
 
+### Round 311 — `rle::decode` run-fill (LANDED)
+
+The r286 #1 target landed in r311. The per-scanline run-fill now grows
+the planar `Vec` in one `Vec::resize` for runs of `count > 2` (the
+allocator's `memset` fast path), while runs of `count <= 2` keep the
+cheaper `push`. The caller already pre-`reserve`s the planar `Vec` to
+its exact `total_planar` size, so a resize never reallocates. The
+length threshold matters: high-entropy bit-packed planar layouts
+(`mono` / `2bpp` / `4-plane EGA`) are dominated by very short runs +
+singleton literals, where the resize bookkeeping doesn't amortise and
+an unconditional resize *regressed* those rows ~5–10%; the threshold
+keeps them neutral while the run-heavy 24bpp / DCX / 8bpp paths take
+the memset path (24bpp 320×240 −25.5%, DCX −20.5%, 8bpp-indexed
+−12.6%, phase-split RLE 24bpp −12.9%). The literal path was left as a
+per-byte `push` — a maximal-span `extend_from_slice` copy was measured
+slower because the per-span scan loop costs more than it saves on the
+singleton-heavy literal streams the low-bpp modes produce. Output bytes
+are bit-identical (roundtrip / cross_validate green).
+
 ### Next PROFILE-OPT target
 
-**`rle::decode` — the per-scanline run-length decode loop in
-`src/rle.rs`.** It is the #1 measured cost of every decode scenario
-(~95% of 24bpp decode time) and the optimiser cannot vectorise its
-current shape because the inner run-fill is a scalar `for _ in
-0..count { out.push(lit) }` against a `Vec` that may reallocate, and
-the literal path is a single `out.push(b)` per byte. Two concrete
-levers for the next round to A/B against this r286 baseline:
-
-* **Run-fill via `resize` / `extend(iter::repeat)` instead of a
-  push loop** — let the allocator's `memset` fast path fill runs, and
-  pre-`reserve` the planar `Vec` to its exact `total_planar` size
-  (already computed in `decode_planar_scanlines`) so no run-fill ever
-  triggers a realloc + bounds re-check.
-* **Bulk literal copy** — when a literal byte is followed by more
-  non-header bytes, copy the literal span with `extend_from_slice`
-  rather than one `push` per byte.
-
-A close secondary target is **`encode_1bpp_4planes_ega`** (#3): replace
-the per-pixel 4-plane scatter with a per-byte (8-pixel) shuffle that
-builds all four plane bytes in registers before the indexed store,
-mirroring the gain the r209 decode-side row-slice rewrite captured.
-Both targets are pure compute on the RLE / bit-shuffle inner loops and
-need no spec changes.
+With `rle::decode` optimised, the new #1 attributable cost is the
+**encode** side. **`encode_1bpp_4planes_ega`** (110 MiB/s — 6–7× slower
+than 24bpp encode) is the standout: replace the per-pixel 4-plane
+scatter (`row[plane·bpl + x/8] |= 1 << (7−x%8)`, four indexed stores
+per pixel) with a per-byte (8-pixel) shuffle that builds all four plane
+bytes in registers before the indexed store, mirroring the gain the
+r209 decode-side row-slice rewrite captured. A secondary encode target
+is `rle::encode`'s run-finder + per-byte emit. Both are pure compute on
+the bit-shuffle / RLE inner loops and need no spec changes.
 
 ## Reproducing
 
@@ -146,6 +178,6 @@ CARGO_TARGET_DIR=/tmp/oxideav-pcx-target \
   cargo bench -p oxideav-pcx --bench roundtrip
 ```
 
-Append `-- --quick` for a fast smoke run, or `-- --save-baseline r286`
-to capture a named baseline a later round can `--baseline r286`
-against.
+Append `-- --quick` for a fast smoke run, or
+`-- --save-baseline r311` to capture a named baseline a later round can
+`--baseline r311` against.
