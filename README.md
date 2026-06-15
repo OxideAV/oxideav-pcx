@@ -152,77 +152,28 @@ assert_eq!(img.width as usize * img.height as usize * 4, img.data.len());
 
 ## Benchmarks
 
-Round 197 (depth-mode benchmarks) adds three Criterion harnesses under
-`benches/` so future optimisation rounds can A/B-test changes to the
-decoder + encoder hot paths against a stable baseline:
+Three Criterion harnesses live under `benches/` for A/B-testing decoder
++ encoder hot-path changes against a stable baseline:
 
 * `decode` — drives [`parse_pcx`] / [`parse_dcx`] across every spec §4.1
   (depth, planes) tuple at 320×240 / 640×480 / 512×512 / 1920×1080
-  scales plus a 4-page DCX bundle.
-* `encode` — drives the eight standalone write paths
-  (`encode_pcx_24bpp` / `encode_pcx_8bpp_indexed` /
-  `encode_pcx_8bpp_grayscale` / `encode_pcx_1bpp_mono` /
-  `encode_pcx_4bpp_packed` / `encode_pcx_2bpp_cga` /
-  `encode_pcx_1bpp_4planes_ega` / `encode_dcx`).
+  scales plus a 4-page DCX bundle, with a phase-split probe timing the
+  spec §3.2 RLE decode in isolation.
+* `encode` — drives the eight standalone write paths.
 * `roundtrip` — pairs each encode path with its matching decode so a
   perf regression that quietly mis-encodes surfaces as a panic rather
   than a silently-cheaper benchmark number.
 
-Bench inputs are synthesised on the fly via a deterministic xorshift32
-fill; no fixture files are committed. Run with:
+Bench inputs are synthesised on the fly via a deterministic fill; no
+fixture files are committed. Output bytes stay bit-identical across
+optimisation passes (roundtrip + cross-validate). A full ranked
+baseline is in [`BENCHMARKS.md`](BENCHMARKS.md).
 
 ```sh
 cargo bench -p oxideav-pcx --bench decode
 cargo bench -p oxideav-pcx --bench encode
 cargo bench -p oxideav-pcx --bench roundtrip
 ```
-
-Round 311 (depth-mode profile / optimisation) acted on the r286
-finding: the spec §3.2 RLE run-fill in `src/rle.rs` now grows the
-planar buffer in one `Vec::resize` (the allocator's `memset` fast path)
-for runs of `count > 2`, keeping the cheaper `push` for runs of
-`count <= 2` where the resize bookkeeping doesn't amortise. The caller
-pre-`reserve`s the planar `Vec` to its exact size so a resize never
-reallocates. Single-threaded apple-silicon medians vs the r311
-pre-change baseline: 24-bit 320×240 decode −25.5% (1.52 → 2.11 GiB/s),
-24-bit 1920×1080 −13.5% (1.56 → 1.88 GiB/s), 8-bit indexed 320×240
-−12.6%, DCX 4-page −20.5%, and the phase-split RLE-only probes −12.9%
-(24bpp) / −7.1% (grayscale); the bit-packed `mono` / `2bpp CGA` rows
-stay neutral (their high-entropy streams are short-run / literal
-dominated). Output bytes stay bit-identical (roundtrip + cross_validate
-green). Full ranked baseline in [`BENCHMARKS.md`](BENCHMARKS.md), which
-now names the encode side (`encode_1bpp_4planes_ega`) as the next
-profile-optimisation target.
-
-Round 286 (depth-mode benchmark) added a **phase-split** probe to the
-`decode` harness (`decode_phase_rle_*`, timing the RLE-decode phase in
-isolation via the `#[doc(hidden)]` `__bench_decode_planar_len`) and
-captured the full ranked baseline in
-[`BENCHMARKS.md`](BENCHMARKS.md). The split showed the spec §3.2
-run-length codec (`rle::decode`) was ~95% of 24bpp decode time while
-per-plane assembly is already cheap (post-r209), naming `rle::decode`
-the next profile-optimisation target (acted on in r311 above).
-
-Round 209 (depth-mode profile / optimisation) reworked the six planar
-unpack hot paths in `src/decoder.rs` against the r197 baseline. Single
-threaded apple-silicon medians (3 s measurement / 30 samples / fresh
-target dir per side): 24-bit 1920×1080 decode 6.63 ms → 5.04 ms
-(−24.0 %, 1.16 → 1.53 GiB/s); 24-bit 640×480 879 µs → 731 µs
-(−16.8 %); 24-bit 320×240 206 µs → 185 µs (−10.2 %); 8-bit indexed
-320×240 128 µs → 92 µs (−28.1 %, 2.24 → 3.12 GiB/s); 8-bit grayscale
-512×512 491 µs → 366 µs (−25.4 %, 1.99 → 2.67 GiB/s); 1-bit
-monochrome 512×512 226 µs → 182 µs (−19.5 %, 4.32 → 5.38 GiB/s); 4-bit
-packed 320×240 105 µs → 74 µs (−29.4 %); 2-bit CGA 320×240 84 µs →
-51 µs (−39.0 %, 3.42 → 5.59 GiB/s); 1-bit × 4-plane EGA 320×240 148 µs
-→ 114 µs (−22.8 %). Geometric-mean speedup ≈ 22.6 % across the nine
-single-frame paths. Output bytes stay bit-identical (cross-validate +
-roundtrip tests all pass). The transformation is mechanical:
-`chunks_exact_mut(w * 4)` over the destination row + per-pixel
-`chunks_exact_mut(4)` for the four RGBA stores, pre-sliced per-plane
-row references for the multi-plane variants, and pre-baked
-`[r, g, b, 0xFF]` palettes so per-pixel palette lookups become one
-`copy_from_slice` instead of three scalar byte writes plus an alpha
-byte.
 
 ## Fuzzing
 
@@ -295,7 +246,7 @@ the plain writers default to:
 * `encode_pcx_1bpp_3planes_ega_rgb_dpi(w, h, &rgb, dpi)`
 * `encode_pcx_1bpp_4planes_ega_dpi(w, h, &indices, &palette, dpi)`
 
-The four EGA / CGA palette-mode `_dpi` writers (r295) mirror their
+The four EGA / CGA palette-mode `_dpi` writers mirror their
 non-DPI siblings byte-for-byte except for the header `h_dpi` / `v_dpi`
 words (spec §3 offsets 12 / 14), so the `_dpi` suite now spans every
 encode path. Per spec §3 the DPI field is format-independent — "the
@@ -675,10 +626,9 @@ assert!(matches!(
   doesn't list as a formal video mode; real-world files at this
   depth are vanishingly rare and the existing 1 bpp × 2 / 1 bpp × 4 /
   4 bpp × 1 / 1 bpp × 3 paths cover every EGA/VGA/CGA fixture we've
-  seen. With r301's `1 bpp × 2 planes` CGA mode landed, every row of
-  the EGFF canonical mode matrix (monochrome / CGA / EGA / EGA-VGA /
-  Extended-VGA / Extended-VGA-XGA) is now covered on both decode and
-  encode.
+  seen. Every other row of the EGFF canonical mode matrix (monochrome /
+  CGA / EGA / EGA-VGA / Extended-VGA / Extended-VGA-XGA) is covered on
+  both decode and encode.
 * `PixelFormat::Pal8` input to the framework `Encoder`. The
   out-of-band palette companion needed by `Pal8` isn't currently
   carried by `VideoFrame`; standalone callers can still reach
