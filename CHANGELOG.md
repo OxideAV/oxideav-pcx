@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- *(decode)* RLE decode is now **continuous across the whole image**
+  instead of resetting at every scanline. The manual's own sample
+  reader (`docs/image/pcx/pcx-pcgpe.txt` lines 316-326) consumes the
+  stream straight through `BytesPerLine × NPlanes × (1 + Ymax - Ymin)`
+  bytes with no per-scanline break, and the spec's "decoding break at
+  the end of each scan line" is an encoder convention, not a decode-time
+  requirement. A PCX whose run packet straddles a scanline, plane, or
+  trailing-padding boundary — produced by encoders that don't break runs
+  at row ends — now decodes byte-identically to its row-broken
+  equivalent rather than being rejected mid-row. A run that would
+  overrun the whole-image byte total is still rejected; only the per-row
+  cap was relaxed. Output for every spec-conformant file (where runs
+  never cross the boundary) is unchanged.
+
 ### Added
 
 - *(decode/encode)* 4 bpp × 4 planes composite-index mode — the one

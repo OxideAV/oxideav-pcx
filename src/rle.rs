@@ -17,15 +17,21 @@ use crate::error::{PcxError as Error, Result};
 
 /// Decode `out_len` bytes from a PCX RLE byte stream.
 ///
-/// Returns the number of input bytes consumed so the caller can
-/// continue reading subsequent scanlines. PCX RLE doesn't cross
-/// scanline boundaries in well-formed files, but the decoder doesn't
-/// enforce that — it just reads exactly `out_len` output bytes.
+/// Returns the number of input bytes consumed. The caller drives this
+/// with the *whole-image* byte total (`bytes_per_line × n_planes ×
+/// height`), matching the manual's own decode fragment
+/// (`docs/image/pcx/pcx-pcgpe.txt` lines 316-326), which consumes the
+/// stream straight through `BytesPerLine * Nplanes * (1 + Ymax - Ymin)`
+/// bytes with no per-scanline RLE reset. The spec's "decoding break at
+/// the end of each scan line" is an encoder convention, not a decode
+/// requirement, so a run packet that straddles a row boundary in the
+/// input decodes correctly here — `out_len` only caps the total output,
+/// not per-row spans.
 pub fn decode(input: &[u8], out: &mut Vec<u8>, out_len: usize) -> Result<usize> {
     // `produced` is tracked as a delta from the buffer's starting length
     // so the run-fill fast path below can grow `out` in bulk via
     // `Vec::resize` (the allocator's `memset`) rather than one `push` per
-    // emitted byte. `decode` is called once per scanline against a
+    // emitted byte. `decode` is called once for the whole image against a
     // caller-pre-`reserve`d planar `Vec`, so a bulk grow that stays
     // within the reservation never reallocates.
     let base = out.len();
@@ -54,7 +60,7 @@ pub fn decode(input: &[u8], out: &mut Vec<u8>, out_len: usize) -> Result<usize> 
             cursor += 2;
             if produced + count > out_len {
                 return Err(Error::invalid(format!(
-                    "PCX RLE packet overruns scanline (produced={produced}, packet count={count}, target={out_len})"
+                    "PCX RLE packet overruns image buffer (produced={produced}, packet count={count}, target={out_len})"
                 )));
             }
             // Short runs (the common case on high-entropy bit-packed

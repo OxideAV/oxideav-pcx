@@ -1147,7 +1147,7 @@ fn decode_planar_scanlines(input: &[u8]) -> Result<PlanarDecode<'_>> {
     let total_planar = scanline
         .checked_mul(height as usize)
         .ok_or_else(|| Error::invalid("PCX: scanline × height overflows usize"))?;
-    let mut cursor = PCX_HEADER_SIZE;
+    let cursor = PCX_HEADER_SIZE;
     // The appended 768-byte VGA palette (marker `0x0C` 769 bytes from EOF)
     // belongs to the 256-colour Extended VGA mode *only* — spec §"VGA
     // 256-color palette" introduces it as the carrier for "more than 16
@@ -1183,11 +1183,26 @@ fn decode_planar_scanlines(input: &[u8]) -> Result<PlanarDecode<'_>> {
             "PCX: claimed pixel data ({total_planar} bytes) exceeds what {available} RLE bytes can decode"
         )));
     }
+    // Decode the whole image as a single continuous RLE stream of
+    // `total_planar = scanline × height` bytes, exactly as the manual's
+    // own decode fragment does (`pcx-pcgpe.txt` lines 316-326: the
+    // `for (l = 0; l < lsize; )` loop runs over `BytesPerLine * Nplanes *
+    // (1 + Ymax - Ymin)` with no per-scanline RLE reset). The prose
+    // "there should always be a decoding break at the end of each scan
+    // line" (spec §"Decoding .PCX Files") is an *encoder* convention —
+    // a "should", not a decode-time requirement — and the manual's C
+    // reader honours it by consuming the stream straight through. A
+    // file written by an encoder that lets a run packet straddle the
+    // row boundary therefore decodes identically here, instead of being
+    // rejected mid-row. The flat `total_planar` buffer is re-split into
+    // per-row `chunks_exact(bytes_per_line)` slices by the plane-unpack
+    // paths downstream, so a continuous decode yields a byte-identical
+    // buffer to the old per-scanline loop for any spec-conformant file
+    // (where runs never cross the boundary anyway). `scanline` is still
+    // the row stride the unpack paths use; `total_planar` is its image
+    // total.
     let mut pixels_planar = Vec::with_capacity(total_planar);
-    for _ in 0..height as usize {
-        let consumed = rle::decode(&input[cursor..rle_end], &mut pixels_planar, scanline)?;
-        cursor += consumed;
-    }
+    rle::decode(&input[cursor..rle_end], &mut pixels_planar, total_planar)?;
     Ok((header, pixels_planar, vga_palette))
 }
 

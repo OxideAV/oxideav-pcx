@@ -44,6 +44,16 @@ truth for bitstream behaviour in this crate.
   width × `bits_per_pixel`: a value smaller than the per-plane row
   width required by the spec is rejected up front rather than
   silently mis-framing the planar→packed reconstruction.
+* RLE decode is **continuous across the whole image**, matching the
+  manual's own sample reader (the `for (l = 0; l < lsize; )` loop
+  consumes `BytesPerLine × NPlanes × YSIZE` bytes straight through with
+  no per-scanline reset). The spec's "decoding break at the end of each
+  scan line" is an *encoder* convention, not a decode-time requirement,
+  so a file whose run packet straddles a scanline (or plane, or trailing
+  padding) boundary now decodes byte-identically to its row-broken
+  equivalent instead of being rejected mid-row. A run that would overrun
+  the whole-image byte total is still rejected (the total-bytes cap is
+  preserved; only the per-row cap was relaxed).
 * The 16-entry header EGA palette is used for `1 bpp × 4 planes`
   and `4 bpp × 1 plane`; if the header field is all zeros (which
   PCX 3.0+ files often emit) the standard hardware EGA palette per
