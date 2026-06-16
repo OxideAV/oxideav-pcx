@@ -36,7 +36,7 @@ use crate::error::{PcxError as Error, Result};
 use crate::image::{
     Pcx1bpp3PlanesPaletteSource, Pcx1bpp4PlanesPaletteSource, Pcx2bppCgaCpi,
     Pcx2bppCgaPaletteSource, Pcx4bppPaletteSource, PcxImage, PcxIndexed1x2Cga, PcxIndexed1x3,
-    PcxIndexed1x4, PcxIndexed2x1Cga, PcxIndexed2x1CgaCpi, PcxIndexed4, PcxIndexed8,
+    PcxIndexed1x4, PcxIndexed2x1Cga, PcxIndexed2x1CgaCpi, PcxIndexed4, PcxIndexed4x4, PcxIndexed8,
     PcxPaletteSource, PcxPixelFormat,
 };
 use crate::rle;
@@ -969,6 +969,85 @@ pub fn parse_pcx_indexed_1bpp_3planes(input: &[u8]) -> Result<PcxIndexed1x3> {
         indices,
         palette: RGB_PRIMARIES_PALETTE,
         palette_source: Pcx1bpp3PlanesPaletteSource::FixedPrimaries,
+    })
+}
+
+/// Decode a 4 bpp × 4 planes PCX into a typed composite-index view
+/// (one `u16` per pixel).
+///
+/// This is the one `(bits_per_pixel, n_planes)` slot the EGFF canonical
+/// PCX video-mode matrix
+/// (`docs/image/pcx/pcx-egff-fileformat-info.html`, "PCX Image Data
+/// Format") does not list as a hardware video mode. It is nonetheless
+/// *structurally* reachable: the cross-reference summary's colour-count
+/// formula `MaxNumberOfColors = (1 << (BitsPerPixel * NumBitPlanes))`
+/// evaluates to `1 << (4 * 4) = 65536` for this mode, and the on-disk
+/// scanline layout is the same plane-oriented form every multi-plane PCX
+/// uses (spec §"Image File (.PCX) Format": "each line of the image is
+/// stored by color plane"). Each scanline carries plane 0, plane 1,
+/// plane 2, plane 3 one after another; per spec §"Decoding .PCX Files"
+/// `BytesPerLine` marks where each plane ends within the scanline.
+///
+/// Each plane holds `BitsPerPixel = 4` bits per pixel (2 pixels/byte,
+/// high nibble first — the same packing the `4 bpp × 1 plane` path uses).
+/// The nibble at the same x-position across the four planes stacks into a
+/// 16-bit composite index (`p0 | p1 << 4 | p2 << 8 | p3 << 12`), the
+/// natural generalisation of the [`parse_pcx_indexed_1bpp_4planes`]
+/// plane-`k`-supplies-chunk-`k` ordering from 1-bit to 4-bit chunks.
+///
+/// No palette is surfaced — the ZSoft rev-5 manual and the EGFF
+/// cross-reference define palette geometries only for the ≤ 256-colour
+/// modes, so there is no documented mapping from a 65536-value composite
+/// index to RGB. The returned [`PcxIndexed4x4`] therefore carries the raw
+/// composite indices only (one `u16` per pixel, top-down, per-row padding
+/// stripped) and leaves interpretation to the caller. This is also why
+/// [`parse_pcx`] rejects `(4, 4)` with [`Error::unsupported`] rather than
+/// inventing a colour mapping the spec does not define.
+///
+/// Rejects any `(depth, planes)` combination other than `(4, 4)` with
+/// [`Error::unsupported`].
+pub fn parse_pcx_indexed_4bpp_4planes(input: &[u8]) -> Result<PcxIndexed4x4> {
+    let (header, scanlines, _vga_palette) = decode_planar_scanlines(input)?;
+    if (header.bits_per_pixel, header.n_planes) != (4, 4) {
+        return Err(Error::unsupported(format!(
+            "PCX: parse_pcx_indexed_4bpp_4planes expects 4 bpp × 4 planes, found {} bpp × {} planes",
+            header.bits_per_pixel, header.n_planes
+        )));
+    }
+    let width = header.width() as usize;
+    let height = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+
+    // For each scanline read four `bpl`-byte plane slices in order
+    // (plane 0..plane 3). Each plane carries 4 bits per pixel, 2 pixels
+    // per byte with the high nibble first (matching the `4 bpp × 1 plane`
+    // packed layout). The nibble at the same x-position in each plane
+    // contributes one 4-bit chunk of the 16-bit composite index in the
+    // order `p0 | p1 << 4 | p2 << 8 | p3 << 12`. The on-disk row may
+    // carry trailing padding pixels beyond the visible width (spec §1
+    // rounds `bytes_per_line` up to an even number); the typed view
+    // surfaces only the visible pixels.
+    let mut indices = Vec::with_capacity(width * height);
+    for row in scanlines.chunks_exact(bpl * 4) {
+        let (p0, rest) = row.split_at(bpl);
+        let (p1, rest) = rest.split_at(bpl);
+        let (p2, p3) = rest.split_at(bpl);
+        for x in 0..width {
+            let byte = x >> 1;
+            let nib = |p: &[u8]| -> u16 {
+                let b = p[byte];
+                (if x & 1 == 0 { b >> 4 } else { b & 0x0F }) as u16
+            };
+            let idx = nib(p0) | (nib(p1) << 4) | (nib(p2) << 8) | (nib(p3) << 12);
+            indices.push(idx);
+        }
+    }
+    debug_assert_eq!(indices.len(), width * height);
+
+    Ok(PcxIndexed4x4 {
+        width: header.width(),
+        height: header.height(),
+        indices,
     })
 }
 

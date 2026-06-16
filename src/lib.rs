@@ -222,7 +222,8 @@ pub use decoder::{
     ega_quantize_component, ega_quantize_level, ega_quantize_palette, parse_pcx, parse_pcx_cga_cpi,
     parse_pcx_indexed_1bpp_2planes_cga, parse_pcx_indexed_1bpp_3planes,
     parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_2bpp_cga_cpi,
-    parse_pcx_indexed_4bpp, parse_pcx_indexed_4bpp_ega_hw, parse_pcx_indexed_8bpp,
+    parse_pcx_indexed_4bpp, parse_pcx_indexed_4bpp_4planes, parse_pcx_indexed_4bpp_ega_hw,
+    parse_pcx_indexed_8bpp,
 };
 pub use encoder::{
     encode_pcx_1bpp_2planes_cga, encode_pcx_1bpp_2planes_cga_dpi, encode_pcx_1bpp_3planes_ega_rgb,
@@ -230,15 +231,15 @@ pub use encoder::{
     encode_pcx_1bpp_4planes_ega_dpi, encode_pcx_1bpp_mono, encode_pcx_1bpp_mono_dpi,
     encode_pcx_24bpp, encode_pcx_24bpp_dpi, encode_pcx_24bpp_image, encode_pcx_24bpp_screen,
     encode_pcx_24bpp_window, encode_pcx_24bpp_window_dpi, encode_pcx_24bpp_window_dpi_screen,
-    encode_pcx_2bpp_cga, encode_pcx_2bpp_cga_cpi, encode_pcx_2bpp_cga_dpi, encode_pcx_4bpp_packed,
-    encode_pcx_4bpp_packed_dpi, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_grayscale_dpi,
-    encode_pcx_8bpp_indexed, encode_pcx_8bpp_indexed_dpi,
+    encode_pcx_2bpp_cga, encode_pcx_2bpp_cga_cpi, encode_pcx_2bpp_cga_dpi, encode_pcx_4bpp_4planes,
+    encode_pcx_4bpp_packed, encode_pcx_4bpp_packed_dpi, encode_pcx_8bpp_grayscale,
+    encode_pcx_8bpp_grayscale_dpi, encode_pcx_8bpp_indexed, encode_pcx_8bpp_indexed_dpi,
 };
 pub use error::{PcxError, Result};
 pub use image::{
     Pcx1bpp3PlanesPaletteSource, Pcx1bpp4PlanesPaletteSource, Pcx2bppCgaCpi,
     Pcx2bppCgaPaletteSource, Pcx4bppPaletteSource, PcxImage, PcxIndexed1x2Cga, PcxIndexed1x3,
-    PcxIndexed1x4, PcxIndexed2x1Cga, PcxIndexed2x1CgaCpi, PcxIndexed4, PcxIndexed8,
+    PcxIndexed1x4, PcxIndexed2x1Cga, PcxIndexed2x1CgaCpi, PcxIndexed4, PcxIndexed4x4, PcxIndexed8,
     PcxPaletteSource, PcxPixelFormat,
 };
 pub use types::{

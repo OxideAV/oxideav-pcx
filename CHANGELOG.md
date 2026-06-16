@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- *(decode/encode)* 4 bpp × 4 planes composite-index mode — the one
+  `(bpp, planes)` slot the EGFF canonical PCX video-mode matrix does not
+  list as a hardware video mode but which the format is structurally able
+  to describe (`MaxNumberOfColors = 1 << (BitsPerPixel * NumBitPlanes) =
+  1 << (4 × 4) = 65536`). New `encode_pcx_4bpp_4planes` writes the
+  plane-oriented 16-bit composite indices (plane `k` carries nibble `k`,
+  2 pixels/byte high-nibble-first per the standard PCX plane layout) and
+  `parse_pcx_indexed_4bpp_4planes` surfaces them back into a new
+  `PcxIndexed4x4` view (one `u16` per pixel, top-down, padding stripped).
+  No palette is read or written: the spec defines no 65536-entry palette
+  geometry for this mode, so the indices are surfaced raw and
+  `parse_pcx`'s `Rgba` flatten path continues to reject `(4, 4)` rather
+  than invent a colour mapping. Strictly additive — all existing decode /
+  encode paths are unchanged. This closes the last `(bpp, planes)` slot
+  named in the README "Lacks" tail.
+
 - *(decode)* EGA hardware 4-level palette quantisation per spec
   §"EGA/VGA 16-color palette" (the rev-5 manual's "on an IBM EGA there
   are only 4 levels of RGB for each color" table). New public helpers

@@ -838,6 +838,66 @@ pub fn encode_pcx_1bpp_4planes_ega(
     Ok(out)
 }
 
+/// Encode `width × height` 16-bit composite-index pixels into a
+/// PCX 5.0 `4 bpp × 4 planes` file.
+///
+/// This is the one `(bits_per_pixel, n_planes)` slot the EGFF canonical
+/// PCX video-mode matrix
+/// (`docs/image/pcx/pcx-egff-fileformat-info.html`) does not list as a
+/// hardware video mode, but the format is structurally reachable: the
+/// cross-reference summary's colour-count formula
+/// `MaxNumberOfColors = (1 << (BitsPerPixel * NumBitPlanes))` evaluates
+/// to `1 << (4 * 4) = 65536` here. The on-disk layout is the standard
+/// plane-oriented PCX form (spec §"Image File (.PCX) Format": "each line
+/// of the image is stored by color plane"): each scanline carries plane
+/// 0, plane 1, plane 2, plane 3 one after another, each a
+/// `bytes_per_line`-byte slice holding 4 bits per pixel (2 pixels/byte,
+/// high nibble first — the same packing [`encode_pcx_4bpp_packed`] uses).
+///
+/// `indices` is one `u16` per pixel, row-major top-down. Nibble `k`
+/// (`(idx >> (k * 4)) & 0x0F`) is written to plane `k`, so the
+/// [`crate::parse_pcx_indexed_4bpp_4planes`] accessor round-trips the
+/// composite index exactly (`p0 | p1 << 4 | p2 << 8 | p3 << 12`).
+///
+/// No palette is written: the spec defines no 65536-entry palette
+/// geometry for this mode, so the header `Colormap` field is left at the
+/// zero default and only the composite indices are carried.
+pub fn encode_pcx_4bpp_4planes(width: u16, height: u16, indices: &[u16]) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    if indices.len() < width as usize * height as usize {
+        return Err(Error::invalid(
+            "PCX encoder: 4bpp×4planes input shorter than width × height",
+        ));
+    }
+    let bytes_per_line = round_up_to_even(width.div_ceil(2));
+    let mut out =
+        Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * 4 * height as usize);
+    write_header_with_palette(&mut out, width, height, 4, 4, bytes_per_line, &[0u8; 48]);
+    let mut row = vec![0u8; bytes_per_line as usize * 4];
+    for y in 0..height as usize {
+        for v in row.iter_mut() {
+            *v = 0;
+        }
+        for x in 0..width as usize {
+            let idx = indices[y * width as usize + x];
+            let byte_off = x / 2;
+            for plane in 0..4 {
+                let nib = ((idx >> (plane * 4)) & 0x0F) as u8;
+                let cell = plane * bytes_per_line as usize + byte_off;
+                if x % 2 == 0 {
+                    row[cell] |= nib << 4;
+                } else {
+                    row[cell] |= nib;
+                }
+            }
+        }
+        rle::encode(&row, &mut out);
+    }
+    Ok(out)
+}
+
 /// Encode an 8 bpp × 1 plane grayscale PCX with `palette_info = 2`
 /// (the spec §3 grayscale flag) and no tail palette.
 ///

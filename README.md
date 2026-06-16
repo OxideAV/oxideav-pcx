@@ -695,16 +695,54 @@ assert!(matches!(
 # Ok::<(), oxideav_pcx::PcxError>(())
 ```
 
+## 4 bpp × 4 planes composite-index mode
+
+[`parse_pcx_indexed_4bpp_4planes`] / [`encode_pcx_4bpp_4planes`] cover the
+one `(bpp, planes)` slot the EGFF canonical PCX video-mode matrix does
+**not** list as a hardware video mode but which the format is structurally
+able to describe. The cross-reference summary's colour-count formula
+`MaxNumberOfColors = (1 << (BitsPerPixel * NumBitPlanes))` evaluates to
+`1 << (4 × 4) = 65536` for this mode, and the on-disk layout is the same
+plane-oriented form every multi-plane PCX uses (spec §"Image File (.PCX)
+Format": "each line of the image is stored by color plane"): each scanline
+carries plane 0, plane 1, plane 2, plane 3 one after another, each holding
+4 bits/pixel (2 pixels/byte, high nibble first — the same packing the
+`4 bpp × 1 plane` path uses). The nibble at the same x-position across the
+four planes stacks into a 16-bit composite index (`p0 | p1 << 4 |
+p2 << 8 | p3 << 12`), the natural generalisation of the
+`parse_pcx_indexed_1bpp_4planes` plane-`k`-supplies-chunk-`k` ordering from
+1-bit to 4-bit chunks.
+
+Unlike the ≤ 256-colour paletted modes, **no palette is surfaced or
+written**: the ZSoft rev-5 manual and the EGFF cross-reference define
+palette geometries only for the ≤ 256-colour modes (16-entry header
+`Colormap` for EGA/CGA, 768-byte VGA tail for 256-colour) and state the
+24-bit mode carries no palette at all. There is no documented 65536-entry
+palette for this mode, so [`PcxIndexed4x4`] carries the raw `width ×
+height` composite indices only (one `u16` per pixel, top-down, per-row
+padding stripped) and leaves interpretation to the caller. For the same
+reason [`parse_pcx`] (which must produce packed `Rgba`) rejects `(4, 4)`
+with `PcxError::Unsupported` rather than inventing a colour mapping the
+spec does not define. Any `(depth, planes)` other than `(4, 4)` is
+rejected by the typed accessor.
+
+```rust
+use oxideav_pcx::{encode_pcx_4bpp_4planes, parse_pcx_indexed_4bpp_4planes};
+
+let indices: Vec<u16> = vec![0x0000, 0xFFFF, 0x1234, 0xABCD]; // 4×1
+let pcx = encode_pcx_4bpp_4planes(4, 1, &indices)?;
+let view = parse_pcx_indexed_4bpp_4planes(&pcx)?;
+assert_eq!(view.indices, indices);
+# Ok::<(), oxideav_pcx::PcxError>(())
+```
+
+With this slot covered, every row of the EGFF canonical mode matrix
+(monochrome / CGA / EGA / EGA-VGA / Extended-VGA / Extended-VGA-XGA) plus
+the structurally-reachable 4 bpp × 4 planes composite-index mode is handled
+on both decode and encode.
+
 ## Lacks
 
-* 4 bpp × 4 planes (16-colour planar with finer per-plane depth)
-  is the one remaining `(bpp, planes)` slot the EGFF PCX summary
-  doesn't list as a formal video mode; real-world files at this
-  depth are vanishingly rare and the existing 1 bpp × 2 / 1 bpp × 4 /
-  4 bpp × 1 / 1 bpp × 3 paths cover every EGA/VGA/CGA fixture we've
-  seen. Every other row of the EGFF canonical mode matrix (monochrome /
-  CGA / EGA / EGA-VGA / Extended-VGA / Extended-VGA-XGA) is covered on
-  both decode and encode.
 * `PixelFormat::Pal8` input to the framework `Encoder`. The
   out-of-band palette companion needed by `Pal8` isn't currently
   carried by `VideoFrame`; standalone callers can still reach

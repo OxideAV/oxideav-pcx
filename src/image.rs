@@ -674,3 +674,68 @@ impl PcxIndexed1x3 {
         self.width as usize
     }
 }
+
+/// Typed 4 bpp × 4 planes paletted view returned by
+/// [`crate::parse_pcx_indexed_4bpp_4planes`].
+///
+/// This is the one `(bpp, planes)` slot the EGFF canonical PCX video-mode
+/// matrix
+/// (`docs/image/pcx/pcx-egff-fileformat-info.html`, "PCX Image Data
+/// Format" / mode table) does not list as a hardware video mode —
+/// real-world files at this depth are vanishingly rare — but the format
+/// is *structurally* reachable: the cross-reference summary defines the
+/// maximum colour count of any PCX as
+///
+/// ```text
+/// MaxNumberOfColors = (1 << (BitsPerPixel * NumBitPlanes));
+/// ```
+///
+/// so a `4 bpp × 4 planes` file describes `1 << (4 * 4) = 65536` distinct
+/// composite values. The on-disk layout is the same plane-oriented form
+/// every other multi-plane PCX uses (spec §"Image File (.PCX) Format":
+/// "each line of the image is stored by color plane"): each scanline
+/// carries plane 0, plane 1, plane 2, plane 3 one after another, each a
+/// `bytes_per_line`-byte slice holding `BitsPerPixel = 4` bits per pixel
+/// (2 pixels/byte, high nibble first). The nibble at the same x-position
+/// across the four planes stacks into a 16-bit composite index
+/// (`p0 | p1 << 4 | p2 << 8 | p3 << 12`) — the same plane-`k`-supplies-
+/// chunk-`k` ordering the [`PcxIndexed1x4`] EGA path uses, generalised
+/// from 1-bit to 4-bit plane chunks.
+///
+/// Unlike the lower-depth paletted modes, **no palette is surfaced**: the
+/// ZSoft rev-5 manual and the EGFF cross-reference define palette
+/// geometries only for the ≤ 256-colour modes (the 16-entry header
+/// `Colormap` for EGA/CGA, the 768-byte VGA tail for 256-colour) and
+/// state outright that the 24-bit mode carries no palette at all. There
+/// is no documented 65536-entry palette for this mode, so this accessor
+/// surfaces the raw composite indices only and lets the caller decide how
+/// to interpret them. That is why [`crate::parse_pcx`] (which must produce
+/// packed `Rgba`) rejects `(4, 4)` with [`crate::PcxError::Unsupported`]
+/// rather than inventing a colour mapping the spec does not define.
+///
+/// Useful for round-tripping a `4 bpp × 4 planes` PCX through
+/// [`crate::encode_pcx_4bpp_4planes`] without re-quantising the indices.
+#[derive(Debug, Clone)]
+pub struct PcxIndexed4x4 {
+    /// Picture width in pixels (derived from spec §3 `x_max - x_min +
+    /// 1`, matching [`PcxImage::width`]).
+    pub width: u32,
+    /// Picture height in pixels (derived from spec §3 `y_max - y_min +
+    /// 1`, matching [`PcxImage::height`]).
+    pub height: u32,
+    /// `width × height` composite indices, row-major top-down, one `u16`
+    /// per pixel. The `4 bpp × 4 planes` on-disk format stacks the same
+    /// x-position 4-bit nibble from each of the four planes into a 16-bit
+    /// value (`p0 | p1 << 4 | p2 << 8 | p3 << 12`); this accessor
+    /// pre-resolves that stacking so the caller receives one composite
+    /// index per pixel. Per-row padding pixels beyond `width` (spec §1
+    /// rounds `bytes_per_line` up to an even number) are NOT included.
+    pub indices: Vec<u16>,
+}
+
+impl PcxIndexed4x4 {
+    /// Pixels per row (= `width`, one `u16` per pixel after unpacking).
+    pub fn stride(&self) -> usize {
+        self.width as usize
+    }
+}
