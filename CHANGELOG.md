@@ -25,6 +25,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- *(fuzz)* The `decode_pcx` cargo-fuzz target now feeds arbitrary bytes to
+  **every** public decode entry point (twelve surfaces). It previously
+  covered five (`parse_pcx`, `parse_dcx`, `parse_pcx_indexed_8bpp`,
+  `parse_pcx_indexed_4bpp`, `parse_pcx_indexed_1bpp_4planes`); the seven
+  newer typed accessors added since — `parse_pcx_indexed_4bpp_ega_hw`,
+  `parse_pcx_indexed_2bpp_cga`, `parse_pcx_indexed_1bpp_2planes_cga`,
+  `parse_pcx_indexed_2bpp_cga_cpi`, `parse_pcx_cga_cpi`,
+  `parse_pcx_indexed_1bpp_3planes`, `parse_pcx_indexed_4bpp_4planes` —
+  each carry distinct offset / allocation / index-stacking maths (the CGA
+  byte-16/19 selector dispatch, the EGA-hardware 4-level quantiser, the
+  3-plane / 4×4 bit stacking, the `u16`-per-pixel `(4, 4)` buffer) that
+  were not previously under the no-panic / no-OOB / no-overflow contract.
+  A 45-second run over the shared corpus executed 4.5M+ iterations with
+  zero crashes and added new coverage units, confirming the new surfaces
+  reach fresh code paths. Harness-only change; no decode behaviour altered.
+
 - *(decode/encode)* 4 bpp × 4 planes composite-index mode — the one
   `(bpp, planes)` slot the EGFF canonical PCX video-mode matrix does not
   list as a hardware video mode but which the format is structurally able

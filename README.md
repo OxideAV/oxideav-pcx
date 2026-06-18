@@ -188,12 +188,20 @@ cargo bench -p oxideav-pcx --bench roundtrip
 ## Fuzzing
 
 A [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) harness lives
-under `fuzz/`. The `decode_pcx` target feeds arbitrary bytes to the
-four public decode entry points — `parse_pcx`, `parse_dcx`,
-`parse_pcx_indexed_8bpp`, and `parse_pcx_indexed_4bpp` — and asserts
-each always returns a `Result` rather than panicking,
+under `fuzz/`. The `decode_pcx` target feeds arbitrary bytes to **every**
+public decode entry point — `parse_pcx`, `parse_dcx`, and all ten typed
+accessors (`parse_pcx_indexed_8bpp`, `parse_pcx_indexed_4bpp`,
+`parse_pcx_indexed_4bpp_ega_hw`, `parse_pcx_indexed_1bpp_4planes`,
+`parse_pcx_indexed_2bpp_cga`, `parse_pcx_indexed_1bpp_2planes_cga`,
+`parse_pcx_indexed_2bpp_cga_cpi`, `parse_pcx_cga_cpi`,
+`parse_pcx_indexed_1bpp_3planes`, `parse_pcx_indexed_4bpp_4planes`) — and
+asserts each always returns a `Result` rather than panicking,
 integer-overflowing, indexing out of bounds, or allocating an
-attacker-claimed pixel buffer. It is built with
+attacker-claimed pixel buffer. Sharing one byte stream across all twelve
+surfaces lets a single mutated input simultaneously probe the canonical
+flattener AND each typed accessor's distinct rejection geometry (the CGA
+selector dispatch, the EGA-hardware quantiser, the 3-plane / 4×4 index
+stacking, the `u16`-per-pixel `(4, 4)` allocation). It is built with
 `default-features = false` so it exercises the framework-free decode
 path. A 13-entry seed corpus covers all six (depth, planes)
 combinations, grayscale, a windowed-origin file, a DCX bundle,
@@ -204,8 +212,10 @@ degenerate inputs, plus a paired 4 bpp × 1 plane fixture for each
 cd fuzz && cargo +nightly fuzz run decode_pcx -- -max_total_time=60
 ```
 
-The current baseline runs 40M+ executions with zero crashes. Two
-hardening fixes came out of the initial run: the public
+The current baseline runs 40M+ executions with zero crashes (the
+twelve-surface harness adds 4.5M+ executions over a 45s run with zero new
+crashes after the entry-point expansion). Two hardening fixes came out of
+the initial run: the public
 `PcxHeader::width()` / `height()` accessors now saturate instead of
 underflow-panicking on an `x_max < x_min` header, and `parse_pcx` has a
 decompression-bomb guard that rejects a tiny file claiming enormous

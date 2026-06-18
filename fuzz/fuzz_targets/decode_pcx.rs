@@ -12,8 +12,9 @@
 //! height` pixel buffer that exceeds what the input could possibly
 //! back. The return values are intentionally discarded.
 //!
-//! Four entry points are fuzzed off the same input bytes because they
-//! are independent public surfaces with distinct offset / allocation
+//! Every public decode entry point is fuzzed off the same input bytes
+//! because they are independent public surfaces with distinct offset /
+//! allocation
 //! maths:
 //!
 //!   * [`parse_pcx`] — a single stand-alone PCX file: 128-byte header
@@ -52,7 +53,34 @@
 //!     the four-plane bit stacking, and the palette-source dispatch
 //!     are all attacker-driven.
 //!
-//! Sharing one byte stream across all five entry points keeps the
+//!   * [`parse_pcx_indexed_4bpp_ega_hw`] — the EGA-hardware sibling of
+//!     `parse_pcx_indexed_4bpp`: same `(4, 1)` validation + nibble
+//!     unpack but additionally runs each resolved palette component
+//!     through the spec §"EGA/VGA 16-color palette" 4-level quantiser,
+//!     so the quantisation arithmetic is attacker-driven too.
+//!   * [`parse_pcx_indexed_2bpp_cga`] / [`parse_pcx_indexed_1bpp_2planes_cga`]
+//!     — the two 4-colour CGA on-disk layouts (`(2, 1)` packed 4 px/byte
+//!     and `(1, 2)` plane-oriented). Each resolves a CGA palette out of
+//!     header bytes 16 / 19 and unpacks a distinct 2-bit index geometry;
+//!     fuzzed so the depth/planes reject path, the per-row padding strip,
+//!     and the CGA-selector dispatch are all driven by the input bytes.
+//!   * [`parse_pcx_indexed_2bpp_cga_cpi`] / [`parse_pcx_cga_cpi`] — the
+//!     spec-faithful C/P/I CGA accessors (indexed + flatten). They decode
+//!     all three significant bits of header byte 19, including the
+//!     color-burst-monochrome composite-grey ramp branch the two-bit
+//!     accessor cannot reach; `parse_pcx_cga_cpi` additionally covers
+//!     both `(2, 1)` and `(1, 2)` layouts behind one entry point.
+//!   * [`parse_pcx_indexed_1bpp_3planes`] — the 8-colour EGA RGB
+//!     bit-plane accessor (`(1, 3)`): no header palette, the three
+//!     stacked plane bits form a 3-bit fixed-primary colour index per
+//!     pixel. Fuzzed so the three-plane bit stacking + per-row padding
+//!     strip run on attacker bytes.
+//!   * [`parse_pcx_indexed_4bpp_4planes`] — the `(4, 4)` composite-index
+//!     mode: four 4-bit planes stack into one `u16` per pixel, no
+//!     palette. Its `u16`-per-pixel index buffer + plane-nibble
+//!     extraction is its own allocation / slicing surface.
+//!
+//! Sharing one byte stream across every entry point keeps the
 //! fuzzer's mutator focused: a single byte flip can simultaneously
 //! probe the canonical flattener AND each typed accessor's rejection
 //! geometry, which is much more efficient than splitting the harness
@@ -60,8 +88,10 @@
 
 use libfuzzer_sys::fuzz_target;
 use oxideav_pcx::{
-    parse_dcx, parse_pcx, parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_4bpp,
-    parse_pcx_indexed_8bpp,
+    parse_dcx, parse_pcx, parse_pcx_cga_cpi, parse_pcx_indexed_1bpp_2planes_cga,
+    parse_pcx_indexed_1bpp_3planes, parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga,
+    parse_pcx_indexed_2bpp_cga_cpi, parse_pcx_indexed_4bpp, parse_pcx_indexed_4bpp_4planes,
+    parse_pcx_indexed_4bpp_ega_hw, parse_pcx_indexed_8bpp,
 };
 
 fuzz_target!(|data: &[u8]| {
@@ -69,5 +99,12 @@ fuzz_target!(|data: &[u8]| {
     let _ = parse_dcx(data);
     let _ = parse_pcx_indexed_8bpp(data);
     let _ = parse_pcx_indexed_4bpp(data);
+    let _ = parse_pcx_indexed_4bpp_ega_hw(data);
     let _ = parse_pcx_indexed_1bpp_4planes(data);
+    let _ = parse_pcx_indexed_2bpp_cga(data);
+    let _ = parse_pcx_indexed_1bpp_2planes_cga(data);
+    let _ = parse_pcx_indexed_2bpp_cga_cpi(data);
+    let _ = parse_pcx_cga_cpi(data);
+    let _ = parse_pcx_indexed_1bpp_3planes(data);
+    let _ = parse_pcx_indexed_4bpp_4planes(data);
 });
