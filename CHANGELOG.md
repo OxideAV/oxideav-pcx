@@ -25,6 +25,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- *(fuzz)* New **`encode_pcx` cargo-fuzz target** — the symmetric
+  encoder counterpart to `decode_pcx`. It carves two `u16` dimensions
+  off the front of the fuzz input (masked to a `0x1FF` ceiling so the
+  packing-geometry edge cases — odd vs even widths, the 2 / 4 / 8
+  pixels-per-byte sub-byte chunk boundaries, `bytes_per_line` rounding —
+  are all exercised without the fuzzer trivially driving a multi-gigabyte
+  allocation off a `0xFFFF × 0xFFFF` claim) and feeds the remaining bytes
+  as the pixel/index payload to **every** public encoder
+  (`encode_pcx_8bpp_indexed`, `…_8bpp_grayscale`, `…_1bpp_mono`,
+  `…_4bpp_packed`, `…_1bpp_4planes_ega`, `…_2bpp_cga`,
+  `…_1bpp_2planes_cga`, `…_24bpp`, `…_1bpp_3planes_ega_rgb`,
+  `…_4bpp_4planes`). Each encoder must return `Ok`/`Err` without
+  panicking, going out of bounds, or overflowing (debug); where it
+  succeeds, the bytes it emits are fed straight back through `parse_pcx`
+  and the matching typed accessor so the **encode→decode seam** is under
+  the same no-panic contract. A 40-second run executed 958k+ iterations
+  with zero crashes. The `fuzz` crate is no longer decode-only; the
+  manifest now declares two `[[bin]]` targets. Harness-only change; no
+  encode behaviour altered.
+
+- *(tests)* New **`round337` encoder property sweep** in the CI-run
+  `tests/` harness (the fuzz target above only runs under a manual fuzz
+  session; this proves the contract green on every push). It sweeps a
+  12-entry dimension matrix spanning the packing edge cases (1×1, 1-tall,
+  1-wide, odd / even widths, sub-byte chunk boundaries) across the seven
+  index/sample-based encoders and asserts two properties: (1) every
+  encoder either returns `Ok` for a correctly-sized input or a typed
+  `Err` for a deliberately-undersized one, a zero dimension, a
+  wrong-length palette, or an out-of-range CGA background — never a
+  panic; (2) **lossless round-trip through the typed accessor** —
+  `parse_*indexed*(encode(indices)).indices == indices` after masking to
+  each mode's bit width (2-bit CGA, 4-bit EGA, 8-bit VGA, 16-bit
+  composite), plus pixel-exact flatten checks for the 24-bit and
+  grayscale paths. Crate test total 216 → 224.
+
 - *(fuzz)* The `decode_pcx` cargo-fuzz target now feeds arbitrary bytes to
   **every** public decode entry point (twelve surfaces). It previously
   covered five (`parse_pcx`, `parse_dcx`, `parse_pcx_indexed_8bpp`,

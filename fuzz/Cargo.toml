@@ -19,9 +19,15 @@ cargo-fuzz = true
 # table whose entries slice the bundle into stand-alone PCX pages. There
 # is no external system library worth pulling in as a cross-decode oracle
 # (and the clean-room wall bars the reference sources anyway), so this
-# fuzz crate is **decode-only**: feed arbitrary bytes to the two public
-# decode entry points and assert they always return a `Result` rather
-# than panicking / aborting / OOMing.
+# fuzz crate carries no oracle: each target asserts only that the calls
+# *return* a `Result` rather than panicking / aborting / OOMing.
+#
+# Two targets:
+#   * `decode_pcx` — arbitrary bytes into every public decode entry point.
+#   * `encode_pcx` — attacker-controlled `(width, height)` + a pixel/index
+#     payload into every public encode entry point, then the bytes each
+#     one emits back through the decoders (the encode->decode seam is
+#     under the same no-panic contract).
 #
 # Built with `default-features = false` so the harness exercises the
 # framework-free standalone decode path (crate-local `PcxError`), with no
@@ -43,5 +49,11 @@ debug = 1
 [[bin]]
 name = "decode_pcx"
 path = "fuzz_targets/decode_pcx.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "encode_pcx"
+path = "fuzz_targets/encode_pcx.rs"
 test = false
 doc = false

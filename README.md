@@ -221,6 +221,31 @@ underflow-panicking on an `x_max < x_min` header, and `parse_pcx` has a
 decompression-bomb guard that rejects a tiny file claiming enormous
 dimensions before it can reserve hundreds of gigabytes.
 
+A second `encode_pcx` target covers the symmetric **encoder** surface: it
+carves two `u16` dimensions off the front of the fuzz input (masked to a
+`0x1FF` ceiling so the packing-geometry edge cases are hit without the
+fuzzer driving a multi-gigabyte allocation off a `0xFFFF × 0xFFFF` claim)
+and feeds the remaining bytes as the pixel/index payload to every public
+encoder. Each must return `Ok`/`Err` without panicking, going out of
+bounds, or overflowing; where it succeeds, the bytes it emits are fed
+straight back through `parse_pcx` and the matching typed accessor so the
+**encode→decode seam** is under the same no-panic contract. A 40-second
+run executes 958k+ iterations with zero crashes.
+
+```sh
+cd fuzz && cargo +nightly fuzz run encode_pcx -- -max_total_time=60
+```
+
+The same encoder contract is additionally pinned in the CI-run `tests/`
+harness (`tests/round337.rs`): a 12-entry dimension matrix spanning the
+packing edge cases (1×1, 1-tall, 1-wide, odd / even widths, sub-byte
+chunk boundaries) sweeps the index/sample-based encoders and asserts both
+the clean-reject behaviour (undersized input, zero dimension,
+wrong-length palette, out-of-range CGA background) and **lossless
+round-trip through the typed accessor** (`parse_*indexed*(encode(x))
+== x` after masking to each mode's bit width), so the property is proven
+green on every push rather than only under a manual fuzz session.
+
 ## Standalone vs registry-integrated
 
 The crate's default `registry` Cargo feature pulls in `oxideav-core`
