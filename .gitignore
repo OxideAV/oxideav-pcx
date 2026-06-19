@@ -1,2 +1,6 @@
 target/
-Cargo.lock
+# Anchor to the crate root: the library Cargo.lock is not committed
+# (guardrail #7), but the `fuzz/` sub-crate IS a binary crate whose
+# Cargo.lock must be committed. A bare `Cargo.lock` pattern matches at
+# any depth and would silently swallow `fuzz/Cargo.lock`.
+/Cargo.lock
