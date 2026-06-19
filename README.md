@@ -246,6 +246,25 @@ round-trip through the typed accessor** (`parse_*indexed*(encode(x))
 == x` after masking to each mode's bit width), so the property is proven
 green on every push rather than only under a manual fuzz session.
 
+`tests/round345.rs` widens that into an **exhaustive cross-dimensional
+sweep**: every one of the ten encode→decode paths is driven across a
+Cartesian product of 13 widths × 6 heights (~780 round-trips total),
+each asserting a bit-exact index / sample recovery. The width set is
+chosen to land on and one-past every packing seam — the even-
+`bytes_per_line` padding, the 8 / 4 / 2 pixels-per-byte sub-byte chunk
+boundaries, and the degenerate 1- / 2-column cases — so a mis-handled
+partial-byte or padding edge surfaces as a mismatch rather than slipping
+through the single representative size each older fixture pins.
+
+`tests/round345_rle.rs` pins the run-length core (`rle::{encode,
+decode}`, spec §3.2) at the unit level: the encode/decode inverse on
+random streams including every `0xC0..=0xFF` high byte, the 2-byte
+high-byte escape, the 63-byte run cap with multi-packet splitting,
+mid-packet / short-stream truncation rejection, the `out_len` overrun
+cap, the count-zero header tolerance (matching the manual's `encget`),
+and a packet-grammar invariant that the encoded stream never emits a
+bare high-byte literal.
+
 ## Standalone vs registry-integrated
 
 The crate's default `registry` Cargo feature pulls in `oxideav-core`

@@ -25,6 +25,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- *(tests)* **Exhaustive cross-dimensional round-trip property sweep**
+  (`tests/round345.rs`). For every one of the ten encode→decode paths
+  (8 bpp indexed, 8 bpp grayscale, 4 bpp packed, 1 bpp × 4 EGA, 1 bpp ×
+  3 EGA-RGB, 2 bpp CGA, 1 bpp × 2 CGA, 24-bit, 4 bpp × 4 composite,
+  1 bpp mono) it walks a Cartesian product of 13 widths × 6 heights and
+  asserts a **bit-exact** index / sample recovery. The width set is
+  chosen to straddle every packing seam the format has: odd widths that
+  force the even-`bytes_per_line` padding (spec §"ZSoft .PCX File Header
+  Format"), widths landing exactly on and one-past each sub-byte chunk
+  boundary (8 px/byte for 1 bpp, 4 for 2 bpp, 2 for 4 bpp), and the
+  degenerate 1- and 2-column cases. ~780 full round-trips total. Payloads
+  come from a tiny in-file xorshift so the sweep is deterministic and
+  dependency-free.
+- *(tests)* **RLE codec algebraic property tests** (`tests/round345_rle.rs`)
+  exercising `oxideav_pcx::rle::{encode, decode}` directly: the
+  encode/decode inverse on random streams (including every `0xC0..=0xFF`
+  high byte the spec requires escaping), the 2-byte high-byte escape, the
+  63-byte run cap with multi-packet splitting, mid-packet / short-stream
+  truncation rejection, the `out_len` overrun cap, the count-zero header
+  tolerance (matching the manual's `encget`), append-to-existing-buffer
+  semantics, and a packet-grammar invariant that the encoded stream never
+  emits a bare high-byte literal.
 - *(fuzz)* New **`encode_pcx` cargo-fuzz target** — the symmetric
   encoder counterpart to `decode_pcx`. It carves two `u16` dimensions
   off the front of the fuzz input (masked to a `0x1FF` ceiling so the
@@ -110,6 +132,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `2 bpp × 1 plane` packed and `1 bpp × 2 planes` planar CGA layouts; the
   flatten sibling of `parse_pcx_indexed_2bpp_cga_cpi`. Strictly additive —
   the legacy `parse_pcx` flatten path is unchanged.
+
+### Fixed
+
+- *(fuzz)* The `fuzz/` sub-crate's `Cargo.lock` is now committed. The
+  crate-root `.gitignore` carried a bare `Cargo.lock` pattern which, with
+  no leading slash, matches at any depth and silently swallowed
+  `fuzz/Cargo.lock` — leaving the binary fuzz crate without a pinned
+  lockfile in version control. The pattern is now anchored to the crate
+  root (`/Cargo.lock`), so the library lockfile is still ignored (it must
+  not be committed) while the `fuzz/` binary crate's lockfile is tracked
+  as a reproducible-build artefact.
 
 ## [0.0.3](https://github.com/OxideAV/oxideav-pcx/compare/v0.0.2...v0.0.3) - 2026-06-15
 
