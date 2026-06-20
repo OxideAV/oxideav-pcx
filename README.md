@@ -43,7 +43,19 @@ truth for bitstream behaviour in this crate.
 * Header field `bytes_per_line` is range-checked against the visible
   width × `bits_per_pixel`: a value smaller than the per-plane row
   width required by the spec is rejected up front rather than
-  silently mis-framing the planar→packed reconstruction.
+  silently mis-framing the planar→packed reconstruction. A value
+  *larger* than the minimum is honoured as **trailing scanline
+  padding** — the spec lets the on-disk per-plane stride exceed the
+  picture-window requirement ("Do NOT calculate from Xmax-Xmin", and the
+  cross-reference summary's `LinePaddingSize = ((BytesPerLine ×
+  NumBitPlanes) × (8 / BitsPerPixel)) - ((XEnd - XStart) + 1)`). Every
+  decode path (`parse_pcx` packed RGBA and all typed accessors) strips
+  that surplus and recovers exactly the `width × height` window, so a
+  foreign-encoder file with arbitrary even over-padding decodes
+  identically to its minimal-stride twin. The accepted over-pad band is
+  bounded above by the decompression-bomb guard (a stride claiming more
+  planar bytes than the RLE payload can possibly back is rejected, not
+  allocated).
 * RLE decode is **continuous across the whole image**, matching the
   manual's own sample reader (the `for (l = 0; l < lsize; )` loop
   consumes `BytesPerLine × NPlanes × YSIZE` bytes straight through with
