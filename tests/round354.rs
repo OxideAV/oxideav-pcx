@@ -582,3 +582,82 @@ fn overpadded_4bpp_4planes_strips_padding() {
         }
     }
 }
+
+// ---------------------------------------------------------------------
+// Equivalence: an over-padded file and its minimal-stride twin decode to
+// a byte-identical packed RGBA image. The surplus padding is purely an
+// on-disk-layout artefact; the picture-window pixels must be invariant
+// under the choice of `bytes_per_line`.
+// ---------------------------------------------------------------------
+#[test]
+fn overpadded_24bpp_equals_minimal_stride() {
+    for &(w, h) in DIMS {
+        let mut lcg = Lcg::new(0xE0_24B1 ^ ((w as u64) << 16) ^ h as u64);
+        let mut rgb = vec![[0u8; 3]; w as usize * h as usize];
+        for px in rgb.iter_mut() {
+            *px = [lcg.byte(), lcg.byte(), lcg.byte()];
+        }
+        let rows: Vec<Vec<Vec<u8>>> = (0..h as usize)
+            .map(|y| {
+                let base = y * w as usize;
+                let r: Vec<u8> = (0..w as usize).map(|x| rgb[base + x][0]).collect();
+                let g: Vec<u8> = (0..w as usize).map(|x| rgb[base + x][1]).collect();
+                let b: Vec<u8> = (0..w as usize).map(|x| rgb[base + x][2]).collect();
+                vec![r, g, b]
+            })
+            .collect();
+        let minimal = build_pcx(5, 8, w, h, 3, min_bpl(w, 8), 1, &[0u8; 48], &rows, None);
+        let ref_img = parse_pcx(&minimal).expect("minimal decode");
+        for &surplus in &[2u16, 8, 32] {
+            let bpl = padded_bpl(w, 8, surplus);
+            let padded = build_pcx(5, 8, w, h, 3, bpl, 1, &[0u8; 48], &rows, None);
+            let img = parse_pcx(&padded).expect("padded decode");
+            assert_eq!(
+                img.data, ref_img.data,
+                "24bpp padded != minimal (w={w} h={h} surplus={surplus})"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// Rejection: a `bytes_per_line` so large that the claimed planar buffer
+// (`n_planes × bytes_per_line × height`) cannot possibly be backed by
+// the RLE bytes present must be rejected, not OOM'd or panicked. This is
+// the decompression-bomb guard: a hostile header can claim a multi-MiB
+// stride behind a handful of pixel bytes. The decoder caps the claimed
+// output at `available_rle_bytes × 63` (the max a run packet can expand)
+// and returns an error below that.
+// ---------------------------------------------------------------------
+#[test]
+fn pathological_overpad_is_rejected_not_bombed() {
+    // width 4, height 4, 8 bpp × 1 plane, but bytes_per_line claims
+    // 60000 bytes/row — 240000 planar bytes claimed behind a tiny RLE
+    // payload that can decode only a few bytes.
+    let mut pcx = build_header(5, 8, 4, 4, 1, 60000, 1, &[0u8; 48]);
+    // A single short RLE run — nowhere near enough to back 240000 bytes.
+    pcx.push(0xC0 | 4); // run of 4
+    pcx.push(0x11);
+    let err = parse_pcx(&pcx);
+    assert!(err.is_err(), "pathological over-pad must be rejected");
+    // The typed accessor shares the same guard.
+    let err2 = parse_pcx_indexed_8bpp(&pcx);
+    assert!(err2.is_err(), "typed accessor must reject too");
+}
+
+// ---------------------------------------------------------------------
+// Boundary: a stride one byte short of the minimum (mis-framing) must be
+// rejected, confirming the over-pad acceptance is bounded below by the
+// real picture-window requirement and never silently truncates pixels.
+// ---------------------------------------------------------------------
+#[test]
+fn under_minimum_stride_is_rejected() {
+    // width 16 at 8 bpp needs >= 16 bytes/plane; declare 15.
+    let mut pcx = build_header(5, 8, 16, 1, 1, 15, 1, &[0u8; 48]);
+    // Enough RLE to fill 15 bytes so only the stride guard can reject it.
+    pcx.extend(std::iter::repeat_n(0x22u8, 15));
+    assert!(
+        parse_pcx(&pcx).is_err(),
+        "bytes_per_line below the picture-window minimum must be rejected"
+    );
+}

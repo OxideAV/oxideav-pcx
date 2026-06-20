@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   24-bit/composite forms) and asserts both `parse_pcx` packed RGBA and
   every typed accessor recover exactly the `width × height` window with
   the padding stripped — a previously-untested decode dimension.
+  Additionally pins three edges of the same dimension: an over-padded
+  file decodes byte-identically to its minimal-stride twin
+  (`overpadded_24bpp_equals_minimal_stride`); a pathologically large
+  stride that claims a multi-MiB planar buffer behind a handful of RLE
+  bytes is rejected by the decompression-bomb guard rather than OOM'd
+  (`pathological_overpad_is_rejected_not_bombed`); and a stride one byte
+  below the picture-window minimum is rejected as mis-framing
+  (`under_minimum_stride_is_rejected`) — so the accepted over-pad band is
+  bounded both above (by what the RLE input can back) and below (by the
+  real width requirement). 12 tests total.
 
 ### Changed
 
