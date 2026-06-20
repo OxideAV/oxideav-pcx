@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Tests
+
+- *(decode)* New over-padded-`bytes_per_line` robustness suite
+  (`tests/round354.rs`). The crate's own encoders always emit the
+  *minimal* even per-plane stride, so every prior round-trip sweep only
+  exercised the decoder at the tightest possible `bytes_per_line`. The
+  format explicitly permits a scanline to carry arbitrary trailing
+  padding beyond the picture window — the ZSoft manual's "Do NOT
+  calculate from Xmax-Xmin" and the cross-reference summary's
+  `LinePaddingSize = ((BytesPerLine × NumBitPlanes) × (8 / BitsPerPixel))
+  - ((XEnd - XStart) + 1)` ("Any PCX image may contain extra bytes of
+  padding at the end of each scan line"). The suite hand-builds raw PCX
+  bitstreams with a deliberately over-padded stride (surplus 0/2/4/6/16
+  bytes, sentinel-filled) across every decoded `(bits_per_pixel,
+  n_planes)` mode (1/2/4/8 bpp × 1 plane plus the multi-plane EGA/CGA/
+  24-bit/composite forms) and asserts both `parse_pcx` packed RGBA and
+  every typed accessor recover exactly the `width × height` window with
+  the padding stripped — a previously-untested decode dimension.
+
 ### Changed
 
 - *(decode)* RLE decode is now **continuous across the whole image**
