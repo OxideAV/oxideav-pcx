@@ -385,18 +385,18 @@ pub fn encode_pcx_1bpp_3planes_ega_rgb(width: u16, height: u16, rgb: &[u8]) -> R
         for v in row.iter_mut() {
             *v = 0;
         }
-        for x in 0..width as usize {
-            let off = (y * width as usize + x) * 3;
-            // 0x80 threshold matches the decode round-trip: any input
-            // byte ≥ 0x80 sets the bit, anything below clears it. The
-            // decoder always emits 0x00 / 0xFF, so this is the cut
-            // that round-trips exactly when the source is already in
-            // {0x00, 0xFF} per channel.
-            for (plane, &b) in rgb[off..off + 3].iter().enumerate() {
-                if b >= 0x80 {
-                    row[plane * bytes_per_line as usize + x / 8] |= 1 << (7 - (x % 8));
-                }
-            }
+        let row_base = y * width as usize * 3;
+        let bpl = bytes_per_line as usize;
+        // 0x80 threshold matches the decode round-trip: any input byte ≥
+        // 0x80 sets the bit, anything below clears it. The decoder always
+        // emits 0x00 / 0xFF, so this is the cut that round-trips exactly
+        // when the source is already in {0x00, 0xFF} per channel. Each
+        // plane's scanline slice is packed eight pixels at a time.
+        for plane in 0..3 {
+            let dst = &mut row[plane * bpl..plane * bpl + bpl];
+            pack_1bpp_plane_row(dst, width as usize, |x| {
+                rgb[row_base + x * 3 + plane] >= 0x80
+            });
         }
         rle::encode(&row, &mut out);
     }
@@ -413,6 +413,49 @@ fn round_up_to_even(v: u16) -> u16 {
         v
     } else {
         v + 1
+    }
+}
+
+/// Pack `width` 1-bit samples MSB-first into one plane's scanline slice
+/// `dst`, eight pixels per output byte.
+///
+/// The PCX 1-bit-per-plane on-disk layout (spec §"Image File (.PCX)
+/// Format") places pixel `x` at bit `7 - (x % 8)` of byte `x / 8`
+/// within the plane. The naïve form scatters one branch-guarded
+/// `dst[x/8] |= 1 << (7 - x%8)` store per set pixel — the documented
+/// 1-bpp encoder hotspot (`BENCHMARKS.md` rank #2/#3: the per-pixel
+/// index recompute + branch dominates `encode_1bpp_*`). This packs a
+/// whole byte at a time instead: each group of up to eight pixels is
+/// folded into one accumulator with a shift-OR and written once, so the
+/// inner loop has no per-pixel array index, no per-pixel branch into the
+/// destination, and no read-modify-write on `dst`.
+///
+/// `get_bit(x)` returns whether pixel `x` (`0..width`) sets this plane's
+/// bit. The result is **byte-identical** to the scatter form: bit
+/// `7 - k` of output byte `b` holds pixel `8·b + k`, absent tail pixels
+/// (when `width` is not a multiple of 8) contribute a 0 bit exactly as
+/// the scatter loop left them, and `dst` bytes beyond
+/// `width.div_ceil(8)` (the even-stride padding) are left untouched at
+/// their caller-zeroed value.
+#[inline]
+fn pack_1bpp_plane_row(dst: &mut [u8], width: usize, get_bit: impl Fn(usize) -> bool) {
+    let full = width / 8;
+    for (b, cell) in dst.iter_mut().take(full).enumerate() {
+        let base = b * 8;
+        let mut acc = 0u8;
+        for k in 0..8 {
+            acc |= (get_bit(base + k) as u8) << (7 - k);
+        }
+        *cell = acc;
+    }
+    let rem = width % 8;
+    if rem != 0 {
+        let base = full * 8;
+        let mut acc = 0u8;
+        for k in 0..rem {
+            acc |= (get_bit(base + k) as u8) << (7 - k);
+        }
+        dst[full] = acc;
     }
 }
 
@@ -549,12 +592,8 @@ pub fn encode_pcx_1bpp_mono(width: u16, height: u16, pixels: &[u8]) -> Result<Ve
         for v in row.iter_mut() {
             *v = 0;
         }
-        for x in 0..width as usize {
-            let v = pixels[y * width as usize + x];
-            if v != 0 {
-                row[x / 8] |= 1 << (7 - (x % 8));
-            }
-        }
+        let line = &pixels[y * width as usize..];
+        pack_1bpp_plane_row(&mut row, width as usize, |x| line[x] != 0);
         rle::encode(&row, &mut out);
     }
     Ok(out)
@@ -771,14 +810,11 @@ pub fn encode_pcx_1bpp_2planes_cga(
         for v in row.iter_mut() {
             *v = 0;
         }
-        for x in 0..width as usize {
-            let idx = indices[y * width as usize + x] & 0b11;
-            for plane in 0..2 {
-                let bit = (idx >> plane) & 1;
-                if bit != 0 {
-                    row[plane * bytes_per_line as usize + x / 8] |= 1 << (7 - (x % 8));
-                }
-            }
+        let line = &indices[y * width as usize..];
+        let bpl = bytes_per_line as usize;
+        for plane in 0..2 {
+            let dst = &mut row[plane * bpl..plane * bpl + bpl];
+            pack_1bpp_plane_row(dst, width as usize, |x| (line[x] >> plane) & 1 != 0);
         }
         rle::encode(&row, &mut out);
     }
@@ -824,14 +860,11 @@ pub fn encode_pcx_1bpp_4planes_ega(
         for v in row.iter_mut() {
             *v = 0;
         }
-        for x in 0..width as usize {
-            let idx = indices[y * width as usize + x] & 0x0F;
-            for plane in 0..4 {
-                let bit = (idx >> plane) & 1;
-                if bit != 0 {
-                    row[plane * bytes_per_line as usize + x / 8] |= 1 << (7 - (x % 8));
-                }
-            }
+        let line = &indices[y * width as usize..];
+        let bpl = bytes_per_line as usize;
+        for plane in 0..4 {
+            let dst = &mut row[plane * bpl..plane * bpl + bpl];
+            pack_1bpp_plane_row(dst, width as usize, |x| (line[x] >> plane) & 1 != 0);
         }
         rle::encode(&row, &mut out);
     }
@@ -1294,12 +1327,8 @@ pub fn encode_pcx_1bpp_mono_dpi(
         for v in row.iter_mut() {
             *v = 0;
         }
-        for x in 0..width as usize {
-            let v = pixels[y * width as usize + x];
-            if v != 0 {
-                row[x / 8] |= 1 << (7 - (x % 8));
-            }
-        }
+        let line = &pixels[y * width as usize..];
+        pack_1bpp_plane_row(&mut row, width as usize, |x| line[x] != 0);
         rle::encode(&row, &mut out);
     }
     Ok(out)
@@ -1486,14 +1515,11 @@ pub fn encode_pcx_1bpp_2planes_cga_dpi(
         for v in row.iter_mut() {
             *v = 0;
         }
-        for x in 0..width as usize {
-            let idx = indices[y * width as usize + x] & 0b11;
-            for plane in 0..2 {
-                let bit = (idx >> plane) & 1;
-                if bit != 0 {
-                    row[plane * bytes_per_line as usize + x / 8] |= 1 << (7 - (x % 8));
-                }
-            }
+        let line = &indices[y * width as usize..];
+        let bpl = bytes_per_line as usize;
+        for plane in 0..2 {
+            let dst = &mut row[plane * bpl..plane * bpl + bpl];
+            pack_1bpp_plane_row(dst, width as usize, |x| (line[x] >> plane) & 1 != 0);
         }
         rle::encode(&row, &mut out);
     }
@@ -1607,14 +1633,11 @@ pub fn encode_pcx_1bpp_4planes_ega_dpi(
         for v in row.iter_mut() {
             *v = 0;
         }
-        for x in 0..width as usize {
-            let idx = indices[y * width as usize + x] & 0x0F;
-            for plane in 0..4 {
-                let bit = (idx >> plane) & 1;
-                if bit != 0 {
-                    row[plane * bytes_per_line as usize + x / 8] |= 1 << (7 - (x % 8));
-                }
-            }
+        let line = &indices[y * width as usize..];
+        let bpl = bytes_per_line as usize;
+        for plane in 0..4 {
+            let dst = &mut row[plane * bpl..plane * bpl + bpl];
+            pack_1bpp_plane_row(dst, width as usize, |x| (line[x] >> plane) & 1 != 0);
         }
         rle::encode(&row, &mut out);
     }

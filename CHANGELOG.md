@@ -7,7 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- *(encode, perf)* **1-bit-per-plane encoders now pack whole bytes**
+  instead of scattering one bit at a time. All four 1-bpp-per-plane
+  paths (`encode_pcx_1bpp_mono`, `encode_pcx_1bpp_2planes_cga`,
+  `encode_pcx_1bpp_3planes_ega_rgb`, `encode_pcx_1bpp_4planes_ega`)
+  shared a per-pixel scatter inner loop — one branch-guarded indexed
+  read-modify-write `row[plane·bpl + x/8] |= 1 << (7 − x%8)` store per
+  set bit, the documented encoder hotspot (`BENCHMARKS.md` rank #2/#3).
+  They now route through a single `pack_1bpp_plane_row` helper that folds
+  eight consecutive pixels into one accumulator (shift-OR) and writes
+  each output byte once, eliminating the per-pixel array index, the
+  per-pixel branch into the destination, and the read-modify-write.
+  Output is **byte-identical** to the scatter form: bit `7 − k` of
+  output byte `b` holds pixel `8·b + k`, the sub-8-pixel scanline tail
+  contributes the same trailing zeros, and the even-stride padding byte
+  stays at its zeroed value (spec §"Image File (.PCX) Format": "each line
+  of the image is stored by color plane", MSB-first bit order). Measured:
+  `encode_1bpp_mono_512x512` 321 MiB/s → 2.94 GiB/s (~9.3×),
+  `encode_1bpp_4planes_ega_320x240` 113 MiB/s → 629 MiB/s (~5.6×). No
+  spec-behaviour change; every round-trip sweep stays bit-exact.
+
 ### Tests
+
+- *(encode)* **Byte-exact bit-pack regression suite**
+  (`tests/round362_bitpack.rs`). Pins the new `pack_1bpp_plane_row`
+  packer byte-identical to the per-pixel scatter it replaced across the
+  risky dimension — the scanline tail when `width` is not a multiple of
+  8 (the last output byte carries < 8 pixels) and the even-stride padding
+  byte that must stay zero. Re-encodes through all four 1-bpp-per-plane
+  paths at a width sweep hitting every `width % 8` residue (1..=8) plus
+  the multi-byte and odd-`div_ceil(8)` cases, asserting exact recovery
+  via the matching typed accessor; one test additionally rebuilds the
+  whole PCX file (header + RLE planar region) from an independent scatter
+  reference and compares it byte-for-byte to the encoder's output, so a
+  stray tail or padding bit that a round-trip could mask (decode strips
+  padding) is caught at the byte level. 5 tests.
 
 - *(decode)* New over-padded-`bytes_per_line` robustness suite
   (`tests/round354.rs`). The crate's own encoders always emit the

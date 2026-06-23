@@ -131,8 +131,8 @@ assembly is already cheap** (the r209 row-slice rewrite did its job).
 | Rank | Hot path                                   | Evidence                                                                                                                   | Share of its scenario |
 | ---- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- | --------------------- |
 | 1    | **`rle::decode` (per-byte `out.push` loop)** | `decode_phase_rle_24bpp_640x480` = 704 µs of the 742 µs full `parse_pcx`. Assembly is only ~38 µs (~5%).                  | ~95% of 24bpp decode  |
-| 2    | **`rle::encode` (run-finder + per-byte emit)** | `encode_1bpp_4planes_ega` (110 MiB/s) and `encode_1bpp_mono` (314 MiB/s) are 6–7× slower than 24bpp; both are bit-scatter + 4×/1× RLE passes over the widened planar stride. | dominates 1bpp encode |
-| 3    | **EGA 4-plane bit-scatter** (`encode_1bpp_4planes_ega` inner loop) | Per pixel does 4 indexed `row[plane·bpl + x/8] \|= 1 << (7−x%8)` scatter stores → 4 RLE passes over a 4× buffer. Worst encoder by a wide margin (110 MiB/s vs 715 MiB/s 24bpp). | ~7× the per-byte cost |
+| 2    | **`rle::encode` (run-finder + per-byte emit)** | After the r362 bit-pack landing the 1-bpp paths are no longer scatter-bound; `rle::encode`'s run-finder + per-byte emit is now the residual 1-bpp encode cost. | residual 1bpp encode  |
+| 3    | ~~**EGA 4-plane bit-scatter**~~ **(LANDED r362)** | Was the worst encoder (110 MiB/s): per pixel did 4 indexed `row[plane·bpl + x/8] \|= 1 << (7−x%8)` scatter stores. r362 replaced it with the 8-pixel whole-byte packer → **629 MiB/s (5.6×)**; `encode_1bpp_mono` 321 → **2.94 GiB/s (9.3×)**. See "Round 362" below. | resolved |
 | 4    | per-plane assembly (`unpack_*`)            | full − RLE: ~38 µs (24bpp 640×480), ~55 µs (8bpp gray 512²). Already fast post-r209; **not** the next target.            | ~5% of decode         |
 | 5    | DCX offset-table walk / assembler          | `encode_dcx` 60 GiB/s (memcpy-bound concat), `parse_dcx` ≈ 4× `parse_pcx` (page-parse-bound, no per-bundle overhead).     | negligible            |
 
@@ -155,17 +155,37 @@ slower because the per-span scan loop costs more than it saves on the
 singleton-heavy literal streams the low-bpp modes produce. Output bytes
 are bit-identical (roundtrip / cross_validate green).
 
+### Round 362 — 1-bpp-per-plane bit-pack (LANDED)
+
+The r286 #2/#3 encode target landed in r362. All four 1-bit-per-plane
+encode paths (`encode_pcx_1bpp_mono`, `encode_pcx_1bpp_2planes_cga`,
+`encode_pcx_1bpp_3planes_ega_rgb`, `encode_pcx_1bpp_4planes_ega`) shared
+a per-pixel scatter inner loop: one branch-guarded indexed
+read-modify-write `row[plane·bpl + x/8] |= 1 << (7 − x%8)` store per set
+bit. They now route through a single `pack_1bpp_plane_row` helper that
+folds eight consecutive pixels into one accumulator (shift-OR) and
+writes each output byte once — no per-pixel array index, no per-pixel
+branch into `dst`, no read-modify-write. Measured (this machine):
+
+| Bench                              | Before    | After      | Speedup |
+| ---------------------------------- | --------- | ---------- | ------- |
+| `encode_1bpp_mono_512x512`         | 321 MiB/s | 2.94 GiB/s | ~9.3×   |
+| `encode_1bpp_4planes_ega_320x240`  | 113 MiB/s | 629 MiB/s  | ~5.6×   |
+
+The output is **byte-identical** to the scatter form — bit `7 − k` of
+output byte `b` holds pixel `8·b + k`, the sub-8-pixel scanline tail
+contributes the same trailing zeros, and the even-stride padding byte
+stays at its zeroed value. `tests/round362_bitpack.rs` pins this across
+every `width % 8` residue + a whole-file byte-exact comparison against an
+independent scatter reference; the full round-trip sweeps stay green.
+
 ### Next PROFILE-OPT target
 
-With `rle::decode` optimised, the new #1 attributable cost is the
-**encode** side. **`encode_1bpp_4planes_ega`** (110 MiB/s — 6–7× slower
-than 24bpp encode) is the standout: replace the per-pixel 4-plane
-scatter (`row[plane·bpl + x/8] |= 1 << (7−x%8)`, four indexed stores
-per pixel) with a per-byte (8-pixel) shuffle that builds all four plane
-bytes in registers before the indexed store, mirroring the gain the
-r209 decode-side row-slice rewrite captured. A secondary encode target
-is `rle::encode`'s run-finder + per-byte emit. Both are pure compute on
-the bit-shuffle / RLE inner loops and need no spec changes.
+With both `rle::decode` (r311) and the 1-bpp bit-scatter (r362)
+optimised, the residual encode cost is **`rle::encode`'s run-finder +
+per-byte emit** (now the dominant component of the 1-bpp paths, since the
+bit-pack is no longer the bottleneck). It is pure compute on the RLE
+inner loop and needs no spec changes.
 
 ## Reproducing
 
