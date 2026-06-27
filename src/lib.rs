@@ -234,6 +234,7 @@ pub use encoder::{
     encode_pcx_2bpp_cga, encode_pcx_2bpp_cga_cpi, encode_pcx_2bpp_cga_dpi, encode_pcx_4bpp_4planes,
     encode_pcx_4bpp_packed, encode_pcx_4bpp_packed_dpi, encode_pcx_8bpp_grayscale,
     encode_pcx_8bpp_grayscale_dpi, encode_pcx_8bpp_indexed, encode_pcx_8bpp_indexed_dpi,
+    encode_pcx_rgb_auto, PcxAutoMode,
 };
 pub use error::{PcxError, Result};
 pub use image::{

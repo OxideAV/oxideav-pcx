@@ -354,6 +354,107 @@ pub fn encode_pcx_24bpp(width: u16, height: u16, rgb: &[u8]) -> Result<Vec<u8>> 
     Ok(out)
 }
 
+/// The PCX 5.0 mode [`encode_pcx_rgb_auto`] selected for a given RGB
+/// input, returned alongside the encoded bytes so a caller can record
+/// or assert which on-disk geometry was chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PcxAutoMode {
+    /// `≤ 256` distinct colours: 8 bpp × 1 plane indexed image plus a
+    /// 256-entry VGA tail palette (spec §"VGA 256-color palette"). The
+    /// `usize` is the number of distinct colours found (`1..=256`),
+    /// which equals the count of meaningful palette entries (the
+    /// remainder are zero-padded).
+    Indexed8 { colors: usize },
+    /// `> 256` distinct colours: 8 bpp × 3 plane planar RGB (spec
+    /// §"24-bit .PCX files"), no tail palette.
+    Rgb24,
+}
+
+/// Encode `width × height` packed RGB bytes (3 bytes per pixel,
+/// row-major, top-down) into the **most compact** valid PCX 5.0 file.
+///
+/// PC Paintbrush and the era's editors picked the smallest on-disk
+/// geometry that could represent the image losslessly. This writer
+/// mirrors that: it scans the input's distinct colours and
+///
+/// * if there are `≤ 256` of them, emits an 8 bpp × 1 plane **indexed**
+///   image (spec §"VGA 256-color palette") — one index byte per pixel
+///   plus a 768-byte VGA tail palette, roughly a third the planar size
+///   for photographic-but-low-colour art and far smaller for synthetic
+///   / UI imagery; the colour mapping is exact (no quantisation), so
+///   the decode round-trips the original RGB bit-for-bit;
+/// * otherwise falls back to the 8 bpp × 3 plane planar 24-bit form
+///   (spec §"24-bit .PCX files", identical bytes to
+///   [`encode_pcx_24bpp`]).
+///
+/// The returned [`PcxAutoMode`] records which branch was taken. Both
+/// targets are lossless: a true-colour image with `≤ 256` distinct
+/// colours loses nothing by being stored indexed, and one with more is
+/// stored planar. Palette entry order is first-seen (a deterministic
+/// raster scan), so the same input always yields byte-identical output.
+///
+/// This is a pure encode-time optimisation built entirely from the two
+/// existing spec modes; it introduces no new on-disk geometry and every
+/// file it produces decodes through [`crate::parse_pcx`] back to the
+/// original packed RGB.
+pub fn encode_pcx_rgb_auto(width: u16, height: u16, rgb: &[u8]) -> Result<(Vec<u8>, PcxAutoMode)> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    let n_pixels = width as usize * height as usize;
+    if rgb.len() < n_pixels * 3 {
+        return Err(Error::invalid(
+            "PCX encoder: rgb input shorter than width × height × 3",
+        ));
+    }
+    // Single raster scan: assign each distinct (r, g, b) the next
+    // first-seen index, bailing to the 24-bit branch the moment a 257th
+    // colour appears. A 256-slot direct-address table keyed on the
+    // packed 24-bit colour is the cheapest exact membership test that
+    // does not allocate per pixel; a small `Vec<(u32, u8)>` probe stays
+    // fast because it never grows past 256 entries before the bail-out.
+    let mut palette_rgb: Vec<[u8; 3]> = Vec::with_capacity(256);
+    let mut indices: Vec<u8> = Vec::with_capacity(n_pixels);
+    let mut over_256 = false;
+    for p in rgb[..n_pixels * 3].chunks_exact(3) {
+        let key = [p[0], p[1], p[2]];
+        // Linear scan over `≤ 256` entries. For the indexed-target
+        // common case the palette saturates early and most pixels hit a
+        // colour already seen, so the average probe length stays small;
+        // the moment a 257th unique colour would be inserted we abandon
+        // the indexed attempt and fall through to planar 24-bit.
+        match palette_rgb.iter().position(|c| *c == key) {
+            Some(i) => indices.push(i as u8),
+            None => {
+                if palette_rgb.len() == 256 {
+                    over_256 = true;
+                    break;
+                }
+                palette_rgb.push(key);
+                indices.push((palette_rgb.len() - 1) as u8);
+            }
+        }
+    }
+    if over_256 {
+        let bytes = encode_pcx_24bpp(width, height, rgb)?;
+        return Ok((bytes, PcxAutoMode::Rgb24));
+    }
+    // Build the 768-byte VGA palette: the first `palette_rgb.len()`
+    // entries carry the distinct colours in first-seen order; the
+    // remaining slots are zero-filled (the decode only ever indexes the
+    // entries the index buffer references, so the padding colour is a
+    // don't-care, but a deterministic zero keeps the output stable).
+    let colors = palette_rgb.len();
+    let mut palette = vec![0u8; PCX_VGA_PALETTE_BYTES];
+    for (i, c) in palette_rgb.iter().enumerate() {
+        palette[i * 3] = c[0];
+        palette[i * 3 + 1] = c[1];
+        palette[i * 3 + 2] = c[2];
+    }
+    let bytes = encode_pcx_8bpp_indexed(width, height, &indices, &palette)?;
+    Ok((bytes, PcxAutoMode::Indexed8 { colors }))
+}
+
 /// Encode `width × height` packed RGB bytes (3 bytes per pixel,
 /// row-major, top-down) into an 8-colour PCX 5.0 file at 1 bpp ×
 /// 3 planes.

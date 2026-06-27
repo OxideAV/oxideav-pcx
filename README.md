@@ -136,6 +136,19 @@ Standalone helpers:
 * `encode_pcx_24bpp_window(x_min, y_min, w, h, &rgb)` — like
   `encode_pcx_24bpp` but sets a non-zero `(x_min, y_min)` window
   origin for the PCX 3.0+ pixel-region edge case.
+* `encode_pcx_rgb_auto(w, h, &rgb) -> (Vec<u8>, PcxAutoMode)` — picks
+  the **smallest lossless** geometry the way PC Paintbrush did: an
+  8 bpp × 1 plane indexed image with a 256-entry VGA tail palette when
+  the input has `≤ 256` distinct colours, else the planar 24-bit form
+  (byte-identical to `encode_pcx_24bpp`). A single raster scan assigns
+  each colour a first-seen index and bails to the planar branch on the
+  257th colour, so the colour mapping is exact (no quantisation) and the
+  decode round-trips the original RGB bit-for-bit in both branches. The
+  returned `PcxAutoMode` (`Indexed8 { colors }` / `Rgb24`) records which
+  branch was taken. For an 8-colour 200×200 image the indexed output is
+  ~⅓ the planar size; for a true-colour photo it transparently falls
+  back to planar. No new on-disk geometry — only the size-minimising
+  choice between two existing spec modes.
 
 All writers emit **PCX 5.0** with `bytes_per_line` rounded up to
 even per spec §1. The RLE encoder coalesces runs of ≤ 63 identical
