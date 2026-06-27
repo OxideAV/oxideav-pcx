@@ -38,9 +38,10 @@ use libfuzzer_sys::fuzz_target;
 use oxideav_pcx::{
     encode_pcx_1bpp_2planes_cga, encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega,
     encode_pcx_1bpp_mono, encode_pcx_24bpp, encode_pcx_2bpp_cga, encode_pcx_4bpp_4planes,
-    encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed, parse_pcx,
-    parse_pcx_indexed_1bpp_3planes, parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga,
-    parse_pcx_indexed_4bpp, parse_pcx_indexed_4bpp_4planes, parse_pcx_indexed_8bpp,
+    encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed,
+    encode_pcx_rgb_auto, parse_pcx, parse_pcx_indexed_1bpp_3planes, parse_pcx_indexed_1bpp_4planes,
+    parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_4bpp, parse_pcx_indexed_4bpp_4planes,
+    parse_pcx_indexed_8bpp,
 };
 
 /// Cap each dimension so the dimension×dimension pixel count stays well
@@ -97,6 +98,28 @@ fuzz_target!(|data: &[u8]| {
     // Three-bytes-per-pixel packed-RGB inputs.
     if let Ok(bytes) = encode_pcx_24bpp(width, height, payload) {
         let _ = parse_pcx(&bytes);
+    }
+    // Compact-mode auto writer: whichever branch it takes (indexed or
+    // planar), the produced file must (a) decode without panicking and
+    // (b) round-trip the source RGB *exactly* — both candidates are
+    // lossless by construction, so any divergence is a defect. Only
+    // assert the round-trip when the encoder consumed the whole
+    // `width × height × 3` prefix (it borrows the first that many bytes).
+    if let Ok((bytes, _mode)) = encode_pcx_rgb_auto(width, height, payload) {
+        if let Ok(img) = parse_pcx(&bytes) {
+            let n = width as usize * height as usize;
+            if payload.len() >= n * 3 {
+                let mut ok = true;
+                for (i, px) in img.data.chunks_exact(4).enumerate() {
+                    let src = &payload[i * 3..i * 3 + 3];
+                    if &px[..3] != src {
+                        ok = false;
+                        break;
+                    }
+                }
+                assert!(ok, "encode_pcx_rgb_auto must round-trip RGB exactly");
+            }
+        }
     }
     if let Ok(bytes) = encode_pcx_1bpp_3planes_ega_rgb(width, height, payload) {
         let _ = parse_pcx(&bytes);
