@@ -413,48 +413,23 @@ pub fn encode_pcx_rgb_auto(width: u16, height: u16, rgb: &[u8]) -> Result<(Vec<u
             "PCX encoder: rgb input shorter than width × height × 3",
         ));
     }
-    // Single raster scan: assign each distinct (r, g, b) the next
-    // first-seen index, bailing to the 24-bit branch the moment a 257th
-    // colour appears. A small `Vec<[u8; 3]>` probe stays fast because it
-    // never grows past 256 entries before the bail-out.
-    let mut palette_rgb: Vec<[u8; 3]> = Vec::with_capacity(256);
-    let mut indices: Vec<u8> = Vec::with_capacity(n_pixels);
-    let mut over_256 = false;
-    for p in rgb[..n_pixels * 3].chunks_exact(3) {
-        let key = [p[0], p[1], p[2]];
-        // Linear scan over `≤ 256` entries. For the indexed-target
-        // common case the palette saturates early and most pixels hit a
-        // colour already seen, so the average probe length stays small;
-        // the moment a 257th unique colour would be inserted we abandon
-        // the indexed attempt and fall through to planar 24-bit.
-        match palette_rgb.iter().position(|c| *c == key) {
-            Some(i) => indices.push(i as u8),
-            None => {
-                if palette_rgb.len() == 256 {
-                    over_256 = true;
-                    break;
-                }
-                palette_rgb.push(key);
-                indices.push((palette_rgb.len() - 1) as u8);
-            }
-        }
-    }
-    if over_256 {
+    // Single raster scan ([`build_indexed_payload`]): assign each
+    // distinct colour a first-seen index, returning `None` the moment a
+    // 257th colour appears. With `> 256` colours the planar 24-bit form
+    // is the only lossless option.
+    let Some((indices, palette)) = build_indexed_payload(width, height, rgb) else {
         let bytes = encode_pcx_24bpp(width, height, rgb)?;
         return Ok((bytes, PcxAutoMode::Rgb24));
-    }
-    // Build the 768-byte VGA palette: the first `palette_rgb.len()`
-    // entries carry the distinct colours in first-seen order; the
-    // remaining slots are zero-filled (the decode only ever indexes the
-    // entries the index buffer references, so the padding colour is a
-    // don't-care, but a deterministic zero keeps the output stable).
-    let colors = palette_rgb.len();
-    let mut palette = vec![0u8; PCX_VGA_PALETTE_BYTES];
-    for (i, c) in palette_rgb.iter().enumerate() {
-        palette[i * 3] = c[0];
-        palette[i * 3 + 1] = c[1];
-        palette[i * 3 + 2] = c[2];
-    }
+    };
+    // `colors` = the count of meaningful (non-padding) palette entries:
+    // the distinct-colour total. The palette zero-fills the rest, which
+    // the index buffer never references.
+    let colors = indices
+        .iter()
+        .copied()
+        .max()
+        .map(|m| m as usize + 1)
+        .unwrap_or(0);
     let indexed = encode_pcx_8bpp_indexed(width, height, &indices, &palette)?;
     // The fixed 769-byte VGA tail can dominate a *tiny* image, making the
     // planar 24-bit form the genuinely smaller file. Encode the planar
@@ -1238,6 +1213,132 @@ pub fn encode_pcx_24bpp_image(image: &PcxImage) -> Result<Vec<u8>> {
         (None, Some(dpi), None) => encode_pcx_24bpp_dpi(w, h, rgb, dpi),
         (None, None, None) => encode_pcx_24bpp(w, h, rgb),
     }
+}
+
+/// Build the packed `width × height × 3` RGB buffer a `PcxImage` carries,
+/// dropping alpha for `Rgba` and borrowing in place for `Rgb24`. Rejects
+/// `Indexed8` (which has no embedded palette to flatten). Shared by the
+/// `PcxImage`-level wrapper writers.
+fn pcx_image_rgb(image: &PcxImage) -> Result<std::borrow::Cow<'_, [u8]>> {
+    use std::borrow::Cow;
+    match image.pixel_format {
+        PcxPixelFormat::Rgba => {
+            let mut rgb = Vec::with_capacity(image.data.len() / 4 * 3);
+            for c in image.data.chunks_exact(4) {
+                rgb.extend_from_slice(&c[..3]);
+            }
+            Ok(Cow::Owned(rgb))
+        }
+        PcxPixelFormat::Rgb24 => Ok(Cow::Borrowed(&image.data)),
+        PcxPixelFormat::Indexed8 => Err(Error::unsupported(
+            "PCX encoder: Indexed8 input needs explicit palette \
+             (use encode_pcx_8bpp_indexed)",
+        )),
+    }
+}
+
+/// Convenience wrapper that emits the **most compact** lossless PCX for a
+/// [`PcxImage`], mirroring [`encode_pcx_rgb_auto`] at the image level.
+///
+/// Like [`encode_pcx_24bpp_image`] it flattens an `Rgba` / `Rgb24`
+/// `PcxImage` to packed RGB (dropping alpha; rejecting `Indexed8`), but
+/// instead of always writing the 24-bit planar form it runs the
+/// [`encode_pcx_rgb_auto`] colour scan and emits the smaller of the
+/// indexed and planar candidates (see that function for the size-compare
+/// contract). It returns the chosen [`PcxAutoMode`] alongside the bytes.
+///
+/// Metadata threading differs by branch because only the planar 24-bit
+/// writers carry the full `(window_origin, dpi, screen_size)` header
+/// triple:
+///
+/// * **Planar branch** → delegates to [`encode_pcx_24bpp_image`], so all
+///   three metadata fields round-trip exactly as that wrapper documents.
+/// * **Indexed branch** → the 8 bpp indexed writers carry authoring DPI
+///   ([`encode_pcx_8bpp_indexed_dpi`]) but have no window-origin /
+///   screen-size variant. So when the image carries *only* DPI (or no
+///   metadata) the indexed form is emitted with that DPI preserved; when
+///   it additionally carries a window origin or screen size — fields the
+///   indexed geometry cannot represent — the writer falls back to the
+///   planar branch so none of the requested metadata is silently
+///   dropped. This keeps the wrapper lossless on **both** pixels *and*
+///   the header metadata the caller asked to preserve.
+pub fn encode_pcx_image_auto(image: &PcxImage) -> Result<(Vec<u8>, PcxAutoMode)> {
+    let w: u16 = image
+        .width
+        .try_into()
+        .map_err(|_| Error::invalid("PCX encoder: width exceeds 65535"))?;
+    let h: u16 = image
+        .height
+        .try_into()
+        .map_err(|_| Error::invalid("PCX encoder: height exceeds 65535"))?;
+    let rgb = pcx_image_rgb(image)?;
+    // If the caller asked to preserve a window origin or screen size,
+    // those live only in the planar 24-bit header geometry. Honour the
+    // metadata over the size win: route through the metadata-preserving
+    // planar wrapper and report `Rgb24`.
+    if image.window_origin.is_some() || image.screen_size.is_some() {
+        let bytes = encode_pcx_24bpp_image(image)?;
+        return Ok((bytes, PcxAutoMode::Rgb24));
+    }
+    // No window / screen metadata: run the colour scan. The auto writer
+    // returns the smaller of indexed / planar; we then re-apply DPI on the
+    // chosen geometry (both the indexed and planar writers have a DPI
+    // variant) so a tagged authoring resolution survives either branch.
+    let (auto_bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb)?;
+    let Some(dpi) = image.dpi else {
+        // No DPI to thread either — the auto output already carries the
+        // default header and is the final answer.
+        return Ok((auto_bytes, mode));
+    };
+    // DPI present: re-emit the *chosen* geometry through its DPI variant
+    // so the size decision the scan already made is preserved while the
+    // header carries the authoring resolution.
+    let bytes = match mode {
+        PcxAutoMode::Rgb24 => encode_pcx_24bpp_dpi(w, h, &rgb, dpi)?,
+        PcxAutoMode::Indexed8 { .. } => {
+            // Rebuild the indexed payload + palette under the DPI writer.
+            // Re-running the scan is cheap relative to the encode and keeps
+            // this branch from duplicating the palette-build logic.
+            let (indices, palette) = build_indexed_payload(w, h, &rgb)
+                .expect("auto already proved ≤256 colours for this input");
+            encode_pcx_8bpp_indexed_dpi(w, h, &indices, &palette, dpi)?
+        }
+    };
+    Ok((bytes, mode))
+}
+
+/// Scan packed RGB into `(indices, 768-byte VGA palette)` when the image
+/// has `≤ 256` distinct colours, else `None`. Shared by
+/// [`encode_pcx_rgb_auto`] and the DPI-bearing indexed branch of
+/// [`encode_pcx_image_auto`] so the first-seen palette assignment is
+/// defined in exactly one place.
+fn build_indexed_payload(width: u16, height: u16, rgb: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let n_pixels = width as usize * height as usize;
+    if rgb.len() < n_pixels * 3 {
+        return None;
+    }
+    let mut palette_rgb: Vec<[u8; 3]> = Vec::with_capacity(256);
+    let mut indices: Vec<u8> = Vec::with_capacity(n_pixels);
+    for p in rgb[..n_pixels * 3].chunks_exact(3) {
+        let key = [p[0], p[1], p[2]];
+        match palette_rgb.iter().position(|c| *c == key) {
+            Some(i) => indices.push(i as u8),
+            None => {
+                if palette_rgb.len() == 256 {
+                    return None;
+                }
+                palette_rgb.push(key);
+                indices.push((palette_rgb.len() - 1) as u8);
+            }
+        }
+    }
+    let mut palette = vec![0u8; PCX_VGA_PALETTE_BYTES];
+    for (i, c) in palette_rgb.iter().enumerate() {
+        palette[i * 3] = c[0];
+        palette[i * 3 + 1] = c[1];
+        palette[i * 3 + 2] = c[2];
+    }
+    Some((indices, palette))
 }
 
 // ---------------------------------------------------------------------------

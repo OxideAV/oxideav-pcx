@@ -31,6 +31,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on-disk geometry — only the size-minimising choice between two existing
   spec modes. New public exports: `encode_pcx_rgb_auto`, `PcxAutoMode`.
 
+- *(encode)* **`encode_pcx_image_auto` — `PcxImage`-level compact-mode
+  wrapper.** The image-level companion to `encode_pcx_rgb_auto`,
+  mirroring the existing `encode_pcx_24bpp_image` convenience wrapper. It
+  flattens an `Rgba` / `Rgb24` `PcxImage` (dropping alpha; rejecting
+  `Indexed8`) and emits the smaller of the indexed / planar candidates,
+  returning the chosen `PcxAutoMode`. Header metadata is preserved
+  losslessly per branch: the planar branch delegates to
+  `encode_pcx_24bpp_image` so the full `(window_origin, dpi,
+  screen_size)` triple round-trips, and the indexed branch threads
+  authoring DPI through `encode_pcx_8bpp_indexed_dpi`. Because the
+  indexed geometry has no window-origin / screen-size header variant, an
+  image that carries either of those fields falls back to the planar
+  branch rather than silently dropping the metadata — so the wrapper is
+  lossless on both pixels *and* the requested header annotations. New
+  public export: `encode_pcx_image_auto`.
+
 ### Changed
 
 - *(encode, perf)* **1-bit-per-plane encoders now pack whole bytes**

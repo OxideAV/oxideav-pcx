@@ -9,7 +9,10 @@
 //! is the colour-count decision, the first-seen palette assignment, and
 //! the lossless round-trip through `parse_pcx` in both branches.
 
-use oxideav_pcx::{encode_pcx_24bpp, encode_pcx_rgb_auto, parse_pcx, PcxAutoMode};
+use oxideav_pcx::{
+    encode_pcx_24bpp, encode_pcx_image_auto, encode_pcx_rgb_auto, parse_pcx, PcxAutoMode, PcxImage,
+    PcxPixelFormat,
+};
 
 /// Deterministic generator so every run exercises the same pixels.
 fn xorshift32(state: &mut u32) -> u32 {
@@ -236,4 +239,132 @@ fn returned_bytes_are_the_smaller_of_the_two_candidates() {
         let (_, _, dec) = decode_to_rgb(&auto);
         assert_eq!(dec, rgb, "{w}×{h}: round-trip must be lossless");
     }
+}
+
+// --- encode_pcx_image_auto (PcxImage-level wrapper) -----------------------
+
+/// Build an `Rgba` `PcxImage` from packed RGB (alpha = 0xFF), with the
+/// given optional metadata.
+fn rgba_image(
+    w: u32,
+    h: u32,
+    rgb: &[u8],
+    dpi: Option<(u16, u16)>,
+    window_origin: Option<(u16, u16)>,
+    screen_size: Option<(u16, u16)>,
+) -> PcxImage {
+    let mut data = Vec::with_capacity(w as usize * h as usize * 4);
+    for c in rgb.chunks_exact(3) {
+        data.extend_from_slice(&[c[0], c[1], c[2], 0xFF]);
+    }
+    PcxImage {
+        width: w,
+        height: h,
+        pixel_format: PcxPixelFormat::Rgba,
+        data,
+        pts: None,
+        dpi,
+        window_origin,
+        screen_size,
+    }
+}
+
+#[test]
+fn image_auto_indexed_preserves_dpi() {
+    // Large low-colour Rgba image with authoring DPI but no window /
+    // screen metadata → indexed branch, DPI threaded into the header.
+    let w = 200u32;
+    let h = 200u32;
+    let pal = [[0u8, 0, 0], [255, 0, 0], [0, 255, 0], [0, 0, 255]];
+    let mut state = 0xAB_CD_01u32;
+    let mut rgb = Vec::new();
+    for _ in 0..(w as usize * h as usize) {
+        rgb.extend_from_slice(&pal[(xorshift32(&mut state) % 4) as usize]);
+    }
+    let img = rgba_image(w, h, &rgb, Some((300, 300)), None, None);
+    let (bytes, mode) = encode_pcx_image_auto(&img).unwrap();
+    assert!(matches!(mode, PcxAutoMode::Indexed8 { .. }));
+    // Header bits_per_pixel / n_planes confirm the indexed geometry.
+    assert_eq!(bytes[3], 8, "indexed → 8 bpp");
+    assert_eq!(bytes[65], 1, "indexed → 1 plane");
+    // The decoded image must carry the threaded DPI and the original
+    // pixels.
+    let dec = parse_pcx(&bytes).unwrap();
+    assert_eq!(
+        dec.dpi,
+        Some((300, 300)),
+        "DPI must survive the indexed branch"
+    );
+    let (_, _, dec_rgb) = decode_to_rgb(&bytes);
+    assert_eq!(dec_rgb, rgb);
+}
+
+#[test]
+fn image_auto_window_metadata_forces_planar_to_preserve_it() {
+    // A low-colour image that *would* go indexed, but carries a window
+    // origin the indexed geometry cannot represent. The wrapper must
+    // honour the metadata: fall back to planar and round-trip the origin.
+    let w = 200u32;
+    let h = 200u32;
+    let pal = [[10u8, 10, 10], [200, 100, 50]];
+    let mut state = 0x77_77_01u32;
+    let mut rgb = Vec::new();
+    for _ in 0..(w as usize * h as usize) {
+        rgb.extend_from_slice(&pal[(xorshift32(&mut state) % 2) as usize]);
+    }
+    let img = rgba_image(w, h, &rgb, Some((150, 150)), Some((40, 24)), None);
+    let (bytes, mode) = encode_pcx_image_auto(&img).unwrap();
+    assert_eq!(
+        mode,
+        PcxAutoMode::Rgb24,
+        "window-origin metadata must force the planar branch"
+    );
+    let dec = parse_pcx(&bytes).unwrap();
+    assert_eq!(
+        dec.window_origin,
+        Some((40, 24)),
+        "window origin must survive"
+    );
+    assert_eq!(
+        dec.dpi,
+        Some((150, 150)),
+        "DPI must survive alongside window"
+    );
+    let (_, _, dec_rgb) = decode_to_rgb(&bytes);
+    assert_eq!(dec_rgb, rgb);
+}
+
+#[test]
+fn image_auto_true_color_falls_back_to_planar() {
+    // > 256 colours → planar regardless of metadata.
+    let w = 257u32;
+    let h = 2u32;
+    let mut rgb = Vec::new();
+    for _ in 0..h {
+        for i in 0..257u32 {
+            rgb.extend_from_slice(&[(i & 0xFF) as u8, (i >> 8) as u8, 0x00]);
+        }
+    }
+    let img = rgba_image(w, h, &rgb, None, None, None);
+    let (bytes, mode) = encode_pcx_image_auto(&img).unwrap();
+    assert_eq!(mode, PcxAutoMode::Rgb24);
+    assert_eq!(bytes[3], 8);
+    assert_eq!(bytes[65], 3, "24-bit → 3 planes");
+    let (_, _, dec_rgb) = decode_to_rgb(&bytes);
+    assert_eq!(dec_rgb, rgb);
+}
+
+#[test]
+fn image_auto_rejects_indexed8_input() {
+    let img = PcxImage {
+        width: 4,
+        height: 1,
+        pixel_format: PcxPixelFormat::Indexed8,
+        data: vec![0, 1, 2, 3],
+        pts: None,
+        dpi: None,
+        window_origin: None,
+        screen_size: None,
+    };
+    assert!(encode_pcx_image_auto(&img).is_err());
 }

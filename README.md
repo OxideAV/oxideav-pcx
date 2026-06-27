@@ -152,6 +152,16 @@ Standalone helpers:
   emitted geometry; first-seen palette order plus an indexed-wins-tie
   rule keep the output deterministic. No new on-disk geometry — only the
   size-minimising choice between two existing spec modes.
+* `encode_pcx_image_auto(&image) -> (Vec<u8>, PcxAutoMode)` — the
+  `PcxImage`-level companion (mirrors `encode_pcx_24bpp_image`). Flattens
+  an `Rgba` / `Rgb24` image and emits the smaller of the indexed / planar
+  candidates while preserving header metadata losslessly per branch: the
+  planar branch threads the full `(window_origin, dpi, screen_size)`
+  triple (via `encode_pcx_24bpp_image`); the indexed branch threads
+  authoring DPI (via `encode_pcx_8bpp_indexed_dpi`). Since the indexed
+  geometry has no window-origin / screen-size header variant, an image
+  carrying either field falls back to planar rather than dropping the
+  metadata — lossless on both pixels and the requested annotations.
 
 All writers emit **PCX 5.0** with `bytes_per_line` rounded up to
 even per spec §1. The RLE encoder coalesces runs of ≤ 63 identical
