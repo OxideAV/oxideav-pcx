@@ -104,7 +104,21 @@ probes count the planar-buffer bytes produced.
 | `encode_4bpp_packed_320x240`          | 93 µs     | 787 MiB/s    |
 | `encode_2bpp_cga_320x240`             | 118 µs    | 621 MiB/s    |
 | `encode_1bpp_4planes_ega_320x240`     | 669 µs    | 110 MiB/s    |
+| `encode_rgb_auto_lowcolor_640x480`    | ~6.0 ms   | ~146 MiB/s   |
+| `encode_rgb_auto_truecolor_640x480`   | (scan-bound) | —         |
 | `encode_dcx_4_pages_320x240`          | 11 µs     | 60.6 GiB/s   |
+
+> The two `encode_rgb_auto_*` rows measure `encode_pcx_rgb_auto`, whose
+> cost is dominated by the per-pixel distinct-colour scan (a linear probe
+> over a ≤256-entry first-seen palette), not the RLE encode the other
+> rows isolate. The *lowcolor* case saturates the palette and runs the
+> scan over every pixel plus both candidate encodes + the size compare;
+> the *truecolor* case bails out of the scan as soon as a 257th colour
+> appears and then does a single planar encode, so its cost is the
+> early-exit scan plus one `encode_24bpp`. These rows exist to track the
+> scan's cost as a regression guard, not as a throughput headline — a
+> caller that already knows its colour count should call the specific
+> writer directly.
 
 ### Roundtrip (encode → decode)
 

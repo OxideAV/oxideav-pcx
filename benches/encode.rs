@@ -31,6 +31,13 @@
 //!     legacy CGA-palette select via header bytes 16 / 19.
 //!   - **encode_1bpp_4planes_ega_320x240**: 320×240 1 bpp × 4 planes
 //!     EGA encode — exercises the planar 4-plane bit-shuffle write path.
+//!   - **encode_rgb_auto_lowcolor_640x480**: 640×480 16-colour RGB
+//!     through `encode_pcx_rgb_auto` — exercises the distinct-colour
+//!     scan to saturation plus both candidate encodes and the size
+//!     compare (the indexed-branch hot path).
+//!   - **encode_rgb_auto_truecolor_640x480**: 640×480 natural-gradient
+//!     RGB through `encode_pcx_rgb_auto` — exercises the colour scan's
+//!     early bail-out (> 256 colours) plus the single planar encode.
 //!   - **encode_dcx_4_pages_320x240**: 4-page 320×240 24-bit DCX bundle
 //!     encode — exercises the offset-table writer + magic write on top
 //!     of the per-page 24bpp encoder.
@@ -43,7 +50,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 use oxideav_pcx::{
     encode_dcx, encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono, encode_pcx_24bpp,
     encode_pcx_2bpp_cga, encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale,
-    encode_pcx_8bpp_indexed,
+    encode_pcx_8bpp_indexed, encode_pcx_rgb_auto,
 };
 
 fn xorshift_byte(state: &mut u32) -> u8 {
@@ -73,6 +80,47 @@ fn build_rgb(width: u32, height: u32) -> Vec<u8> {
             data[idx] = natural_byte(r, c, h, w, &mut state);
             data[idx + 1] = base_y.min(255) as u8;
             data[idx + 2] = base_x.min(255) as u8;
+        }
+    }
+    data
+}
+
+/// Packed RGB with only 16 distinct colours, so `encode_pcx_rgb_auto`
+/// takes the indexed branch (the colour-scan saturates the palette early
+/// and the indexed candidate wins the size compare).
+fn build_rgb_low_color(width: u32, height: u32) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    // A fixed 16-entry RGB palette; pixels cycle through it by position +
+    // a little noise so runs aren't trivially long.
+    let pal: [[u8; 3]; 16] = [
+        [0, 0, 0],
+        [255, 0, 0],
+        [0, 255, 0],
+        [0, 0, 255],
+        [255, 255, 0],
+        [0, 255, 255],
+        [255, 0, 255],
+        [255, 255, 255],
+        [128, 0, 0],
+        [0, 128, 0],
+        [0, 0, 128],
+        [128, 128, 0],
+        [0, 128, 128],
+        [128, 0, 128],
+        [128, 128, 128],
+        [64, 64, 64],
+    ];
+    let mut data = vec![0u8; w * h * 3];
+    let mut state: u32 = 0x0BAD_F00D;
+    for r in 0..h {
+        for c in 0..w {
+            let pick = ((r + c) as u32).wrapping_add(xorshift_byte(&mut state) as u32) % 16;
+            let p = pal[pick as usize];
+            let idx = (r * w + c) * 3;
+            data[idx] = p[0];
+            data[idx + 1] = p[1];
+            data[idx + 2] = p[2];
         }
     }
     data
@@ -307,6 +355,32 @@ fn bench_encode_dcx_4_pages_320x240(c: &mut Criterion) {
     g.finish();
 }
 
+fn bench_encode_rgb_auto_lowcolor_640x480(c: &mut Criterion) {
+    // 16-colour 640×480 RGB → the auto writer's colour scan saturates the
+    // palette and the indexed candidate wins. Times the full scan + both
+    // candidate encodes + the size compare (the indexed-branch hot path).
+    let rgb = build_rgb_low_color(640, 480);
+    let mut g = c.benchmark_group("encode_rgb_auto_lowcolor_640x480");
+    g.throughput(Throughput::Bytes((640 * 480 * 3) as u64));
+    g.bench_function(BenchmarkId::from_parameter("auto-idx/640x480"), |b| {
+        b.iter(|| encode_pcx_rgb_auto(640, 480, criterion::black_box(&rgb)).expect("auto"));
+    });
+    g.finish();
+}
+
+fn bench_encode_rgb_auto_truecolor_640x480(c: &mut Criterion) {
+    // Natural-gradient 640×480 RGB → far more than 256 colours, so the
+    // scan bails early to the planar branch. Times the colour scan's
+    // early-exit cost plus the single planar encode.
+    let rgb = build_rgb(640, 480);
+    let mut g = c.benchmark_group("encode_rgb_auto_truecolor_640x480");
+    g.throughput(Throughput::Bytes((640 * 480 * 3) as u64));
+    g.bench_function(BenchmarkId::from_parameter("auto-planar/640x480"), |b| {
+        b.iter(|| encode_pcx_rgb_auto(640, 480, criterion::black_box(&rgb)).expect("auto"));
+    });
+    g.finish();
+}
+
 criterion_group!(
     benches,
     bench_encode_24bpp_1920x1080,
@@ -318,6 +392,8 @@ criterion_group!(
     bench_encode_4bpp_packed_320x240,
     bench_encode_2bpp_cga_320x240,
     bench_encode_1bpp_4planes_ega_320x240,
+    bench_encode_rgb_auto_lowcolor_640x480,
+    bench_encode_rgb_auto_truecolor_640x480,
     bench_encode_dcx_4_pages_320x240,
 );
 criterion_main!(benches);
