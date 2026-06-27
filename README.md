@@ -852,3 +852,9 @@ on both decode and encode.
   `encode_pcx_2bpp_cga` / `encode_pcx_1bpp_2planes_cga` /
   `encode_pcx_1bpp_4planes_ega` directly with an explicit palette
   argument.
+* The framework `Encoder` always emits the 24-bit planar form for RGB
+  input (predictable bytes for pipeline consumers). A standalone caller
+  that wants the smallest lossless file without pre-choosing a mode can
+  use `encode_pcx_rgb_auto` / `encode_pcx_image_auto`, which derive an
+  exact palette from the pixels and pick the smaller of the indexed /
+  planar geometries automatically.
