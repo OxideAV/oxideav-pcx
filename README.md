@@ -136,19 +136,22 @@ Standalone helpers:
 * `encode_pcx_24bpp_window(x_min, y_min, w, h, &rgb)` — like
   `encode_pcx_24bpp` but sets a non-zero `(x_min, y_min)` window
   origin for the PCX 3.0+ pixel-region edge case.
-* `encode_pcx_rgb_auto(w, h, &rgb) -> (Vec<u8>, PcxAutoMode)` — picks
-  the **smallest lossless** geometry the way PC Paintbrush did: an
-  8 bpp × 1 plane indexed image with a 256-entry VGA tail palette when
-  the input has `≤ 256` distinct colours, else the planar 24-bit form
-  (byte-identical to `encode_pcx_24bpp`). A single raster scan assigns
-  each colour a first-seen index and bails to the planar branch on the
-  257th colour, so the colour mapping is exact (no quantisation) and the
-  decode round-trips the original RGB bit-for-bit in both branches. The
-  returned `PcxAutoMode` (`Indexed8 { colors }` / `Rgb24`) records which
-  branch was taken. For an 8-colour 200×200 image the indexed output is
-  ~⅓ the planar size; for a true-colour photo it transparently falls
-  back to planar. No new on-disk geometry — only the size-minimising
-  choice between two existing spec modes.
+* `encode_pcx_rgb_auto(w, h, &rgb) -> (Vec<u8>, PcxAutoMode)` — emits
+  the **smallest lossless** PCX the way PC Paintbrush did. A raster scan
+  assigns each colour a first-seen index and bails on the 257th colour:
+  `> 256` colours → planar 24-bit (byte-identical to `encode_pcx_24bpp`);
+  `≤ 256` colours → it encodes **both** the 8 bpp × 1 plane indexed
+  candidate (256-entry VGA tail palette) and the planar candidate and
+  keeps whichever is fewer bytes. The indexed form wins decisively for
+  any non-trivial low-colour image (~⅓ the planar size), but for a *tiny*
+  image the fixed 769-byte palette tail can exceed the whole planar file,
+  so planar is returned — the "most compact" guarantee holds at every
+  size. Both candidates are exact (no quantisation), so the decode
+  round-trips the original RGB bit-for-bit regardless of branch. The
+  returned `PcxAutoMode` (`Indexed8 { colors }` / `Rgb24`) records the
+  emitted geometry; first-seen palette order plus an indexed-wins-tie
+  rule keep the output deterministic. No new on-disk geometry — only the
+  size-minimising choice between two existing spec modes.
 
 All writers emit **PCX 5.0** with `bytes_per_line` rounded up to
 even per spec §1. The RLE encoder coalesces runs of ≤ 63 identical

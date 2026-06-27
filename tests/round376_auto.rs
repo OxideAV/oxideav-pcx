@@ -33,10 +33,15 @@ fn decode_to_rgb(bytes: &[u8]) -> (u16, u16, Vec<u8>) {
 }
 
 #[test]
-fn solid_color_picks_indexed_single_entry() {
-    // One distinct colour → indexed, 1 palette entry.
-    let w = 17u16;
-    let h = 9u16;
+fn solid_color_large_picks_indexed_single_entry() {
+    // One distinct colour over a large canvas: the index buffer is one
+    // byte/pixel (vs three planar) and both forms RLE-collapse a solid
+    // fill, but the indexed file still ends up no larger; once the
+    // canvas is big the 769-byte palette tail is amortised. Assert the
+    // mode is indexed with exactly one meaningful palette entry and the
+    // round-trip is lossless.
+    let w = 256u16;
+    let h = 256u16;
     let mut rgb = Vec::new();
     for _ in 0..(w as usize * h as usize) {
         rgb.extend_from_slice(&[0x12, 0x34, 0x56]);
@@ -49,15 +54,40 @@ fn solid_color_picks_indexed_single_entry() {
 }
 
 #[test]
-fn exactly_256_colors_stays_indexed() {
-    // 256 pixels, each a distinct colour → exactly fills the palette.
-    let w = 16u16;
-    let h = 16u16;
-    let mut rgb = Vec::with_capacity(256 * 3);
-    for i in 0..256u32 {
-        // Spread the colour across all three channels so no two pixels
-        // collide.
-        rgb.extend_from_slice(&[(i as u8), (i ^ 0x5A) as u8, (i.wrapping_mul(3)) as u8]);
+fn tiny_low_color_image_prefers_planar_when_smaller() {
+    // A *tiny* image with a handful of colours: the fixed 769-byte VGA
+    // tail dominates the indexed candidate, so the planar 24-bit form is
+    // genuinely the smaller file and the size-comparing auto writer must
+    // return it. Either way the round-trip is lossless.
+    let w = 3u16;
+    let h = 3u16;
+    let pal = [[10u8, 20, 30], [40, 50, 60], [70, 80, 90]];
+    let mut rgb = Vec::new();
+    for i in 0..(w as usize * h as usize) {
+        rgb.extend_from_slice(&pal[i % 3]);
+    }
+    let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+    assert_eq!(
+        mode,
+        PcxAutoMode::Rgb24,
+        "the 769-byte palette tail makes planar the smaller file for a 3×3 image"
+    );
+    let (_, _, dec) = decode_to_rgb(&bytes);
+    assert_eq!(dec, rgb, "tiny planar round-trip must be lossless");
+}
+
+#[test]
+fn exactly_256_colors_round_trips() {
+    // 256 distinct colours spread over a large canvas (each colour
+    // repeated) so the indexed candidate's one-byte indices beat planar
+    // and the palette is exactly full. Round-trip must be lossless.
+    let w = 256u16;
+    let h = 64u16;
+    let mut rgb = Vec::with_capacity(w as usize * h as usize * 3);
+    for _ in 0..h as usize {
+        for i in 0..256u32 {
+            rgb.extend_from_slice(&[(i as u8), (i ^ 0x5A) as u8, (i.wrapping_mul(3)) as u8]);
+        }
     }
     let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
     assert_eq!(mode, PcxAutoMode::Indexed8 { colors: 256 });
@@ -131,17 +161,19 @@ fn first_seen_palette_order_is_deterministic() {
     // Palette indices follow first-seen raster order: the first pixel
     // gets index 0, the next *new* colour index 1, and so on. Re-running
     // on identical input yields byte-identical output.
-    let w = 4u16;
-    let h = 1u16;
-    // Colours appear in order A, B, A, C → palette {A=0, B=1, C=2}.
-    let a = [10, 20, 30];
+    // Large enough that the indexed candidate wins, so the colour count
+    // in the mode is observable. Colours first appear in order A, B, C →
+    // palette {A=0, B=1, C=2}; repeated to fill a 64×64 canvas.
+    let w = 64u16;
+    let h = 64u16;
+    let a = [10u8, 20, 30];
     let b = [40, 50, 60];
     let c = [70, 80, 90];
+    let order = [a, b, a, c];
     let mut rgb = Vec::new();
-    rgb.extend_from_slice(&a);
-    rgb.extend_from_slice(&b);
-    rgb.extend_from_slice(&a);
-    rgb.extend_from_slice(&c);
+    for i in 0..(w as usize * h as usize) {
+        rgb.extend_from_slice(&order[i % 4]);
+    }
     let (bytes1, mode1) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
     let (bytes2, mode2) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
     assert_eq!(mode1, PcxAutoMode::Indexed8 { colors: 3 });
@@ -162,9 +194,11 @@ fn rejects_zero_dimension_and_short_input() {
 #[test]
 fn odd_width_round_trips_in_both_branches() {
     // Odd width forces an even-stride pad in both targets; the visible
-    // pixels must still recover exactly. Low-colour → indexed.
-    let w = 7u16;
-    let h = 5u16;
+    // pixels must still recover exactly whichever mode the size compare
+    // picks. A 201×151 low-colour canvas is large enough that indexed
+    // wins, exercising the odd-width pad on the indexed path.
+    let w = 201u16;
+    let h = 151u16;
     let mut state = 0x1234_5678u32;
     let mut rgb = Vec::new();
     let pal = [[0u8, 0, 0], [255, 255, 255], [128, 64, 32]];
@@ -176,4 +210,30 @@ fn odd_width_round_trips_in_both_branches() {
     let (dw, dh, dec) = decode_to_rgb(&bytes);
     assert_eq!((dw, dh), (w, h));
     assert_eq!(dec, rgb, "odd-width indexed round-trip must be lossless");
+}
+
+#[test]
+fn returned_bytes_are_the_smaller_of_the_two_candidates() {
+    // The "most compact" contract: for a low-colour input the emitted
+    // file is never larger than *either* the plain planar writer or the
+    // indexed writer would produce on its own. Check a size where the
+    // decision could go either way plus the two clear extremes.
+    let pal = [[0u8, 0, 0], [255, 0, 0], [0, 255, 0], [0, 0, 255]];
+    for (w, h) in [(2u16, 2u16), (40, 40), (256, 256)] {
+        let mut state = 0xBEEF_0001u32;
+        let mut rgb = Vec::new();
+        for _ in 0..(w as usize * h as usize) {
+            rgb.extend_from_slice(&pal[(xorshift32(&mut state) % 4) as usize]);
+        }
+        let (auto, _mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+        let planar = encode_pcx_24bpp(w, h, &rgb).unwrap();
+        assert!(
+            auto.len() <= planar.len(),
+            "{w}×{h}: auto ({}) must not exceed planar ({})",
+            auto.len(),
+            planar.len()
+        );
+        let (_, _, dec) = decode_to_rgb(&auto);
+        assert_eq!(dec, rgb, "{w}×{h}: round-trip must be lossless");
+    }
 }

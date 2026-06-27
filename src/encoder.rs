@@ -377,26 +377,32 @@ pub enum PcxAutoMode {
 /// geometry that could represent the image losslessly. This writer
 /// mirrors that: it scans the input's distinct colours and
 ///
-/// * if there are `≤ 256` of them, emits an 8 bpp × 1 plane **indexed**
-///   image (spec §"VGA 256-color palette") — one index byte per pixel
-///   plus a 768-byte VGA tail palette, roughly a third the planar size
-///   for photographic-but-low-colour art and far smaller for synthetic
-///   / UI imagery; the colour mapping is exact (no quantisation), so
-///   the decode round-trips the original RGB bit-for-bit;
-/// * otherwise falls back to the 8 bpp × 3 plane planar 24-bit form
-///   (spec §"24-bit .PCX files", identical bytes to
-///   [`encode_pcx_24bpp`]).
+/// * if there are `> 256` of them, emits the 8 bpp × 3 plane planar
+///   24-bit form (spec §"24-bit .PCX files", identical bytes to
+///   [`encode_pcx_24bpp`]) — the only lossless option, since no PCX
+///   palette holds more than 256 entries;
+/// * if there are `≤ 256`, it encodes **both** the 8 bpp × 1 plane
+///   indexed candidate (one index byte per pixel plus a 768-byte VGA
+///   tail palette, spec §"VGA 256-color palette") **and** the planar
+///   24-bit candidate, then returns whichever is the **fewer bytes**.
+///   The indexed form wins decisively for any non-trivial low-colour
+///   image (~⅓ the planar size for synthetic / UI / low-colour art),
+///   but for a *tiny* image the fixed 769-byte palette tail can exceed
+///   the whole planar file, in which case planar is returned instead —
+///   so the "most compact" guarantee holds at every size, not just the
+///   large-image asymptote.
 ///
-/// The returned [`PcxAutoMode`] records which branch was taken. Both
-/// targets are lossless: a true-colour image with `≤ 256` distinct
-/// colours loses nothing by being stored indexed, and one with more is
-/// stored planar. Palette entry order is first-seen (a deterministic
-/// raster scan), so the same input always yields byte-identical output.
+/// The returned [`PcxAutoMode`] records which on-disk geometry was
+/// actually emitted. Both candidates are exact (the indexed colour
+/// mapping involves no quantisation), so the file decodes through
+/// [`crate::parse_pcx`] back to the original packed RGB bit-for-bit
+/// regardless of branch. Palette entry order is first-seen (a
+/// deterministic raster scan) and the size tie-break is deterministic
+/// (indexed wins an exact tie), so the same input always yields
+/// byte-identical output.
 ///
 /// This is a pure encode-time optimisation built entirely from the two
-/// existing spec modes; it introduces no new on-disk geometry and every
-/// file it produces decodes through [`crate::parse_pcx`] back to the
-/// original packed RGB.
+/// existing spec modes; it introduces no new on-disk geometry.
 pub fn encode_pcx_rgb_auto(width: u16, height: u16, rgb: &[u8]) -> Result<(Vec<u8>, PcxAutoMode)> {
     if width == 0 || height == 0 {
         return Err(Error::invalid("PCX encoder: zero dimension"));
@@ -409,10 +415,8 @@ pub fn encode_pcx_rgb_auto(width: u16, height: u16, rgb: &[u8]) -> Result<(Vec<u
     }
     // Single raster scan: assign each distinct (r, g, b) the next
     // first-seen index, bailing to the 24-bit branch the moment a 257th
-    // colour appears. A 256-slot direct-address table keyed on the
-    // packed 24-bit colour is the cheapest exact membership test that
-    // does not allocate per pixel; a small `Vec<(u32, u8)>` probe stays
-    // fast because it never grows past 256 entries before the bail-out.
+    // colour appears. A small `Vec<[u8; 3]>` probe stays fast because it
+    // never grows past 256 entries before the bail-out.
     let mut palette_rgb: Vec<[u8; 3]> = Vec::with_capacity(256);
     let mut indices: Vec<u8> = Vec::with_capacity(n_pixels);
     let mut over_256 = false;
@@ -451,8 +455,19 @@ pub fn encode_pcx_rgb_auto(width: u16, height: u16, rgb: &[u8]) -> Result<(Vec<u
         palette[i * 3 + 1] = c[1];
         palette[i * 3 + 2] = c[2];
     }
-    let bytes = encode_pcx_8bpp_indexed(width, height, &indices, &palette)?;
-    Ok((bytes, PcxAutoMode::Indexed8 { colors }))
+    let indexed = encode_pcx_8bpp_indexed(width, height, &indices, &palette)?;
+    // The fixed 769-byte VGA tail can dominate a *tiny* image, making the
+    // planar 24-bit form the genuinely smaller file. Encode the planar
+    // candidate too and keep whichever is fewer bytes, so the "most
+    // compact" guarantee holds at every size. An exact tie keeps the
+    // indexed form (the era's editors preferred it for low-colour art and
+    // it keeps the output deterministic).
+    let planar = encode_pcx_24bpp(width, height, rgb)?;
+    if planar.len() < indexed.len() {
+        Ok((planar, PcxAutoMode::Rgb24))
+    } else {
+        Ok((indexed, PcxAutoMode::Indexed8 { colors }))
+    }
 }
 
 /// Encode `width × height` packed RGB bytes (3 bytes per pixel,

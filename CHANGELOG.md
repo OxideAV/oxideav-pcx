@@ -10,21 +10,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - *(encode)* **`encode_pcx_rgb_auto` — compact-mode auto-selecting RGB
-  writer.** Given packed `width × height × 3` RGB, it picks the smallest
-  *lossless* PCX 5.0 geometry the way PC Paintbrush did: an 8 bpp × 1
-  plane indexed image with a 256-entry VGA tail palette (spec §"VGA
-  256-color palette") when the input has `≤ 256` distinct colours, else
+  writer.** Given packed `width × height × 3` RGB, it emits the smallest
+  *lossless* PCX 5.0 file the way PC Paintbrush did. A single raster scan
+  assigns each distinct colour a first-seen index and bails the moment a
+  257th colour appears: with `> 256` colours the only lossless option is
   the 8 bpp × 3 plane planar 24-bit form (spec §"24-bit .PCX files",
-  byte-identical to `encode_pcx_24bpp`). A single raster scan assigns
-  each distinct colour a first-seen index and bails to the planar branch
-  the moment a 257th colour appears, so the colour mapping is exact (no
-  quantisation) and the decode round-trips the original RGB bit-for-bit
-  in both branches. Returns the chosen `PcxAutoMode`
-  (`Indexed8 { colors }` / `Rgb24`) alongside the bytes. Both targets are
-  pre-existing spec modes — this introduces no new on-disk geometry, only
-  the size-minimising decision between them (for an 8-colour 200×200
-  image the indexed output is ~⅓ the planar size). New public exports:
-  `encode_pcx_rgb_auto`, `PcxAutoMode`.
+  byte-identical to `encode_pcx_24bpp`); with `≤ 256` it encodes **both**
+  the 8 bpp × 1 plane indexed candidate (256-entry VGA tail palette, spec
+  §"VGA 256-color palette") and the planar candidate and keeps whichever
+  is **fewer bytes**. The indexed form wins decisively for any
+  non-trivial low-colour image (~⅓ the planar size for synthetic / UI /
+  low-colour art), but for a *tiny* image the fixed 769-byte palette tail
+  can exceed the whole planar file, so planar is returned instead — the
+  "most compact" guarantee holds at every size, not just the large-image
+  asymptote. Both candidates are exact (no quantisation), so the file
+  decodes back to the original RGB bit-for-bit regardless of branch.
+  Returns the chosen `PcxAutoMode` (`Indexed8 { colors }` / `Rgb24`)
+  alongside the bytes; the first-seen palette order and the
+  indexed-wins-an-exact-tie rule keep the output deterministic. No new
+  on-disk geometry — only the size-minimising choice between two existing
+  spec modes. New public exports: `encode_pcx_rgb_auto`, `PcxAutoMode`.
 
 ### Changed
 
