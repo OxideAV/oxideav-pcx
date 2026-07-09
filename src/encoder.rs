@@ -368,6 +368,13 @@ pub enum PcxAutoMode {
     /// `> 256` distinct colours: 8 bpp × 3 plane planar RGB (spec
     /// §"24-bit .PCX files"), no tail palette.
     Rgb24,
+    /// Every distinct colour is a pure grey (`r == g == b`): 8 bpp ×
+    /// 1 plane with the spec §3 `palette_info = 2` grayscale flag and
+    /// **no** VGA tail palette. The pixel byte *is* the grey level, so
+    /// the decode ramp (`index → (i, i, i)`) reproduces the input
+    /// exactly while saving the fixed 769-byte tail the
+    /// [`PcxAutoMode::Indexed8`] form would carry.
+    Gray8,
 }
 
 /// Encode `width × height` packed RGB bytes (3 bytes per pixel,
@@ -381,27 +388,35 @@ pub enum PcxAutoMode {
 ///   24-bit form (spec §"24-bit .PCX files", identical bytes to
 ///   [`encode_pcx_24bpp`]) — the only lossless option, since no PCX
 ///   palette holds more than 256 entries;
-/// * if there are `≤ 256`, it encodes **both** the 8 bpp × 1 plane
-///   indexed candidate (one index byte per pixel plus a 768-byte VGA
-///   tail palette, spec §"VGA 256-color palette") **and** the planar
-///   24-bit candidate, then returns whichever is the **fewer bytes**.
-///   The indexed form wins decisively for any non-trivial low-colour
-///   image (~⅓ the planar size for synthetic / UI / low-colour art),
-///   but for a *tiny* image the fixed 769-byte palette tail can exceed
-///   the whole planar file, in which case planar is returned instead —
-///   so the "most compact" guarantee holds at every size, not just the
-///   large-image asymptote.
+/// * if there are `≤ 256`, it builds every **applicable** compact
+///   candidate from the crate's existing spec modes, encodes each, and
+///   returns whichever is the **fewest bytes**:
+///
+///   * **Gray8** — every distinct colour is a pure grey (`r == g ==
+///     b`): 8 bpp × 1 plane with `palette_info = 2` (spec §3), no VGA
+///     tail. The pixel byte is the grey level, so this drops the fixed
+///     769-byte tail the indexed form would carry.
+///   * **Indexed8** — one index byte per pixel plus a 768-byte VGA
+///     tail palette (spec §"VGA 256-color palette"). Always
+///     applicable at `≤ 256` colours.
+///   * **Rgb24** — the planar 24-bit form, always applicable. For a
+///     *tiny* image the fixed 769-byte palette tail can exceed the
+///     whole planar file, so this candidate keeps the "most compact"
+///     guarantee at every size, not just the large-image asymptote.
 ///
 /// The returned [`PcxAutoMode`] records which on-disk geometry was
-/// actually emitted. Both candidates are exact (the indexed colour
-/// mapping involves no quantisation), so the file decodes through
-/// [`crate::parse_pcx`] back to the original packed RGB bit-for-bit
-/// regardless of branch. Palette entry order is first-seen (a
-/// deterministic raster scan) and the size tie-break is deterministic
-/// (indexed wins an exact tie), so the same input always yields
-/// byte-identical output.
+/// actually emitted. Every candidate is exact (no quantisation
+/// anywhere: each candidate's palette / pixel derivation reproduces
+/// the source colours bit-for-bit), so the file decodes through
+/// [`crate::parse_pcx`] back to the original packed RGB regardless of
+/// branch. Palette entry order is first-seen (a deterministic raster
+/// scan) and the size tie-break is deterministic — candidates are
+/// compared in the fixed order listed above and an earlier candidate
+/// keeps an exact tie (in particular the r376 "indexed wins an exact
+/// tie against planar" contract is preserved) — so the same input
+/// always yields byte-identical output.
 ///
-/// This is a pure encode-time optimisation built entirely from the two
+/// This is a pure encode-time optimisation built entirely from
 /// existing spec modes; it introduces no new on-disk geometry.
 pub fn encode_pcx_rgb_auto(width: u16, height: u16, rgb: &[u8]) -> Result<(Vec<u8>, PcxAutoMode)> {
     if width == 0 || height == 0 {
@@ -430,19 +445,60 @@ pub fn encode_pcx_rgb_auto(width: u16, height: u16, rgb: &[u8]) -> Result<(Vec<u
         .max()
         .map(|m| m as usize + 1)
         .unwrap_or(0);
-    let indexed = encode_pcx_8bpp_indexed(width, height, &indices, &palette)?;
-    // The fixed 769-byte VGA tail can dominate a *tiny* image, making the
-    // planar 24-bit form the genuinely smaller file. Encode the planar
-    // candidate too and keep whichever is fewer bytes, so the "most
-    // compact" guarantee holds at every size. An exact tie keeps the
-    // indexed form (the era's editors preferred it for low-colour art and
-    // it keeps the output deterministic).
-    let planar = encode_pcx_24bpp(width, height, rgb)?;
-    if planar.len() < indexed.len() {
-        Ok((planar, PcxAutoMode::Rgb24))
-    } else {
-        Ok((indexed, PcxAutoMode::Indexed8 { colors }))
+    // Candidate ladder, in fixed preference order (earlier candidate
+    // keeps an exact size tie). Each candidate is only encoded when its
+    // losslessness precondition holds, so every entry in `candidates`
+    // round-trips exactly by construction.
+    let mut candidates: Vec<(Vec<u8>, PcxAutoMode)> = Vec::new();
+    if let Some(gray) = auto_gray_pixels(&indices, &palette, colors) {
+        candidates.push((
+            encode_pcx_8bpp_grayscale(width, height, &gray)?,
+            PcxAutoMode::Gray8,
+        ));
     }
+    candidates.push((
+        encode_pcx_8bpp_indexed(width, height, &indices, &palette)?,
+        PcxAutoMode::Indexed8 { colors },
+    ));
+    candidates.push((encode_pcx_24bpp(width, height, rgb)?, PcxAutoMode::Rgb24));
+    Ok(pick_smallest_candidate(candidates))
+}
+
+/// Reduce a non-empty candidate ladder to the smallest encoding,
+/// resolving exact size ties in favour of the earlier (more-preferred)
+/// candidate so the auto writers stay deterministic.
+fn pick_smallest_candidate(candidates: Vec<(Vec<u8>, PcxAutoMode)>) -> (Vec<u8>, PcxAutoMode) {
+    let mut it = candidates.into_iter();
+    let mut best = it.next().expect("candidate ladder is never empty");
+    for cand in it {
+        if cand.0.len() < best.0.len() {
+            best = cand;
+        }
+    }
+    best
+}
+
+/// Derive the one-byte-per-pixel grey buffer for the [`PcxAutoMode::Gray8`]
+/// candidate, or `None` when any meaningful palette entry is not a pure
+/// grey (`r == g == b`).
+///
+/// Works from the first-seen index buffer + palette that
+/// [`build_indexed_payload`] already produced, so no second scan of the
+/// RGB input is needed: a 256-entry index→grey LUT is built from the
+/// `colors` meaningful palette entries and applied per pixel. The
+/// grayscale decode path (`palette_info = 2`, spec §3) maps pixel byte
+/// `g` to `(g, g, g)`, so using the grey level itself as the pixel byte
+/// round-trips exactly.
+fn auto_gray_pixels(indices: &[u8], palette: &[u8], colors: usize) -> Option<Vec<u8>> {
+    let mut lut = [0u8; 256];
+    for (i, slot) in lut.iter_mut().enumerate().take(colors) {
+        let (r, g, b) = (palette[i * 3], palette[i * 3 + 1], palette[i * 3 + 2]);
+        if r != g || g != b {
+            return None;
+        }
+        *slot = r;
+    }
+    Some(indices.iter().map(|&i| lut[i as usize]).collect())
 }
 
 /// Encode `width × height` packed RGB bytes (3 bytes per pixel,
@@ -1302,6 +1358,19 @@ pub fn encode_pcx_image_auto(image: &PcxImage) -> Result<(Vec<u8>, PcxAutoMode)>
             let (indices, palette) = build_indexed_payload(w, h, &rgb)
                 .expect("auto already proved ≤256 colours for this input");
             encode_pcx_8bpp_indexed_dpi(w, h, &indices, &palette, dpi)?
+        }
+        PcxAutoMode::Gray8 => {
+            let (indices, palette) = build_indexed_payload(w, h, &rgb)
+                .expect("auto already proved ≤256 colours for this input");
+            let colors = indices
+                .iter()
+                .copied()
+                .max()
+                .map(|m| m as usize + 1)
+                .unwrap_or(0);
+            let gray = auto_gray_pixels(&indices, &palette, colors)
+                .expect("auto already proved every colour is a pure grey");
+            encode_pcx_8bpp_grayscale_dpi(w, h, &gray, dpi)?
         }
     };
     Ok((bytes, mode))

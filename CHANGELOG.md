@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- *(encode)* **Auto ladder: `Gray8` candidate.** `encode_pcx_rgb_auto` /
+  `encode_pcx_image_auto` now derive an 8 bpp × 1 plane grayscale
+  candidate (spec §3 `palette_info = 2`, no VGA tail) whenever every
+  distinct colour is a pure grey (`r == g == b`), and the r376
+  two-candidate size comparison is generalised into a
+  fixed-preference-order candidate ladder. Dropping the fixed 769-byte
+  tail wins for typical grayscale content; when RLE escape economics
+  favour first-seen indices instead (many literals ≥ `0xC0`) the indexed
+  form still wins the byte count — the ladder compares, never assumes.
+  `PcxAutoMode` gains the `Gray8` variant (breaking for exhaustive
+  matches); `encode_pcx_image_auto` threads authoring DPI through the new
+  branch via `encode_pcx_8bpp_grayscale_dpi`.
+
 - *(encode)* **`encode_pcx_rgb_auto` — compact-mode auto-selecting RGB
   writer.** Given packed `width × height × 3` RGB, it emits the smallest
   *lossless* PCX 5.0 file the way PC Paintbrush did. A single raster scan
