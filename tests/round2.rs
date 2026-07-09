@@ -117,12 +117,13 @@ fn roundtrip_4bpp_packed_solid_compresses() {
 
 #[test]
 fn roundtrip_2bpp_cga_palette_1_high() {
-    // Default selector 0x00 → palette 1 high-intensity (cyan/magenta/white).
+    // Selector 0x60 (C=0, P=1 white family, I=1 bright per the manual's
+    // "CGA Color Map") → cyan/magenta/white.
     // Palette: bg = black, 1 = light cyan, 2 = light magenta, 3 = white.
     let w = 8u16;
     let h = 1u16;
     let indices = vec![0u8, 1, 2, 3, 0, 1, 2, 3];
-    let bytes = encode_pcx_2bpp_cga(w, h, &indices, 0x00, 0).unwrap();
+    let bytes = encode_pcx_2bpp_cga(w, h, &indices, 0x60, 0).unwrap();
     assert_eq!(bytes[3], 2);
     assert_eq!(bytes[65], 1);
     let img = parse_pcx(&bytes).unwrap();
@@ -144,11 +145,12 @@ fn roundtrip_2bpp_cga_palette_1_high() {
 
 #[test]
 fn roundtrip_2bpp_cga_palette_0_low_with_bg() {
-    // Selector 0xC0 = palette 0 low-intensity (green/red/brown). bg = blue (1).
+    // Selector 0x00 (C=0, P=0 yellow family, I=0 dim) = green/red/brown.
+    // bg = blue (EGA index 1).
     let w = 4u16;
     let h = 1u16;
     let indices = vec![0u8, 1, 2, 3];
-    let bytes = encode_pcx_2bpp_cga(w, h, &indices, 0xC0, 1).unwrap();
+    let bytes = encode_pcx_2bpp_cga(w, h, &indices, 0x00, 1).unwrap();
     let img = parse_pcx(&bytes).unwrap();
     let expected: [[u8; 3]; 4] = [
         [0x00, 0x00, 0xAA], // bg = blue (EGA index 1)

@@ -18,8 +18,8 @@
 //!   palette index (`p0 | p1 << 1`). Same CGA palette resolution as the
 //!   packed `2 bpp × 1 plane` mode.
 //! * 2 bpp × 1 plane — 4-colour CGA, packed (4 pixels/byte). Palette is
-//!   the legacy CGA palette selected from `ega_palette[16]` (palette
-//!   number bit) + `ega_palette[19]` (foreground intensity / palette
+//!   the legacy CGA palette selected from header byte 16 (background
+//!   nibble) + header byte 19 (C / P / I bits, "CGA Color Map"
 //!   selector).
 //! * 4 bpp × 1 plane — 16-colour packed-bits (2 pixels/byte). Palette
 //!   is the in-header `ega_palette` (or default EGA fallback).
@@ -629,22 +629,13 @@ pub fn parse_pcx_indexed_2bpp_cga(input: &[u8]) -> Result<PcxIndexed2x1Cga> {
     debug_assert_eq!(indices.len(), width * height);
 
     // Resolve the 4-entry palette: same dispatch as the canonical
-    // flattener [`unpack_2bpp_1plane_cga`]. `ega_palette[16]` high
-    // nibble = EGA index for palette entry 0 (the "background"
-    // colour); `ega_palette[19]` bits 7/6 = palette select + intensity
-    // per CGA hardware semantics.
+    // flattener [`unpack_2bpp_1plane_cga`], per the manual's "CGA Color
+    // Map" — colormap byte 0 (header byte 16) high nibble = EGA index
+    // for palette entry 0 (the "background" colour); colormap byte 3
+    // (header byte 19) upper three bits = C / P / I.
     let palette = cga_palette_from_header(&header.ega_palette);
-    let background_index = (header.ega_palette[16] >> 4) & 0x0F;
-    let selector_bits = header.ega_palette[19] & 0xC0;
-    let palette_source = match selector_bits {
-        0x00 => Pcx2bppCgaPaletteSource::Palette1HighIntensity,
-        0x40 => Pcx2bppCgaPaletteSource::Palette1LowIntensity,
-        0x80 => Pcx2bppCgaPaletteSource::Palette0HighIntensity,
-        0xC0 => Pcx2bppCgaPaletteSource::Palette0LowIntensity,
-        // The match above is exhaustive over the two-bit selector
-        // field, but the compiler can't prove it from `& 0xC0` alone.
-        _ => unreachable!("selector_bits is masked with 0xC0"),
-    };
+    let background_index = (header.ega_palette[0] >> 4) & 0x0F;
+    let palette_source = cga_legacy_source(header.ega_palette[3]);
 
     Ok(PcxIndexed2x1Cga {
         width: header.width(),
@@ -670,9 +661,9 @@ pub fn parse_pcx_indexed_2bpp_cga(input: &[u8]) -> Result<PcxIndexed2x1Cga> {
 /// EGA path uses (plane k contributes bit k).
 ///
 /// The 4-entry palette resolution is identical to
-/// [`parse_pcx_indexed_2bpp_cga`] — `ega_palette[16]` high nibble =
-/// background EGA index for palette entry 0, `ega_palette[19]` bits 7/6
-/// = palette family + intensity — so the returned [`PcxIndexed1x2Cga`]
+/// [`parse_pcx_indexed_2bpp_cga`] — header byte 16 high nibble =
+/// background EGA index for palette entry 0, header byte 19 upper three
+/// bits = C / P / I — so the returned [`PcxIndexed1x2Cga`]
 /// reuses the [`Pcx2bppCgaPaletteSource`] tag and surfaces the same
 /// `background_index`. The [`Pcx2bppCgaPaletteSource::palette_selector`]
 /// helper reconstructs the byte 19 selector pattern so a round-trip
@@ -715,15 +706,8 @@ pub fn parse_pcx_indexed_1bpp_2planes_cga(input: &[u8]) -> Result<PcxIndexed1x2C
     // Resolve the 4-entry palette: identical dispatch to the packed
     // `2 bpp × 1 plane` accessor (see `cga_palette_from_header`).
     let palette = cga_palette_from_header(&header.ega_palette);
-    let background_index = (header.ega_palette[16] >> 4) & 0x0F;
-    let selector_bits = header.ega_palette[19] & 0xC0;
-    let palette_source = match selector_bits {
-        0x00 => Pcx2bppCgaPaletteSource::Palette1HighIntensity,
-        0x40 => Pcx2bppCgaPaletteSource::Palette1LowIntensity,
-        0x80 => Pcx2bppCgaPaletteSource::Palette0HighIntensity,
-        0xC0 => Pcx2bppCgaPaletteSource::Palette0LowIntensity,
-        _ => unreachable!("selector_bits is masked with 0xC0"),
-    };
+    let background_index = (header.ega_palette[0] >> 4) & 0x0F;
+    let palette_source = cga_legacy_source(header.ega_palette[3]);
 
     Ok(PcxIndexed1x2Cga {
         width: header.width(),
@@ -786,9 +770,9 @@ pub fn parse_pcx_indexed_2bpp_cga_cpi(input: &[u8]) -> Result<PcxIndexed2x1CgaCp
     }
     debug_assert_eq!(indices.len(), width * height);
 
-    let cpi = Pcx2bppCgaCpi::from_byte19(header.ega_palette[19]);
+    let cpi = Pcx2bppCgaCpi::from_byte19(header.ega_palette[3]);
     let palette = cga_palette_from_cpi(&header.ega_palette, cpi);
-    let background_index = (header.ega_palette[16] >> 4) & 0x0F;
+    let background_index = (header.ega_palette[0] >> 4) & 0x0F;
 
     Ok(PcxIndexed2x1CgaCpi {
         width: header.width(),
@@ -832,7 +816,7 @@ pub fn parse_pcx_indexed_2bpp_cga_cpi(input: &[u8]) -> Result<PcxIndexed2x1CgaCp
 /// which honours their header palettes directly.
 pub fn parse_pcx_cga_cpi(input: &[u8]) -> Result<PcxImage> {
     let (header, pixels_planar, _vga_palette) = decode_planar_scanlines(input)?;
-    let cpi = Pcx2bppCgaCpi::from_byte19(header.ega_palette[19]);
+    let cpi = Pcx2bppCgaCpi::from_byte19(header.ega_palette[3]);
     let cga = cga_palette_from_cpi(&header.ega_palette, cpi);
     let palette: [[u8; 4]; 4] = [
         [cga[0][0], cga[0][1], cga[0][2], 0xFF],
@@ -1433,10 +1417,10 @@ fn unpack_1bpp_2planes_cga(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
 
 fn unpack_2bpp_1plane_cga(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
     // 2 bpp packed: 4 pixels per byte, MSB first. CGA 4-colour palette
-    // is selected from `ega_palette[16]` and `ega_palette[19]` per
-    // CGA hardware: bit 5 of byte 16 is "palette" (0/1, magenta/cyan
-    // family), and the high nibble of byte 16 is the background colour
-    // (used as palette index 0). Background defaults to black (0).
+    // is selected per the manual's "CGA Color Map": header byte 16
+    // (colormap byte 0) high nibble = background colour (palette index
+    // 0), header byte 19 (colormap byte 3) upper three bits = C / P / I.
+    // Background defaults to black (0).
     let w = header.width() as usize;
     let h = header.height() as usize;
     let bpl = header.bytes_per_line as usize;
@@ -1544,35 +1528,55 @@ const EGA_DEFAULT_PALETTE: [[u8; 3]; 16] = [
     [0xFF, 0xFF, 0xFF],
 ];
 
-/// Resolve a CGA 4-colour palette from the in-header bytes.
+/// Resolve a CGA 4-colour palette from the in-header bytes per the
+/// ZSoft manual's "CGA Color Map" (Header Byte #16 / Header Byte #19).
 ///
-/// PCX repurposes the EGA palette region for CGA mode (see
-/// [`crate::encode_pcx_2bpp_cga`] for the matching writer):
-/// * `ega_palette[16]` — high nibble = background colour (EGA index
-///   0..15 used as palette entry 0).
-/// * `ega_palette[19]` — bit 7 = palette select (0 = palette 1
-///   cyan/magenta/white, 1 = palette 0 green/red/brown); bit 6 =
-///   intensity (0 = high / bright, 1 = low / dim).
+/// PCX repurposes the start of the 48-byte colormap region for CGA mode
+/// (see [`crate::encode_pcx_2bpp_cga`] for the matching writer). The
+/// manual numbers the two significant bytes by their offset in the
+/// 128-byte header, and the colormap itself starts at header offset 16,
+/// so within the `ega_palette` field they are bytes 0 and 3 (the EGFF
+/// cross-reference's extraction code reads `EgaPalette[0]` /
+/// `EgaPalette[3]` accordingly):
+/// * colormap byte 0 (header byte 16) — high nibble = background colour
+///   (EGA index 0..15 used as palette entry 0).
+/// * colormap byte 3 (header byte 19) — upper three bits are `C` (bit
+///   7, color burst: 0 = color / 1 = monochrome), `P` (bit 6, palette:
+///   0 = yellow family / 1 = white family) and `I` (bit 5, intensity:
+///   0 = dim / 1 = bright); the lower five bits are ignored.
 ///
-/// When `ega_palette[19]` is zero (PCX 3.0+ files commonly leave it
-/// blank), the decoder lands on palette 1 high-intensity
-/// (cyan/magenta/white) — the most common CGA palette for game
-/// screenshots of the era — because both bits being clear maps to
-/// `palette_select = 0` (palette 1) and `intensity = high` per the
-/// encoding above.
+/// The full C / P / I decomposition is delegated to
+/// [`cga_palette_from_cpi`] so this legacy-named resolver and the typed
+/// CPI accessors can never drift apart. Until r401 this function read
+/// colormap bytes 16 / 19 (header bytes 32 / 35 — an off-by-16 slip
+/// from reading the manual's "Header Byte #16/#19" as colormap-relative
+/// indices) and decoded only two selector bits with an inverted palette
+/// convention; foreign CGA files were therefore always shown with the
+/// default palette. Both errors are fixed here.
 pub(crate) fn cga_palette_from_header(raw: &[u8; 48]) -> [[u8; 3]; 4] {
-    let bg_idx = (raw[16] >> 4) as usize;
-    let selector = raw[19];
-    let palette_zero = selector & 0x80 != 0;
-    let low_intensity = selector & 0x40 != 0;
-    let mut p = match (palette_zero, low_intensity) {
-        (false, false) => CGA_PALETTE_1_HIGH,
-        (false, true) => CGA_PALETTE_1_LOW,
-        (true, false) => CGA_PALETTE_0_HIGH,
-        (true, true) => CGA_PALETTE_0_LOW,
-    };
-    p[0] = EGA_DEFAULT_PALETTE[bg_idx];
-    p
+    cga_palette_from_cpi(raw, crate::image::Pcx2bppCgaCpi::from_byte19(raw[3]))
+}
+
+/// Map the manual's C / P / I decomposition of colormap byte 3 (header
+/// byte 19) onto the legacy [`Pcx2bppCgaPaletteSource`] family tag the
+/// r-era typed accessors surface. One place, so both CGA typed views
+/// derive the tag identically.
+fn cga_legacy_source(byte3: u8) -> Pcx2bppCgaPaletteSource {
+    let cpi = Pcx2bppCgaCpi::from_byte19(byte3);
+    if cpi.monochrome {
+        if cpi.intensity_bright {
+            Pcx2bppCgaPaletteSource::MonochromeBright
+        } else {
+            Pcx2bppCgaPaletteSource::MonochromeDim
+        }
+    } else {
+        match (cpi.palette_white, cpi.intensity_bright) {
+            (true, true) => Pcx2bppCgaPaletteSource::Palette1HighIntensity,
+            (true, false) => Pcx2bppCgaPaletteSource::Palette1LowIntensity,
+            (false, true) => Pcx2bppCgaPaletteSource::Palette0HighIntensity,
+            (false, false) => Pcx2bppCgaPaletteSource::Palette0LowIntensity,
+        }
+    }
 }
 
 /// Four-level CGA composite-monochrome ramp.
@@ -1623,7 +1627,10 @@ pub(crate) fn cga_palette_from_cpi(
     raw: &[u8; 48],
     cpi: crate::image::Pcx2bppCgaCpi,
 ) -> [[u8; 3]; 4] {
-    let bg_idx = (raw[16] >> 4) as usize;
+    // Manual "CGA Color Map": the background nibble lives in Header
+    // Byte #16 = colormap byte 0 (r401 conformance fix; this read sat
+    // at colormap byte 16 = header byte 32 before).
+    let bg_idx = (raw[0] >> 4) as usize;
     let mut p = if cpi.monochrome {
         if cpi.intensity_bright {
             CGA_MONO_BRIGHT

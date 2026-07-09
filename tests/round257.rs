@@ -79,19 +79,25 @@ fn cga_indices_grid(w: usize, h: usize) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 /// Round-trip an `encode_pcx_2bpp_cga` output through the new accessor
-/// across all four CGA palette families (palette 0/1 × low/high
-/// intensity) and verify indices, palette, background, and source tag.
+/// across all six CGA palette families the manual's C / P / I bits
+/// encode (palette 0/1 × dim/bright plus the two composite-monochrome
+/// ramps) and verify indices, palette, background, and source tag.
 #[test]
 fn cga_roundtrip_across_all_four_palette_families() {
     let (w, h) = (16u16, 8u16);
     let indices = cga_indices_grid(w as usize, h as usize);
 
-    // (selector_byte, background_index, expected_source)
+    // (selector_byte, background_index, expected_source) — selector
+    // values per the manual's C / P / I decomposition (r401
+    // conformance fix; the old two-bit 0x00/0x40/0x80/0xC0 convention
+    // predated it).
     let cases: &[(u8, u8, Pcx2bppCgaPaletteSource)] = &[
-        (0x00, 0, Pcx2bppCgaPaletteSource::Palette1HighIntensity),
+        (0x60, 0, Pcx2bppCgaPaletteSource::Palette1HighIntensity),
         (0x40, 1, Pcx2bppCgaPaletteSource::Palette1LowIntensity),
-        (0x80, 7, Pcx2bppCgaPaletteSource::Palette0HighIntensity),
-        (0xC0, 15, Pcx2bppCgaPaletteSource::Palette0LowIntensity),
+        (0x20, 7, Pcx2bppCgaPaletteSource::Palette0HighIntensity),
+        (0x00, 15, Pcx2bppCgaPaletteSource::Palette0LowIntensity),
+        (0x80, 3, Pcx2bppCgaPaletteSource::MonochromeDim),
+        (0xA0, 5, Pcx2bppCgaPaletteSource::MonochromeBright),
     ];
 
     for (selector, bg, expected_source) in cases {
@@ -121,7 +127,7 @@ fn typed_view_agrees_with_canonical_flattener() {
     let (w, h) = (24u16, 6u16);
     let indices = cga_indices_grid(w as usize, h as usize);
 
-    for &selector in &[0x00u8, 0x40, 0x80, 0xC0] {
+    for &selector in &[0x00u8, 0x20, 0x40, 0x60, 0x80, 0xA0] {
         for &bg in &[0u8, 4, 12] {
             let pcx = encode_pcx_2bpp_cga(w, h, &indices, selector, bg).expect("encode");
             let img = parse_pcx(&pcx).expect("parse_pcx");
@@ -153,7 +159,11 @@ fn palette_selector_helper_round_trips_to_byte_identical_output() {
     let (w, h) = (12u16, 5u16);
     let indices = cga_indices_grid(w as usize, h as usize);
 
-    for &selector in &[0x00u8, 0x40, 0x80, 0xC0] {
+    // Canonical C / P / I selector bytes only: the helper reconstructs
+    // the canonical byte, so a non-canonical input (e.g. 0xC0, whose P
+    // bit is ignored in monochrome mode) would legitimately re-encode
+    // to its canonical twin (0x80) rather than byte-identically.
+    for &selector in &[0x00u8, 0x20, 0x40, 0x60, 0x80, 0xA0] {
         for &bg in &[0u8, 9, 15] {
             let pcx_a = encode_pcx_2bpp_cga(w, h, &indices, selector, bg).expect("encode");
             let view = parse_pcx_indexed_2bpp_cga(&pcx_a).expect("parse_pcx_indexed_2bpp_cga");

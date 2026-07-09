@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- *(decode/encode)* **CGA palette bytes were read/written 16 positions
+  too deep, with an inverted two-bit selector convention.** The
+  manual's "CGA Color Map" places the background nibble in *header*
+  byte 16 and the C / P / I selector in *header* byte 19 — the
+  colormap's bytes 0 and 3, as the EGFF cross-reference's extraction
+  code (`EgaPalette[0]`, `EgaPalette[3]`) confirms. The crate read and
+  wrote colormap bytes 16 / 19 (header bytes 32 / 35) instead, and the
+  legacy resolver decoded only bits 7 / 6 with palette-select /
+  intensity meanings that do not match the manual's C (color burst) /
+  P (palette family) / I (intensity) bits. Round-trips were
+  self-consistent so no in-crate test could see it, but every foreign
+  spec-conforming CGA file decoded with the default palette, and
+  spec-conforming readers saw ours the same way. Both the offset and
+  the bit convention are fixed across all CGA paths: the canonical
+  `parse_pcx` flatten (both `2×1` and `1×2` layouts) now resolves the
+  full C / P / I decomposition — including the composite-monochrome
+  ramps — through the same resolver as the CPI accessors, the legacy
+  writers emit the manual's byte encoding, `palette_selector` values
+  are now genuine byte-19 values (`0x60` white-bright, `0x40`
+  white-dim, `0x20` yellow-bright, `0x00` yellow-dim, `0x80` / `0xA0`
+  monochrome), and `Pcx2bppCgaPaletteSource` gains `MonochromeDim` /
+  `MonochromeBright`. A foreign-layout fixture test pins the on-disk
+  offsets directly so a paired encoder+decoder slip can never hide
+  again; the auto ladder's CGA match search gains the two monochrome
+  ramps (grey quads like `0x00/0x55/0xAA/0xFF` now fit in 2 bpp).
+
 ### Added
 
 - *(encode)* **Auto ladder: `Cga2x1` + `Cga1x2` fixed-palette CGA

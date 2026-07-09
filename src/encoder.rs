@@ -672,19 +672,22 @@ fn auto_palette48(palette: &[u8], colors: usize) -> Option<[u8; 48]> {
 /// the image's `≤ 4` distinct colours, for the [`PcxAutoMode::Cga2x1`]
 /// / [`PcxAutoMode::Cga1x2`] candidates.
 ///
-/// CGA stores no colour data: header byte 19 bits 7/6 select one of
-/// four fixed 3-colour palettes (spec §"CGA Color Map" — palette
-/// family × intensity) and header byte 16's high nibble picks palette
-/// entry 0 (the background) out of the 16 standard EGA colours. So a
-/// colour set is CGA-representable iff some `(selector, background)`
-/// pair yields a 4-entry palette containing every distinct colour. The
-/// search space is 4 selectors × 16 backgrounds = 64 resolved palettes,
-/// each resolved through the *decoder's own* header resolver
+/// CGA stores no colour data: header byte 19's upper three C / P / I
+/// bits (spec §"CGA Color Map") select one of four fixed chroma
+/// palettes or two composite-monochrome grey ramps, and header byte
+/// 16's high nibble picks palette entry 0 (the background) out of the
+/// 16 standard EGA colours. So a colour set is CGA-representable iff
+/// some `(selector, background)` pair yields a 4-entry palette
+/// containing every distinct colour. The search space is 6 selectors ×
+/// 16 backgrounds = 96 resolved palettes, each resolved through the
+/// *decoder's own* header resolver
 /// ([`crate::decoder::cga_palette_from_header`]) so encode-side
 /// matching and decode-side reconstruction can never drift apart.
 ///
-/// Returns the first match in a fixed scan order (selector `0x00`,
-/// `0x40`, `0x80`, `0xC0`; background `0..=15`) plus a
+/// Returns the first match in a fixed scan order (selector `0x60`
+/// white-bright, `0x40` white-dim, `0x20` yellow-bright, `0x00`
+/// yellow-dim, `0x80` monochrome-dim, `0xA0` monochrome-bright;
+/// background `0..=15`) plus a
 /// source-index → CGA-index LUT (first matching palette entry, so ties
 /// inside a palette are deterministic too). `None` when `colors > 4`
 /// or no palette covers the set — the ladder never quantises.
@@ -692,11 +695,15 @@ fn auto_cga_match(palette: &[u8], colors: usize) -> Option<(u8, u8, [u8; 4])> {
     if colors > 4 {
         return None;
     }
-    for &selector in &[0x00u8, 0x40, 0x80, 0xC0] {
+    // Chroma families first (white-bright is the era's most common
+    // palette), then the two composite-monochrome ramps the manual's
+    // C bit unlocks — grey quads like 0x00/0x55/0xAA/0xFF are
+    // CGA-representable through them.
+    for &selector in &[0x60u8, 0x40, 0x20, 0x00, 0x80, 0xA0] {
         for background in 0..16u8 {
             let mut raw = [0u8; 48];
-            raw[16] = background << 4;
-            raw[19] = selector;
+            raw[0] = background << 4;
+            raw[3] = selector;
             let pal4 = crate::decoder::cga_palette_from_header(&raw);
             let mut lut = [0u8; 4];
             let mut ok = true;
@@ -1016,15 +1023,18 @@ pub fn encode_pcx_4bpp_packed(
 /// Encode `width × height` 2-bit-index pixels (low 2 bits = palette
 /// index 0..3, row-major, top-down) into a PCX 5.0 2 bpp CGA file.
 ///
-/// `palette_selector` selects the CGA palette in the header byte 19:
-/// * `0x00` → palette 1 high-intensity (cyan/magenta/white) — the
-///   default the decoder also assumes for legacy zero-filled headers.
-/// * `0x40` → palette 1 low-intensity.
-/// * `0x80` → palette 0 high-intensity.
-/// * `0xC0` → palette 0 low-intensity.
+/// `palette_selector` is the header byte 19 value (manual §"CGA Color
+/// Map": upper three bits are C = color burst, P = palette family,
+/// I = intensity; the lower five bits are ignored by readers):
+/// * `0x60` → palette 1 bright (cyan/magenta/white).
+/// * `0x40` → palette 1 dim (cyan/magenta/light gray).
+/// * `0x20` → palette 0 bright (light green/light red/yellow).
+/// * `0x00` → palette 0 dim (green/red/brown) — also where zero-filled
+///   legacy headers land.
+/// * `0x80` / `0xA0` → composite-monochrome ramps (dim / bright).
 ///
 /// `background_index` is the EGA index used for palette entry 0; the
-/// high nibble of header byte 16.
+/// high nibble of header byte 16 (the colormap's first byte).
 pub fn encode_pcx_2bpp_cga(
     width: u16,
     height: u16,
@@ -1047,8 +1057,11 @@ pub fn encode_pcx_2bpp_cga(
     }
     let bytes_per_line = round_up_to_even(width.div_ceil(4));
     let mut ega = [0u8; 48];
-    ega[16] = background_index << 4;
-    ega[19] = palette_selector;
+    // Manual "CGA Color Map": background nibble in header byte 16 =
+    // colormap byte 0; C/P/I selector in header byte 19 = colormap
+    // byte 3 (r401 conformance fix — both sat 16 bytes too deep).
+    ega[0] = background_index << 4;
+    ega[3] = palette_selector;
     let mut out = Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * height as usize);
     write_header_with_palette(&mut out, width, height, 2, 1, bytes_per_line, &ega);
     let mut row = vec![0u8; bytes_per_line as usize];
@@ -1106,8 +1119,8 @@ pub fn encode_pcx_2bpp_cga_cpi(
     }
     let bytes_per_line = round_up_to_even(width.div_ceil(4));
     let mut ega = [0u8; 48];
-    ega[16] = background_index << 4;
-    ega[19] = cpi.to_byte19();
+    ega[0] = background_index << 4;
+    ega[3] = cpi.to_byte19();
     let mut out = Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * height as usize);
     write_header_with_palette(&mut out, width, height, 2, 1, bytes_per_line, &ega);
     let mut row = vec![0u8; bytes_per_line as usize];
@@ -1164,8 +1177,11 @@ pub fn encode_pcx_1bpp_2planes_cga(
     }
     let bytes_per_line = round_up_to_even(width.div_ceil(8));
     let mut ega = [0u8; 48];
-    ega[16] = background_index << 4;
-    ega[19] = palette_selector;
+    // Manual "CGA Color Map": background nibble in header byte 16 =
+    // colormap byte 0; C/P/I selector in header byte 19 = colormap
+    // byte 3 (r401 conformance fix — both sat 16 bytes too deep).
+    ega[0] = background_index << 4;
+    ega[3] = palette_selector;
     let mut out =
         Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * 2 * height as usize);
     write_header_with_palette(&mut out, width, height, 1, 2, bytes_per_line, &ega);
@@ -1986,8 +2002,11 @@ pub fn encode_pcx_2bpp_cga_dpi(
     check_dpi(dpi)?;
     let bytes_per_line = round_up_to_even(width.div_ceil(4));
     let mut ega = [0u8; 48];
-    ega[16] = background_index << 4;
-    ega[19] = palette_selector;
+    // Manual "CGA Color Map": background nibble in header byte 16 =
+    // colormap byte 0; C/P/I selector in header byte 19 = colormap
+    // byte 3 (r401 conformance fix — both sat 16 bytes too deep).
+    ega[0] = background_index << 4;
+    ega[3] = palette_selector;
     let mut out = Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * height as usize);
     write_header_full(
         &mut out,
@@ -2048,8 +2067,11 @@ pub fn encode_pcx_1bpp_2planes_cga_dpi(
     check_dpi(dpi)?;
     let bytes_per_line = round_up_to_even(width.div_ceil(8));
     let mut ega = [0u8; 48];
-    ega[16] = background_index << 4;
-    ega[19] = palette_selector;
+    // Manual "CGA Color Map": background nibble in header byte 16 =
+    // colormap byte 0; C/P/I selector in header byte 19 = colormap
+    // byte 3 (r401 conformance fix — both sat 16 bytes too deep).
+    ega[0] = background_index << 4;
+    ega[3] = palette_selector;
     let mut out =
         Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * 2 * height as usize);
     write_header_full(

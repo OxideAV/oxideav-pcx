@@ -78,9 +78,15 @@ truth for bitstream behaviour in this crate.
   primary combinations come straight out of the three plane bits at
   0x00 / 0xFF per channel.
 * The 4-colour CGA palette for `2 bpp × 1 plane` is selected from
-  header byte 19 (bit 7 = palette select 0/1, bit 6 = intensity
-  high/low) with the background colour pulled from the high nibble
-  of header byte 16.
+  header byte 19 — the colormap's fourth byte — per the manual's "CGA
+  Color Map" C / P / I decomposition (bit 7 = color burst 0 color /
+  1 monochrome, bit 6 = palette 0 yellow / 1 white family, bit 5 =
+  intensity 0 dim / 1 bright), with the background colour pulled from
+  the high nibble of header byte 16 (the colormap's first byte). Fixed
+  in r401: both bytes were previously read 16 positions too deep into
+  the colormap (header bytes 32 / 35) with an inverted two-bit palette
+  convention, so foreign spec-conforming CGA files always decoded with
+  the default palette.
 
 ## Encode
 
@@ -600,29 +606,33 @@ assert!(matches!(
 ## Typed 2 bpp × 1 plane CGA paletted view
 
 [`parse_pcx_indexed_2bpp_cga`] is the typed accessor for the 4-colour CGA
-mode (2 bpp × 1 plane, 4 pixels/byte). PCX repurposes the 48-byte
-`ega_palette` header region for CGA mode: byte 16's high nibble carries
-the EGA index used for palette entry 0 (the CGA "background / border"
-colour), and byte 19 carries the CGA palette selector (bit 7 = palette
-select 0 vs 1, bit 6 = intensity low vs high per CGA hardware
-semantics).
+mode (2 bpp × 1 plane, 4 pixels/byte). PCX repurposes the start of the
+48-byte colormap header region for CGA mode (manual §"CGA Color Map"):
+header byte 16 — the colormap's first byte — carries the EGA index used
+for palette entry 0 (the CGA "background / border" colour) in its high
+nibble, and header byte 19 — the colormap's fourth byte — carries the
+C / P / I selector bits (C bit 7 = color burst, P bit 6 = palette
+family, I bit 5 = intensity).
 
 The returned [`PcxIndexed2x1Cga`] surfaces the unpacked `width × height`
 2-bit indices (one byte per pixel, low two bits = palette index
 `0..=3`, top-down, padding stripped) alongside the resolved 4-entry RGB
-palette, the resolved `background_index` (`0..=15`) read from
-`ega_palette[16]`'s high nibble, and a [`Pcx2bppCgaPaletteSource`] tag
-recording which CGA palette family the decoder landed on.
+palette, the resolved `background_index` (`0..=15`) read from header
+byte 16's high nibble, and a [`Pcx2bppCgaPaletteSource`] tag
+recording which resolved palette family the decoder landed on.
 
-* `Pcx2bppCgaPaletteSource::Palette1HighIntensity` — byte 19 bits 7/6
-  both clear (selector byte 0x00); the most common CGA palette for
+* `Pcx2bppCgaPaletteSource::Palette1HighIntensity` — selector byte 0x60
+  (C=0, P=1 white family, I=1 bright); the most common CGA palette for
   game screenshots of the era — cyan / magenta / white.
 * `Pcx2bppCgaPaletteSource::Palette1LowIntensity` — selector byte 0x40
   — dim cyan / dim magenta / light gray.
-* `Pcx2bppCgaPaletteSource::Palette0HighIntensity` — selector byte 0x80
+* `Pcx2bppCgaPaletteSource::Palette0HighIntensity` — selector byte 0x20
   — light green / light red / yellow.
-* `Pcx2bppCgaPaletteSource::Palette0LowIntensity` — selector byte 0xC0
-  — green / red / brown.
+* `Pcx2bppCgaPaletteSource::Palette0LowIntensity` — selector byte 0x00
+  — green / red / brown (also where zero-filled legacy headers land).
+* `Pcx2bppCgaPaletteSource::MonochromeDim` / `::MonochromeBright` —
+  selector bytes 0x80 / 0xA0 (C=1) — the composite-monochrome
+  four-level grey ramps.
 
 The [`Pcx2bppCgaPaletteSource::palette_selector`] helper reconstructs
 the byte 19 selector pattern so a round-trip caller can hand the

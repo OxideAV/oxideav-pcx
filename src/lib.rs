@@ -141,9 +141,11 @@
 //! [`PcxIndexed2x1Cga`] carrying the unpacked `width × height` 2-bit
 //! indices (low two bits = palette index `0..=3`) alongside the
 //! resolved 4-entry RGB palette, the resolved `background_index`
-//! (`0..=15`) read from `ega_palette[16]`'s high nibble, and a
+//! (`0..=15`) read from header byte 16's high nibble (the colormap's
+//! first byte, per the manual's "CGA Color Map"), and a
 //! [`Pcx2bppCgaPaletteSource`] tag recording which CGA palette family
-//! (palette 0 / 1 × low / high intensity) the decoder landed on. The
+//! (palette 0 / 1 × dim / bright, or a monochrome ramp) the decoder
+//! landed on. The
 //! [`Pcx2bppCgaPaletteSource::palette_selector`] helper reconstructs the
 //! byte 19 selector pattern so a round-trip caller can hand it
 //! straight back to [`encode_pcx_2bpp_cga`] without re-deriving the

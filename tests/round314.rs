@@ -116,13 +116,17 @@ fn monochrome_flatten_is_grey() {
     }
 }
 
-/// The legacy `parse_pcx` flatten path mis-colours a monochrome-CGA file
-/// (it lacks the `C` axis); the new spec-faithful path produces grey.
-/// This documents the concrete behavioural improvement.
+/// Historical note: through r400 the canonical `parse_pcx` flatten
+/// lacked the `C` (color burst) axis and mis-coloured monochrome-CGA
+/// files, and this test pinned that divergence as the CPI accessor's
+/// reason to exist. The r401 conformance fix routes the canonical
+/// flatten through the same C / P / I resolver, so the two paths must
+/// now AGREE pixel-for-pixel on a monochrome file — the improvement
+/// graduated from the side accessor into `parse_pcx` itself.
 #[test]
 fn spec_faithful_path_differs_from_legacy_on_monochrome() {
     let (w, h) = (8u16, 2u16);
-    // Use indices that span 1..=3 so the chroma palette would show colour.
+    // Use indices that span 1..=3 so a chroma palette would show colour.
     let indices: Vec<u8> = (0..(w as usize * h as usize))
         .map(|i| (1 + (i % 3)) as u8)
         .collect();
@@ -133,7 +137,7 @@ fn spec_faithful_path_differs_from_legacy_on_monochrome() {
     };
     let pcx = encode_pcx_2bpp_cga_cpi(w, h, &indices, cpi, 0).expect("encode");
 
-    let legacy = parse_pcx(&pcx).expect("legacy flatten");
+    let canonical = parse_pcx(&pcx).expect("canonical flatten");
     let faithful = parse_pcx_cga_cpi(&pcx).expect("faithful flatten");
 
     // The spec-faithful path is a pure grey ramp.
@@ -141,16 +145,10 @@ fn spec_faithful_path_differs_from_legacy_on_monochrome() {
         assert_eq!(px[0], px[1]);
         assert_eq!(px[1], px[2]);
     }
-    // The legacy path resolves a chroma palette for at least one pixel
-    // (R != G or G != B) — i.e. it genuinely mis-colours this file, which
-    // is exactly the gap the new path closes.
-    let legacy_has_chroma = legacy
-        .data
-        .chunks_exact(4)
-        .any(|px| px[0] != px[1] || px[1] != px[2]);
-    assert!(
-        legacy_has_chroma,
-        "legacy path unexpectedly grey — test premise invalid"
+    // And the canonical path now produces the identical grey pixels.
+    assert_eq!(
+        canonical.data, faithful.data,
+        "parse_pcx must resolve the monochrome ramp identically to parse_pcx_cga_cpi"
     );
 }
 

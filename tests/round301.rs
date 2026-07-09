@@ -109,11 +109,15 @@ fn flatten_matches_typed_palette() {
 
 #[test]
 fn palette_source_tracks_selector_bits() {
+    // Manual C / P / I selector encodings (r401 conformance fix),
+    // including the two composite-monochrome ramps the C bit unlocks.
     let cases = [
-        (0x00u8, Pcx2bppCgaPaletteSource::Palette1HighIntensity),
+        (0x60u8, Pcx2bppCgaPaletteSource::Palette1HighIntensity),
         (0x40, Pcx2bppCgaPaletteSource::Palette1LowIntensity),
-        (0x80, Pcx2bppCgaPaletteSource::Palette0HighIntensity),
-        (0xC0, Pcx2bppCgaPaletteSource::Palette0LowIntensity),
+        (0x20, Pcx2bppCgaPaletteSource::Palette0HighIntensity),
+        (0x00, Pcx2bppCgaPaletteSource::Palette0LowIntensity),
+        (0x80, Pcx2bppCgaPaletteSource::MonochromeDim),
+        (0xA0, Pcx2bppCgaPaletteSource::MonochromeBright),
     ];
     for (selector, expected) in cases {
         let pcx = encode_pcx_1bpp_2planes_cga(4, 2, &ramp_indices(4, 2), selector, 0).unwrap();

@@ -338,31 +338,47 @@ impl PcxIndexed1x4 {
 /// the palette selected from the `ega_palette` header bytes 16 / 19 per
 /// CGA hardware semantics).
 ///
-/// PCX repurposes the 48-byte `ega_palette` header region for CGA mode:
-/// byte 16's high nibble holds the EGA index used for palette entry 0
-/// (the "background / border" colour), and byte 19 carries the
-/// CGA palette selector (bit 7 = palette select 0 vs 1, bit 6 =
-/// intensity low vs high). The tag below records which CGA palette
-/// family the decoder landed on, so a re-encode caller can pass the
-/// matching `palette_selector` byte back into
-/// [`crate::encode_pcx_2bpp_cga`].
+/// PCX repurposes the start of the 48-byte colormap region for CGA mode
+/// (manual §"CGA Color Map"): header byte 16 — the colormap's byte 0 —
+/// holds the EGA index used for palette entry 0 (the "background /
+/// border" colour) in its high nibble, and header byte 19 — colormap
+/// byte 3 — carries the C / P / I selector bits (`C` bit 7 color burst
+/// 0 = color / 1 = monochrome, `P` bit 6 palette 0 = yellow family /
+/// 1 = white family, `I` bit 5 intensity 0 = dim / 1 = bright). The tag
+/// below records which resolved palette family the decoder landed on,
+/// so a re-encode caller can pass the matching `palette_selector` byte
+/// back into [`crate::encode_pcx_2bpp_cga`].
+///
+/// r401 conformance note: before r401 this tag was derived from
+/// colormap bytes 16 / 19 (header bytes 32 / 35 — an off-by-16 reading
+/// of the manual's "Header Byte #16/#19") using only two selector bits
+/// with an inverted palette convention, and the monochrome axis was not
+/// representable. The tag now mirrors the manual's C / P / I exactly;
+/// "high/low intensity" in the variant names corresponds to the
+/// manual's bright/dim `I` bit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pcx2bppCgaPaletteSource {
-    /// Palette 1, high-intensity (cyan / magenta / white). The decoder
-    /// lands here when `ega_palette[19] & 0xC0 == 0x00` — both palette-
-    /// select and intensity bits are clear. This is the most common CGA
-    /// palette for game screenshots of the era and is what PCX 3.0+
-    /// writers that leave the field at all-zeros effectively request.
+    /// Palette 1 ("white" family), bright: cyan / magenta / white.
+    /// `C = 0, P = 1, I = 1` (byte 19 upper bits `0x60`). This is the
+    /// most common CGA palette for game screenshots of the era.
     Palette1HighIntensity,
-    /// Palette 1, low-intensity (dim cyan / dim magenta / light gray).
-    /// `ega_palette[19] & 0xC0 == 0x40`.
+    /// Palette 1 ("white" family), dim: cyan / magenta / light gray.
+    /// `C = 0, P = 1, I = 0` (byte 19 upper bits `0x40`).
     Palette1LowIntensity,
-    /// Palette 0, high-intensity (light green / light red / yellow).
-    /// `ega_palette[19] & 0xC0 == 0x80`.
+    /// Palette 0 ("yellow" family), bright: light green / light red /
+    /// yellow. `C = 0, P = 0, I = 1` (byte 19 upper bits `0x20`).
     Palette0HighIntensity,
-    /// Palette 0, low-intensity (green / red / brown).
-    /// `ega_palette[19] & 0xC0 == 0xC0`.
+    /// Palette 0 ("yellow" family), dim: green / red / brown.
+    /// `C = 0, P = 0, I = 0` (byte 19 upper bits `0x00`). This is also
+    /// where a PCX 3.0+ writer that zero-fills the colormap lands.
     Palette0LowIntensity,
+    /// Composite-monochrome ramp, dim (`C = 1, I = 0`, byte 19 upper
+    /// bits `0x80`; the `P` bit is ignored in monochrome). Four-level
+    /// grey ramp `0x00 / 0x55 / 0xAA / 0xFF`.
+    MonochromeDim,
+    /// Composite-monochrome ramp, bright (`C = 1, I = 1`, byte 19 upper
+    /// bits `0xA0`). Lifted ramp `0x00 / 0x80 / 0xD4 / 0xFF`.
+    MonochromeBright,
 }
 
 impl Pcx2bppCgaPaletteSource {
@@ -372,10 +388,12 @@ impl Pcx2bppCgaPaletteSource {
     /// writer without re-deriving the bit pattern.
     pub fn palette_selector(self) -> u8 {
         match self {
-            Self::Palette1HighIntensity => 0x00,
+            Self::Palette1HighIntensity => 0x60,
             Self::Palette1LowIntensity => 0x40,
-            Self::Palette0HighIntensity => 0x80,
-            Self::Palette0LowIntensity => 0xC0,
+            Self::Palette0HighIntensity => 0x20,
+            Self::Palette0LowIntensity => 0x00,
+            Self::MonochromeDim => 0x80,
+            Self::MonochromeBright => 0xA0,
         }
     }
 }
@@ -492,8 +510,8 @@ impl PcxIndexed1x2Cga {
     }
 }
 
-/// The three significant bits of the CGA palette byte (header byte 19 /
-/// `ega_palette[19]`) decoded per the verbatim ZSoft PCX Technical
+/// The three significant bits of the CGA palette byte (header byte 19,
+/// the colormap's fourth byte) decoded per the verbatim ZSoft PCX Technical
 /// Reference Manual, Revision 5 ("CGA Color Map", Header Byte #19):
 ///
 /// > Only upper 3 bits are used, lower 5 bits are ignored. The first

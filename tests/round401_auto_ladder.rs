@@ -534,10 +534,10 @@ fn image_auto_threads_dpi_through_indexed4_and_indexed1x4() {
 
 #[test]
 fn cga_palette1_high_image_picks_a_cga_form() {
-    // Black + the palette-1 high-intensity triple (light cyan / light
-    // magenta / white): exactly the default CGA header encoding
-    // (selector 0x00, background 0). Two bits per pixel must beat the
-    // four-bit rungs on a canvas this size.
+    // Black + the palette-1 bright triple (light cyan / light magenta /
+    // white): C/P/I selector 0x60 (white family, bright), background 0.
+    // Two bits per pixel must beat the four-bit rungs on a canvas this
+    // size.
     let pal: [[u8; 3]; 4] = [
         [0x00, 0x00, 0x00],
         [0x55, 0xFF, 0xFF],
@@ -555,10 +555,10 @@ fn cga_palette1_high_image_picks_a_cga_form() {
         matches!(
             mode,
             PcxAutoMode::Cga2x1 {
-                palette_selector: 0x00,
+                palette_selector: 0x60,
                 background_index: 0,
             } | PcxAutoMode::Cga1x2 {
-                palette_selector: 0x00,
+                palette_selector: 0x60,
                 background_index: 0,
             }
         ),
@@ -570,10 +570,10 @@ fn cga_palette1_high_image_picks_a_cga_form() {
 
 #[test]
 fn cga_palette0_low_family_is_found() {
-    // Green / red / brown are the palette-0 low-intensity triple —
-    // only the LAST selector in the scan order covers them, proving
-    // the search walks the whole family space. No background colour is
-    // needed (all colours sit in the fixed slots) so the first
+    // Green / red / brown are the palette-0 dim triple (C/P/I selector
+    // 0x00) — the last CHROMA selector in the scan order, proving the
+    // search walks the whole chroma family space. No background colour
+    // is needed (all colours sit in the fixed slots) so the first
     // background candidate (0) is kept. Striped content (period 4)
     // keeps every candidate's rows RLE-collapsible so the two-bit CGA
     // geometry's raw-byte advantage decides the contest — 3-colour
@@ -594,10 +594,10 @@ fn cga_palette0_low_family_is_found() {
         matches!(
             mode,
             PcxAutoMode::Cga2x1 {
-                palette_selector: 0xC0,
+                palette_selector: 0x00,
                 background_index: 0,
             } | PcxAutoMode::Cga1x2 {
-                palette_selector: 0xC0,
+                palette_selector: 0x00,
                 background_index: 0,
             }
         ),
@@ -771,8 +771,281 @@ fn image_auto_threads_dpi_through_cga() {
 }
 
 // ---------------------------------------------------------------------------
+// CGA header-offset conformance (manual "CGA Color Map": header bytes 16/19)
+// ---------------------------------------------------------------------------
+
+/// Hand-craft a CGA file the way a *foreign, spec-conforming* writer
+/// would — background nibble in header byte 16 (the colormap's first
+/// byte) and the C / P / I selector in header byte 19 (the colormap's
+/// fourth byte) — and assert our decoder resolves the palette from
+/// those offsets. Round-trip tests cannot catch an offset slip (a
+/// paired encoder+decoder move together); this pins the on-disk
+/// contract itself. Regression test for the r401 off-by-16 fix, where
+/// both sides read colormap bytes 16 / 19 (header bytes 32 / 35).
+#[test]
+fn foreign_cga_header_bytes_16_and_19_are_honoured() {
+    // 4×1, 2 bpp × 1 plane, indices 0,1,2,3 → one packed byte 0x1B.
+    let mut file = vec![0u8; 128];
+    file[0] = 0x0A; // manufacturer
+    file[1] = 5; // version
+    file[2] = 1; // RLE
+    file[3] = 2; // bits per pixel
+    file[8] = 3; // x_max = 3 → width 4
+                 // y_max = 0 → height 1
+    file[16] = 0x40; // header byte 16: background = EGA index 4 (red)
+    file[19] = 0x60; // header byte 19: C=0, P=1 (white), I=1 (bright)
+    file[65] = 1; // n_planes
+    file[66] = 2; // bytes_per_line (even)
+    file[68] = 1; // palette_info
+                  // Pixel payload: 0b00_01_10_11 = 0x1B, then pad byte.
+    file.push(0x1B);
+    file.push(0x00);
+    let img = parse_pcx(&file).unwrap();
+    let expected: [[u8; 3]; 4] = [
+        [0xAA, 0x00, 0x00], // background = EGA 4 (red)
+        [0x55, 0xFF, 0xFF], // light cyan
+        [0xFF, 0x55, 0xFF], // light magenta
+        [0xFF, 0xFF, 0xFF], // white
+    ];
+    for (i, want) in expected.iter().enumerate() {
+        assert_eq!(
+            &img.data[i * 4..i * 4 + 3],
+            want,
+            "pixel {i}: palette must come from header bytes 16/19"
+        );
+    }
+    // And the same bytes moved 16 deeper (the pre-r401 read positions)
+    // must NOT influence decoding: zero 16/19, set 32/35 instead, and
+    // the palette must fall back to the all-clear default (yellow-dim,
+    // black background) rather than red-background white-bright.
+    let mut wrong = file.clone();
+    wrong[16] = 0;
+    wrong[19] = 0;
+    wrong[32] = 0x40;
+    wrong[35] = 0x60;
+    let img2 = parse_pcx(&wrong).unwrap();
+    assert_eq!(
+        &img2.data[0..3],
+        &[0x00, 0x00, 0x00],
+        "colormap bytes 16/19 (header 32/35) must be inert for CGA"
+    );
+    assert_eq!(&img2.data[4..7], &[0x00, 0xAA, 0x00], "index 1 = green");
+}
+
+#[test]
+fn cga_mono_ramp_grey_quad_uses_two_bits_per_pixel() {
+    // The manual's C bit unlocks two composite-monochrome ramps; the
+    // exact dim ramp 0x00/0x55/0xAA/0xFF is therefore CGA-representable
+    // and the auto ladder must find it (selector 0x80) — at scale the
+    // 2-bit geometry beats every grey alternative (Gray8 is 8 bits,
+    // the header-palette forms 4).
+    let ramp: [[u8; 3]; 4] = [
+        [0x00, 0x00, 0x00],
+        [0x55, 0x55, 0x55],
+        [0xAA, 0xAA, 0xAA],
+        [0xFF, 0xFF, 0xFF],
+    ];
+    let (w, h) = (128u16, 64u16);
+    let mut rgb = Vec::new();
+    for i in 0..(w as usize * h as usize) {
+        rgb.extend_from_slice(&ramp[[0usize, 1, 2, 3, 2, 1][i % 6]]);
+    }
+    let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+    assert!(
+        matches!(
+            mode,
+            PcxAutoMode::Cga2x1 {
+                palette_selector: 0x80,
+                ..
+            } | PcxAutoMode::Cga1x2 {
+                palette_selector: 0x80,
+                ..
+            }
+        ),
+        "unexpected mode {mode:?}"
+    );
+    assert_lossless(&bytes, w, h, &rgb);
+}
+
+// ---------------------------------------------------------------------------
 // Ladder-wide invariants (extended as candidates land)
 // ---------------------------------------------------------------------------
+
+/// Cross-dimensional minimality sweep: for six content flavours whose
+/// applicable rungs are known by construction, the ladder's output must
+/// (1) round-trip exactly and (2) be no larger than EVERY applicable
+/// direct-writer candidate the test rebuilds by hand — mono, EGA RGB,
+/// both CGA forms, both 16-colour header-palette forms, grayscale,
+/// Indexed8 and planar. Widths cover sub-byte, byte-boundary, odd and
+/// even-pad geometries.
+#[test]
+fn ladder_output_is_minimal_across_dimensions_and_flavors() {
+    use oxideav_pcx::{
+        encode_pcx_1bpp_2planes_cga, encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega,
+        encode_pcx_1bpp_mono, encode_pcx_2bpp_cga, encode_pcx_4bpp_packed,
+    };
+    let prim: [[u8; 3]; 8] = [
+        [0x00, 0x00, 0x00],
+        [0xFF, 0x00, 0x00],
+        [0x00, 0xFF, 0x00],
+        [0x00, 0x00, 0xFF],
+        [0xFF, 0xFF, 0x00],
+        [0x00, 0xFF, 0xFF],
+        [0xFF, 0x00, 0xFF],
+        [0xFF, 0xFF, 0xFF],
+    ];
+    let cga_pal: [[u8; 3]; 4] = [
+        [0x00, 0x00, 0x00],
+        [0x55, 0xFF, 0xFF],
+        [0xFF, 0x55, 0xFF],
+        [0xFF, 0xFF, 0xFF],
+    ];
+    let mut st = 0x5EEDu32;
+    for &w in &[1u16, 2, 3, 5, 8, 13, 16, 17, 31, 32] {
+        for &h in &[1u16, 2, 7, 16] {
+            let n = w as usize * h as usize;
+            for flavor in 0..6 {
+                let mut rgb = Vec::with_capacity(n * 3);
+                for i in 0..n {
+                    let px: [u8; 3] = match flavor {
+                        // bilevel checker
+                        0 => {
+                            if (i + i / w as usize) % 2 == 0 {
+                                [0x00, 0x00, 0x00]
+                            } else {
+                                [0xFF, 0xFF, 0xFF]
+                            }
+                        }
+                        // all eight EGA primaries, cycling
+                        1 => prim[i % 8],
+                        // CGA palette-1-high noise
+                        2 => cga_pal[(xorshift32(&mut st) % 4) as usize],
+                        // grey gradient
+                        3 => {
+                            let g = ((i * 7) % 0xB0) as u8;
+                            [g, g, g]
+                        }
+                        // 3-colour stripes (plane-periodic)
+                        4 => {
+                            let pal: [[u8; 3]; 3] = [[10, 20, 30], [200, 30, 30], [30, 200, 30]];
+                            pal[[0usize, 1, 0, 2][i % 4]]
+                        }
+                        // 16-colour cycle
+                        _ => {
+                            let k = (i % 16) as u8;
+                            [13 + k * 11, 29 + k * 7, 47 + k * 5]
+                        }
+                    };
+                    rgb.extend_from_slice(&px);
+                }
+                let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+                assert_lossless(&bytes, w, h, &rgb);
+
+                // Rebuild first-seen indices + palette the way the scan does.
+                let mut pal_seen: Vec<[u8; 3]> = Vec::new();
+                let mut indices: Vec<u8> = Vec::new();
+                for p in rgb.chunks_exact(3) {
+                    let key = [p[0], p[1], p[2]];
+                    let idx = match pal_seen.iter().position(|c| *c == key) {
+                        Some(i) => i,
+                        None => {
+                            pal_seen.push(key);
+                            pal_seen.len() - 1
+                        }
+                    };
+                    indices.push(idx as u8);
+                }
+                let colors = pal_seen.len();
+                let mut competitors: Vec<(&str, usize)> = Vec::new();
+                // Mono.
+                if pal_seen
+                    .iter()
+                    .all(|c| *c == [0, 0, 0] || *c == [255, 255, 255])
+                {
+                    let mono: Vec<u8> = indices
+                        .iter()
+                        .map(|&i| u8::from(pal_seen[i as usize] == [255, 255, 255]))
+                        .collect();
+                    competitors.push(("mono", encode_pcx_1bpp_mono(w, h, &mono).unwrap().len()));
+                }
+                // EGA RGB primaries.
+                if pal_seen
+                    .iter()
+                    .all(|c| c.iter().all(|&v| v == 0x00 || v == 0xFF))
+                {
+                    competitors.push((
+                        "ega_rgb",
+                        encode_pcx_1bpp_3planes_ega_rgb(w, h, &rgb).unwrap().len(),
+                    ));
+                }
+                // CGA (flavor 2 only — palette known by construction).
+                if flavor == 2 {
+                    let lut: Vec<u8> = pal_seen
+                        .iter()
+                        .map(|c| cga_pal.iter().position(|p| p == c).unwrap() as u8)
+                        .collect();
+                    let cga_idx: Vec<u8> = indices.iter().map(|&i| lut[i as usize]).collect();
+                    competitors.push((
+                        "cga2x1",
+                        encode_pcx_2bpp_cga(w, h, &cga_idx, 0x60, 0).unwrap().len(),
+                    ));
+                    competitors.push((
+                        "cga1x2",
+                        encode_pcx_1bpp_2planes_cga(w, h, &cga_idx, 0x60, 0)
+                            .unwrap()
+                            .len(),
+                    ));
+                }
+                // 16-colour header-palette forms.
+                if colors <= 16 {
+                    let mut pal48 = [0u8; 48];
+                    for (i, c) in pal_seen.iter().enumerate() {
+                        pal48[i * 3..i * 3 + 3].copy_from_slice(c);
+                    }
+                    competitors.push((
+                        "indexed4",
+                        encode_pcx_4bpp_packed(w, h, &indices, &pal48)
+                            .unwrap()
+                            .len(),
+                    ));
+                    competitors.push((
+                        "indexed1x4",
+                        encode_pcx_1bpp_4planes_ega(w, h, &indices, &pal48)
+                            .unwrap()
+                            .len(),
+                    ));
+                }
+                // Grayscale.
+                if pal_seen.iter().all(|c| c[0] == c[1] && c[1] == c[2]) {
+                    let gray: Vec<u8> = rgb.chunks_exact(3).map(|p| p[0]).collect();
+                    competitors.push((
+                        "gray8",
+                        encode_pcx_8bpp_grayscale(w, h, &gray).unwrap().len(),
+                    ));
+                }
+                // The two always-applicable baselines.
+                let mut pal768 = vec![0u8; 768];
+                for (i, c) in pal_seen.iter().enumerate() {
+                    pal768[i * 3..i * 3 + 3].copy_from_slice(c);
+                }
+                competitors.push((
+                    "indexed8",
+                    encode_pcx_8bpp_indexed(w, h, &indices, &pal768)
+                        .unwrap()
+                        .len(),
+                ));
+                competitors.push(("rgb24", encode_pcx_24bpp(w, h, &rgb).unwrap().len()));
+                for (name, len) in competitors {
+                    assert!(
+                        bytes.len() <= len,
+                        "{w}×{h} flavor {flavor}: ladder ({} B, {mode:?}) lost to {name} ({len} B)",
+                        bytes.len()
+                    );
+                }
+            }
+        }
+    }
+}
 
 /// The chosen file must never be larger than either always-applicable
 /// baseline candidate (Indexed8 when ≤256 colours, Rgb24 always), for a
