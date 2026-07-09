@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- *(encode)* **Auto ladder: `Mono1` + `EgaRgb1x3` candidates.** When
+  every distinct colour is pure black / pure white, the ladder now
+  derives the 1 bpp × 1 plane monochrome form (spec §4.1, bit 1 =
+  white) — one bit per pixel, the smallest geometry PCX defines. When
+  every channel of every colour is `0x00` / `0xFF` (the eight EGA RGB
+  primaries), the 1 bpp × 3 plane form (spec §4 bit-plane example)
+  enters the contest at three bits per pixel with no stored palette.
+  Both are exact by construction (the mono LUT admits only
+  `#000000` / `#FFFFFF`; the EGA writer's `>= 0x80` channel threshold
+  is the identity on primary values) and both thread authoring DPI
+  through `encode_pcx_image_auto`. A bilevel image qualifies for both;
+  Mono1's single plane wins the byte count. `PcxAutoMode` gains the
+  `Mono1` and `EgaRgb1x3` variants.
+
 - *(encode)* **Auto ladder: `Gray8` candidate.** `encode_pcx_rgb_auto` /
   `encode_pcx_image_auto` now derive an 8 bpp × 1 plane grayscale
   candidate (spec §3 `palette_info = 2`, no VGA tail) whenever every

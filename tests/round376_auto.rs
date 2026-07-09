@@ -130,15 +130,19 @@ fn indexed_is_smaller_than_planar_for_low_color_art() {
     // amortise the fixed 769-byte palette tail.
     let w = 200u16;
     let h = 200u16;
+    // Deliberately NOT the eight EGA primaries: since r401 the auto
+    // ladder would route an all-primary image to the far smaller
+    // 1 bpp x 3 plane EgaRgb1x3 candidate, and this test pins the
+    // Indexed8-vs-planar comparison specifically.
     let palette: [[u8; 3]; 8] = [
-        [0, 0, 0],
-        [255, 0, 0],
-        [0, 255, 0],
-        [0, 0, 255],
-        [255, 255, 0],
-        [0, 255, 255],
-        [255, 0, 255],
-        [255, 255, 255],
+        [10, 10, 10],
+        [200, 30, 30],
+        [30, 200, 30],
+        [30, 30, 200],
+        [220, 220, 40],
+        [40, 220, 220],
+        [220, 40, 220],
+        [240, 240, 240],
     ];
     let mut state = 0xC0FFEEu32;
     let mut rgb = Vec::with_capacity(w as usize * h as usize * 3);
@@ -275,7 +279,9 @@ fn image_auto_indexed_preserves_dpi() {
     // screen metadata → indexed branch, DPI threaded into the header.
     let w = 200u32;
     let h = 200u32;
-    let pal = [[0u8, 0, 0], [255, 0, 0], [0, 255, 0], [0, 0, 255]];
+    // Non-primary, non-grey colours so the r401 ladder cannot route
+    // this to a more compact mode: the test pins the Indexed8 DPI path.
+    let pal = [[10u8, 20, 30], [200, 30, 30], [30, 200, 30], [30, 30, 200]];
     let mut state = 0xAB_CD_01u32;
     let mut rgb = Vec::new();
     for _ in 0..(w as usize * h as usize) {

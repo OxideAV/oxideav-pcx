@@ -375,6 +375,15 @@ pub enum PcxAutoMode {
     /// exactly while saving the fixed 769-byte tail the
     /// [`PcxAutoMode::Indexed8`] form would carry.
     Gray8,
+    /// Every distinct colour is pure black or pure white: 1 bpp ×
+    /// 1 plane monochrome (spec §4.1, bit 1 = white / bit 0 = black) —
+    /// one bit per pixel, the smallest geometry PCX defines.
+    Mono1,
+    /// Every distinct colour has each channel at `0x00` or `0xFF` (the
+    /// eight EGA RGB primaries): 1 bpp × 3 planes (spec §4 bit-plane
+    /// example — one bit-plane per primary, plane order R, G, B). No
+    /// palette is stored anywhere; three bits per pixel on disk.
+    EgaRgb1x3,
 }
 
 /// Encode `width × height` packed RGB bytes (3 bytes per pixel,
@@ -392,6 +401,12 @@ pub enum PcxAutoMode {
 ///   candidate from the crate's existing spec modes, encodes each, and
 ///   returns whichever is the **fewest bytes**:
 ///
+///   * **Mono1** — every distinct colour is pure black or pure white:
+///     1 bpp × 1 plane monochrome (spec §4.1), one bit per pixel — the
+///     smallest geometry PCX defines.
+///   * **EgaRgb1x3** — every channel of every colour is `0x00` or
+///     `0xFF` (the eight EGA RGB primaries): 1 bpp × 3 planes (spec §4
+///     bit-plane example), three bits per pixel, no stored palette.
 ///   * **Gray8** — every distinct colour is a pure grey (`r == g ==
 ///     b`): 8 bpp × 1 plane with `palette_info = 2` (spec §3), no VGA
 ///     tail. The pixel byte is the grey level, so this drops the fixed
@@ -450,6 +465,18 @@ pub fn encode_pcx_rgb_auto(width: u16, height: u16, rgb: &[u8]) -> Result<(Vec<u
     // losslessness precondition holds, so every entry in `candidates`
     // round-trips exactly by construction.
     let mut candidates: Vec<(Vec<u8>, PcxAutoMode)> = Vec::new();
+    if let Some(mono) = auto_mono_pixels(&indices, &palette, colors) {
+        candidates.push((
+            encode_pcx_1bpp_mono(width, height, &mono)?,
+            PcxAutoMode::Mono1,
+        ));
+    }
+    if auto_is_ega_primaries(&palette, colors) {
+        candidates.push((
+            encode_pcx_1bpp_3planes_ega_rgb(width, height, rgb)?,
+            PcxAutoMode::EgaRgb1x3,
+        ));
+    }
     if let Some(gray) = auto_gray_pixels(&indices, &palette, colors) {
         candidates.push((
             encode_pcx_8bpp_grayscale(width, height, &gray)?,
@@ -499,6 +526,40 @@ fn auto_gray_pixels(indices: &[u8], palette: &[u8], colors: usize) -> Option<Vec
         *slot = r;
     }
     Some(indices.iter().map(|&i| lut[i as usize]).collect())
+}
+
+/// Derive the one-byte-per-pixel bilevel buffer (0 = black, 1 = white)
+/// for the [`PcxAutoMode::Mono1`] candidate, or `None` when any
+/// meaningful palette entry is neither pure black nor pure white.
+///
+/// The monochrome decode path (spec §4.1) maps bit 1 → white
+/// (`0xFF, 0xFF, 0xFF`) and bit 0 → black (`0x00, 0x00, 0x00`), so the
+/// candidate is exact precisely when those two colours are the whole
+/// palette.
+fn auto_mono_pixels(indices: &[u8], palette: &[u8], colors: usize) -> Option<Vec<u8>> {
+    let mut lut = [0u8; 256];
+    for (i, slot) in lut.iter_mut().enumerate().take(colors) {
+        let entry = &palette[i * 3..i * 3 + 3];
+        *slot = match entry {
+            [0x00, 0x00, 0x00] => 0,
+            [0xFF, 0xFF, 0xFF] => 1,
+            _ => return None,
+        };
+    }
+    Some(indices.iter().map(|&i| lut[i as usize]).collect())
+}
+
+/// Whether every meaningful palette entry has each channel at `0x00`
+/// or `0xFF` — the eight EGA RGB primaries the 1 bpp × 3 plane mode
+/// (spec §4 bit-plane example) reproduces exactly. When true, the
+/// packed RGB input can go straight into
+/// [`encode_pcx_1bpp_3planes_ega_rgb`]: its `>= 0x80` channel
+/// threshold is the identity on `{0x00, 0xFF}` values, so the
+/// round-trip is bit-exact.
+fn auto_is_ega_primaries(palette: &[u8], colors: usize) -> bool {
+    palette[..colors * 3]
+        .iter()
+        .all(|&c| c == 0x00 || c == 0xFF)
 }
 
 /// Encode `width × height` packed RGB bytes (3 bytes per pixel,
@@ -1349,28 +1410,39 @@ pub fn encode_pcx_image_auto(image: &PcxImage) -> Result<(Vec<u8>, PcxAutoMode)>
     // DPI present: re-emit the *chosen* geometry through its DPI variant
     // so the size decision the scan already made is preserved while the
     // header carries the authoring resolution.
-    let bytes = match mode {
-        PcxAutoMode::Rgb24 => encode_pcx_24bpp_dpi(w, h, &rgb, dpi)?,
-        PcxAutoMode::Indexed8 { .. } => {
-            // Rebuild the indexed payload + palette under the DPI writer.
-            // Re-running the scan is cheap relative to the encode and keeps
-            // this branch from duplicating the palette-build logic.
-            let (indices, palette) = build_indexed_payload(w, h, &rgb)
-                .expect("auto already proved ≤256 colours for this input");
-            encode_pcx_8bpp_indexed_dpi(w, h, &indices, &palette, dpi)?
-        }
-        PcxAutoMode::Gray8 => {
-            let (indices, palette) = build_indexed_payload(w, h, &rgb)
-                .expect("auto already proved ≤256 colours for this input");
-            let colors = indices
-                .iter()
-                .copied()
-                .max()
-                .map(|m| m as usize + 1)
-                .unwrap_or(0);
-            let gray = auto_gray_pixels(&indices, &palette, colors)
-                .expect("auto already proved every colour is a pure grey");
-            encode_pcx_8bpp_grayscale_dpi(w, h, &gray, dpi)?
+    let bytes = if let PcxAutoMode::Rgb24 = mode {
+        encode_pcx_24bpp_dpi(w, h, &rgb, dpi)?
+    } else {
+        // Every non-planar mode was derived from the ≤256-colour scan.
+        // Rebuild the indexed payload + palette once under the DPI
+        // writer — re-running the scan is cheap relative to the encode
+        // and keeps this branch from duplicating the palette-build
+        // logic — then re-derive the chosen mode's input the same way
+        // the ladder did.
+        let (indices, palette) = build_indexed_payload(w, h, &rgb)
+            .expect("auto already proved ≤256 colours for this input");
+        let colors = indices
+            .iter()
+            .copied()
+            .max()
+            .map(|m| m as usize + 1)
+            .unwrap_or(0);
+        match mode {
+            PcxAutoMode::Rgb24 => unreachable!("handled above"),
+            PcxAutoMode::Indexed8 { .. } => {
+                encode_pcx_8bpp_indexed_dpi(w, h, &indices, &palette, dpi)?
+            }
+            PcxAutoMode::Gray8 => {
+                let gray = auto_gray_pixels(&indices, &palette, colors)
+                    .expect("auto already proved every colour is a pure grey");
+                encode_pcx_8bpp_grayscale_dpi(w, h, &gray, dpi)?
+            }
+            PcxAutoMode::Mono1 => {
+                let mono = auto_mono_pixels(&indices, &palette, colors)
+                    .expect("auto already proved every colour is black or white");
+                encode_pcx_1bpp_mono_dpi(w, h, &mono, dpi)?
+            }
+            PcxAutoMode::EgaRgb1x3 => encode_pcx_1bpp_3planes_ega_rgb_dpi(w, h, &rgb, dpi)?,
         }
     };
     Ok((bytes, mode))

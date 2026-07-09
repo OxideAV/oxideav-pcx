@@ -185,6 +185,191 @@ fn image_auto_threads_dpi_through_gray8() {
 }
 
 // ---------------------------------------------------------------------------
+// Mono1 candidate
+// ---------------------------------------------------------------------------
+
+#[test]
+fn black_and_white_image_picks_mono1() {
+    // Text-like bilevel content: 1 bpp is 8× smaller per pixel than the
+    // Gray8 candidate and 24× smaller than planar before RLE even
+    // starts. Assert the ladder lands on Mono1 and round-trips.
+    let (w, h) = (80u16, 60u16);
+    let mut rgb = Vec::new();
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            let on = (x / 3 + y / 2) % 2 == 0;
+            let v = if on { 0xFF } else { 0x00 };
+            rgb.extend_from_slice(&[v, v, v]);
+        }
+    }
+    let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+    assert_eq!(mode, PcxAutoMode::Mono1);
+    assert_lossless(&bytes, w, h, &rgb);
+    assert_eq!(bytes[3], 1, "1 bpp");
+    assert_eq!(bytes[65], 1, "1 plane");
+    // Must beat the Gray8 candidate (same content is also all-grey).
+    let gray: Vec<u8> = rgb.chunks_exact(3).map(|p| p[0]).collect();
+    let gray_file = encode_pcx_8bpp_grayscale(w, h, &gray).unwrap();
+    assert!(bytes.len() < gray_file.len());
+}
+
+#[test]
+fn all_black_solid_is_mono1() {
+    // Single colour that happens to be black: Mono1 applies (all-zero
+    // plane rows RLE-collapse) and must win the ladder outright.
+    let (w, h) = (64u16, 64u16);
+    let rgb = vec![0u8; w as usize * h as usize * 3];
+    let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+    assert_eq!(mode, PcxAutoMode::Mono1);
+    assert_lossless(&bytes, w, h, &rgb);
+}
+
+#[test]
+fn off_black_disqualifies_mono1() {
+    // (1, 1, 1) is a grey but not pure black: Mono1 must not fire (it
+    // would quantise); Gray8 still applies. Both grey levels are kept
+    // below 0xC0 so RLE escape costs don't hand the byte count to the
+    // indexed candidate instead (that economics case has its own test).
+    let (w, h) = (64u16, 64u16);
+    let mut rgb = Vec::new();
+    for i in 0..(w as usize * h as usize) {
+        let v = if i % 2 == 0 { 0x01 } else { 0xBF };
+        rgb.extend_from_slice(&[v, v, v]);
+    }
+    let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+    assert_eq!(mode, PcxAutoMode::Gray8);
+    assert_lossless(&bytes, w, h, &rgb);
+}
+
+#[test]
+fn image_auto_threads_dpi_through_mono1() {
+    let (w, h) = (33u16, 21u16);
+    let mut rgb = Vec::new();
+    for i in 0..(w as usize * h as usize) {
+        let v = if (i / 5) % 2 == 0 { 0x00 } else { 0xFF };
+        rgb.extend_from_slice(&[v, v, v]);
+    }
+    let image = PcxImage {
+        width: w as u32,
+        height: h as u32,
+        pixel_format: PcxPixelFormat::Rgb24,
+        data: rgb.clone(),
+        pts: None,
+        dpi: Some((600, 300)),
+        window_origin: None,
+        screen_size: None,
+    };
+    let (bytes, mode) = encode_pcx_image_auto(&image).unwrap();
+    assert_eq!(mode, PcxAutoMode::Mono1);
+    let decoded = parse_pcx(&bytes).unwrap();
+    assert_eq!(decoded.dpi, Some((600, 300)));
+    assert_lossless(&bytes, w, h, &rgb);
+}
+
+// ---------------------------------------------------------------------------
+// EgaRgb1x3 candidate
+// ---------------------------------------------------------------------------
+
+#[test]
+fn eight_primary_image_picks_ega_rgb_1x3() {
+    // All eight EGA RGB primaries present: 3 bits/pixel planar beats
+    // both 8 bpp forms and needs no stored palette.
+    let (w, h) = (96u16, 64u16);
+    let prim: [[u8; 3]; 8] = [
+        [0x00, 0x00, 0x00],
+        [0xFF, 0x00, 0x00],
+        [0x00, 0xFF, 0x00],
+        [0x00, 0x00, 0xFF],
+        [0xFF, 0xFF, 0x00],
+        [0x00, 0xFF, 0xFF],
+        [0xFF, 0x00, 0xFF],
+        [0xFF, 0xFF, 0xFF],
+    ];
+    let mut st = 0xDECAFu32;
+    let mut rgb = Vec::new();
+    for _ in 0..(w as usize * h as usize) {
+        rgb.extend_from_slice(&prim[(xorshift32(&mut st) % 8) as usize]);
+    }
+    let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+    assert_eq!(mode, PcxAutoMode::EgaRgb1x3);
+    assert_lossless(&bytes, w, h, &rgb);
+    assert_eq!(bytes[3], 1, "1 bpp");
+    assert_eq!(bytes[65], 3, "3 planes");
+}
+
+#[test]
+fn primaries_plus_one_off_color_disqualify_ega_rgb() {
+    // A single non-primary pixel bars the EgaRgb1x3 candidate — the
+    // ladder never quantises.
+    let (w, h) = (48u16, 48u16);
+    let mut rgb = Vec::new();
+    for i in 0..(w as usize * h as usize) {
+        if i == 5 {
+            rgb.extend_from_slice(&[0x80, 0x00, 0x00]); // off-primary red
+        } else if i % 2 == 0 {
+            rgb.extend_from_slice(&[0xFF, 0x00, 0x00]);
+        } else {
+            rgb.extend_from_slice(&[0x00, 0x00, 0xFF]);
+        }
+    }
+    let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+    assert_ne!(mode, PcxAutoMode::EgaRgb1x3);
+    assert_lossless(&bytes, w, h, &rgb);
+}
+
+#[test]
+fn bilevel_prefers_mono1_over_ega_rgb() {
+    // Black + white qualifies for BOTH Mono1 and EgaRgb1x3; Mono1's
+    // single plane is a third of the bits and must win the size
+    // comparison.
+    let (w, h) = (64u16, 64u16);
+    let mut rgb = Vec::new();
+    let mut st = 0xF00Du32;
+    for _ in 0..(w as usize * h as usize) {
+        let v = if xorshift32(&mut st) & 1 == 0 {
+            0x00
+        } else {
+            0xFF
+        };
+        rgb.extend_from_slice(&[v, v, v]);
+    }
+    let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+    assert_eq!(mode, PcxAutoMode::Mono1);
+    assert_lossless(&bytes, w, h, &rgb);
+}
+
+#[test]
+fn image_auto_threads_dpi_through_ega_rgb_1x3() {
+    let (w, h) = (50u16, 30u16);
+    let prim: [[u8; 3]; 4] = [
+        [0xFF, 0x00, 0x00],
+        [0x00, 0xFF, 0x00],
+        [0x00, 0x00, 0xFF],
+        [0xFF, 0xFF, 0x00],
+    ];
+    let mut st = 0xACEu32;
+    let mut rgb = Vec::new();
+    for _ in 0..(w as usize * h as usize) {
+        rgb.extend_from_slice(&prim[(xorshift32(&mut st) % 4) as usize]);
+    }
+    let image = PcxImage {
+        width: w as u32,
+        height: h as u32,
+        pixel_format: PcxPixelFormat::Rgb24,
+        data: rgb.clone(),
+        pts: None,
+        dpi: Some((150, 150)),
+        window_origin: None,
+        screen_size: None,
+    };
+    let (bytes, mode) = encode_pcx_image_auto(&image).unwrap();
+    assert_eq!(mode, PcxAutoMode::EgaRgb1x3);
+    let decoded = parse_pcx(&bytes).unwrap();
+    assert_eq!(decoded.dpi, Some((150, 150)));
+    assert_lossless(&bytes, w, h, &rgb);
+}
+
+// ---------------------------------------------------------------------------
 // Ladder-wide invariants (extended as candidates land)
 // ---------------------------------------------------------------------------
 
