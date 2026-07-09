@@ -48,6 +48,13 @@
 //! * [`encode_pcx_24bpp_window`] — like [`encode_pcx_24bpp`] but lets
 //!   the caller set a non-zero `(x_min, y_min)` window origin for the
 //!   PCX 3.0+ pixel-region edge case.
+//! * [`encode_pcx_rgb_auto`] / [`encode_pcx_image_auto`] — the
+//!   compact-mode **candidate ladder**: every spec mode whose
+//!   losslessness precondition holds for the input (mono, both CGA
+//!   layouts via a 96-palette exact match search, EGA-RGB, both
+//!   16-colour header-palette layouts, grayscale, indexed, planar) is
+//!   encoded and the fewest-byte file wins, returned with the chosen
+//!   [`PcxAutoMode`]. Exact by construction on every rung.
 //!
 //! All writers emit PCX 5.0 with `bytes_per_line` rounded up to even
 //! per spec §1; RLE escapes any literal byte ≥ `0xC0` even when its

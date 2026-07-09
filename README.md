@@ -118,7 +118,12 @@ Standalone helpers:
   plane plus a 768-byte VGA tail palette.
 * `encode_pcx_24bpp(w, h, &rgb)` — 8 bpp × 3 planes, planar RGB.
 * `encode_pcx_1bpp_mono(w, h, &pixels)` — 1 bpp × 1 plane mono
-  (bit 1 = white, bit 0 = black).
+  (bit 1 = white, bit 0 = black). Since r401 the writer also stores
+  black / white in colormap entries 0 / 1 (the EGFF canonical mode
+  matrix treats mono as the 2-colour paletted case), and the decoder
+  resolves bits through a *non-zero* colormap's first two triples —
+  so a foreign white-on-blue mono file decodes faithfully while
+  zero-filled colormaps keep the classic convention.
 * `encode_pcx_1bpp_3planes_ega_rgb(w, h, &rgb)` — 8-colour EGA RGB
   at 1 bpp × 3 planes. Each input channel byte is thresholded at
   0x80 to set its plane bit; the round-trip is exact when the
@@ -145,31 +150,45 @@ Standalone helpers:
   `encode_pcx_24bpp` but sets a non-zero `(x_min, y_min)` window
   origin for the PCX 3.0+ pixel-region edge case.
 * `encode_pcx_rgb_auto(w, h, &rgb) -> (Vec<u8>, PcxAutoMode)` — emits
-  the **smallest lossless** PCX the way PC Paintbrush did. A raster scan
-  assigns each colour a first-seen index and bails on the 257th colour:
-  `> 256` colours → planar 24-bit (byte-identical to `encode_pcx_24bpp`);
-  `≤ 256` colours → it encodes **both** the 8 bpp × 1 plane indexed
-  candidate (256-entry VGA tail palette) and the planar candidate and
-  keeps whichever is fewer bytes. The indexed form wins decisively for
-  any non-trivial low-colour image (~⅓ the planar size), but for a *tiny*
-  image the fixed 769-byte palette tail can exceed the whole planar file,
-  so planar is returned — the "most compact" guarantee holds at every
-  size. Both candidates are exact (no quantisation), so the decode
-  round-trips the original RGB bit-for-bit regardless of branch. The
-  returned `PcxAutoMode` (`Indexed8 { colors }` / `Rgb24`) records the
-  emitted geometry; first-seen palette order plus an indexed-wins-tie
-  rule keep the output deterministic. No new on-disk geometry — only the
-  size-minimising choice between two existing spec modes.
+  the **smallest lossless** PCX the way PC Paintbrush did, via a full
+  candidate ladder over the crate's spec modes (r401). A raster scan
+  assigns each colour a first-seen index and bails on the 257th colour
+  (`> 256` → planar 24-bit, byte-identical to `encode_pcx_24bpp`);
+  otherwise every candidate whose losslessness precondition holds is
+  encoded and the fewest-byte file wins:
+
+  * **Mono1** — colours ⊆ {black, white} → 1 bpp × 1 plane;
+  * **Cga2x1 / Cga1x2** — ≤ 4 colours exactly covered by one of the 96
+    fixed CGA palettes (6 C/P/I selector families × 16 backgrounds,
+    matched through the decoder's own resolver) → 2 bits/pixel in
+    either the packed or plane-oriented layout;
+  * **EgaRgb1x3** — every channel 0x00/0xFF → 1 bpp × 3 planes;
+  * **Indexed4 / Indexed1x4** — ≤ 16 colours → both four-bit
+    header-palette geometries (packed nibbles win on noise; periodic
+    content RLE-collapses whole bit-planes and flips the win);
+  * **Gray8** — all pure greys → `palette_info = 2`, no 769-byte tail
+    (escape-heavy grey content can still hand the byte count back to
+    Indexed8 — the ladder compares, never assumes);
+  * **Indexed8** and **Rgb24** — the always-applicable baselines.
+
+  Every candidate is exact (no quantisation anywhere), so the output
+  decodes back to the source RGB bit-for-bit whatever rung wins; the
+  returned `PcxAutoMode` records the geometry (plus colour count /
+  CGA header encoding where relevant). First-seen palette order and a
+  fixed preference order on exact ties keep the bytes deterministic.
+  A cross-dimensional minimality suite asserts the chosen file never
+  loses to ANY applicable direct-writer candidate. No new on-disk
+  geometry — only the size-minimising choice among existing spec modes.
 * `encode_pcx_image_auto(&image) -> (Vec<u8>, PcxAutoMode)` — the
   `PcxImage`-level companion (mirrors `encode_pcx_24bpp_image`). Flattens
-  an `Rgba` / `Rgb24` image and emits the smaller of the indexed / planar
-  candidates while preserving header metadata losslessly per branch: the
-  planar branch threads the full `(window_origin, dpi, screen_size)`
-  triple (via `encode_pcx_24bpp_image`); the indexed branch threads
-  authoring DPI (via `encode_pcx_8bpp_indexed_dpi`). Since the indexed
-  geometry has no window-origin / screen-size header variant, an image
-  carrying either field falls back to planar rather than dropping the
-  metadata — lossless on both pixels and the requested annotations.
+  an `Rgba` / `Rgb24` image and runs the same ladder while preserving
+  header metadata losslessly per branch: the planar branch threads the
+  full `(window_origin, dpi, screen_size)` triple (via
+  `encode_pcx_24bpp_image`); every compact rung threads authoring DPI
+  through its `_dpi` writer variant. Since only the planar geometry has
+  window-origin / screen-size header variants, an image carrying either
+  field falls back to planar rather than dropping the metadata —
+  lossless on both pixels and the requested annotations.
 
 All writers emit **PCX 5.0** with `bytes_per_line` rounded up to
 even per spec §1. The RLE encoder coalesces runs of ≤ 63 identical
@@ -867,6 +886,14 @@ on both decode and encode.
 * The framework `Encoder` always emits the 24-bit planar form for RGB
   input (predictable bytes for pipeline consumers). A standalone caller
   that wants the smallest lossless file without pre-choosing a mode can
-  use `encode_pcx_rgb_auto` / `encode_pcx_image_auto`, which derive an
-  exact palette from the pixels and pick the smaller of the indexed /
-  planar geometries automatically.
+  use `encode_pcx_rgb_auto` / `encode_pcx_image_auto`, whose r401
+  candidate ladder covers every compact spec mode (mono, both CGA
+  layouts, EGA-RGB, both 16-colour header-palette layouts, grayscale,
+  indexed, planar) and provably returns the fewest-byte exact file.
+* Interop caveat, not a capability gap: the `Gray8` rung's tail-less
+  `palette_info = 2` form is spec-valid but some mainstream readers
+  unconditionally demand the appended VGA tail on 8 bpp files and
+  refuse it (the EGFF cross-reference notes most programs ignore the
+  grayscale flag). Callers targeting such readers can emit the ramp
+  through `encode_pcx_8bpp_indexed` — the Indexed8 rung is exactly
+  that file, 769 bytes larger.
