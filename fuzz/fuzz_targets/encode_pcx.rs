@@ -121,6 +121,50 @@ fuzz_target!(|data: &[u8]| {
             }
         }
     }
+    // Low-colour variant of the same auto-ladder invariant: raw fuzz
+    // payloads are high-entropy (usually > 256 distinct colours), so
+    // the compact rungs (mono / EGA-RGB / CGA / 4-bit / grayscale /
+    // indexed) would almost never fire off `payload` directly. Quantise
+    // down to a tiny palette whose SIZE and CONTENT the fuzzer
+    // controls: entries come from payload bytes, per-pixel picks from
+    // the payload head, and half the entries are biased onto the
+    // special levels the compact rungs key on (0x00 / 0x55 / 0xAA /
+    // 0xFF), so bilevel / primary / grey / CGA-shaped palettes are all
+    // reachable. The round-trip must stay exact for every rung the
+    // ladder picks — pixel capacity is capped so the up-to-nine
+    // candidate encodes stay cheap per iteration.
+    {
+        let n = width as usize * height as usize;
+        if payload.len() >= 4 && n > 0 && n <= 1 << 14 {
+            let pal_len = 1 + (payload[0] as usize % 17); // 1..=17 colours
+            let mut palette = Vec::with_capacity(pal_len);
+            for k in 0..pal_len {
+                let base = (k * 3) % (payload.len() - 2);
+                let px = [payload[base], payload[base + 1], payload[base + 2]];
+                let px = if k % 2 == 0 {
+                    px.map(|v| [0x00u8, 0x55, 0xAA, 0xFF][(v >> 6) as usize])
+                } else {
+                    px
+                };
+                palette.push(px);
+            }
+            let mut rgb = Vec::with_capacity(n * 3);
+            for i in 0..n {
+                let sel = payload[1 + i % (payload.len() - 1)] as usize % pal_len;
+                rgb.extend_from_slice(&palette[sel]);
+            }
+            let (bytes, _mode) =
+                encode_pcx_rgb_auto(width, height, &rgb).expect("low-colour auto encode");
+            let img = parse_pcx(&bytes).expect("low-colour auto output must decode");
+            for (i, px) in img.data.chunks_exact(4).enumerate() {
+                assert_eq!(
+                    &px[..3],
+                    &rgb[i * 3..i * 3 + 3],
+                    "low-colour auto ladder must round-trip exactly"
+                );
+            }
+        }
+    }
     if let Ok(bytes) = encode_pcx_1bpp_3planes_ega_rgb(width, height, payload) {
         let _ = parse_pcx(&bytes);
         let _ = parse_pcx_indexed_1bpp_3planes(&bytes);
