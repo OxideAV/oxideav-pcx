@@ -830,6 +830,22 @@ fn pack_1bpp_plane_row(dst: &mut [u8], width: usize, get_bit: impl Fn(usize) -> 
     }
 }
 
+/// Two-entry colormap written by the monochrome writers: entry 0 = pure
+/// black, entry 1 = pure white, remaining 14 triples zero. The EGFF
+/// cross-reference's canonical mode matrix treats `1 bpp × 1 plane` as
+/// the 2-colour paletted case of the header colormap, so a
+/// colormap-driven reader resolves bit 0 / bit 1 through entries 0 / 1;
+/// writing the palette explicitly makes our mono files self-describing
+/// for such readers while the spec §4.1 bit convention (1 = white)
+/// stays byte-identical for bit-driven ones.
+pub(crate) const MONO_COLORMAP: [u8; 48] = {
+    let mut p = [0u8; 48];
+    p[3] = 0xFF;
+    p[4] = 0xFF;
+    p[5] = 0xFF;
+    p
+};
+
 /// Default authoring DPI written into the header when the caller does
 /// not supply one. 72×72 matches the "screen DPI" convention PC
 /// Paintbrush and the rev-5 manual's example header carry; scanner
@@ -957,7 +973,15 @@ pub fn encode_pcx_1bpp_mono(width: u16, height: u16, pixels: &[u8]) -> Result<Ve
     }
     let bytes_per_line = round_up_to_even(width.div_ceil(8));
     let mut out = Vec::with_capacity(PCX_HEADER_SIZE + (bytes_per_line as usize) * height as usize);
-    write_header(&mut out, width, height, 1, 1, bytes_per_line);
+    write_header_with_palette(
+        &mut out,
+        width,
+        height,
+        1,
+        1,
+        bytes_per_line,
+        &MONO_COLORMAP,
+    );
     let mut row = vec![0u8; bytes_per_line as usize];
     for y in 0..height as usize {
         for v in row.iter_mut() {
@@ -1889,7 +1913,7 @@ pub fn encode_pcx_1bpp_mono_dpi(
         1,
         1,
         bytes_per_line,
-        &[0u8; 48],
+        &MONO_COLORMAP,
         1,
         dpi,
         DEFAULT_SCREEN_SIZE,

@@ -337,3 +337,118 @@ fn we_decode_magick_authored_pcx() {
     assert_eq!(&img.data[0..3], &[255, 0, 0]);
     let _ = std::fs::remove_file(&path);
 }
+
+// ---------------------------------------------------------------------------
+// r401 — auto-ladder outputs cross-validated pixel-exactly through magick
+// ---------------------------------------------------------------------------
+
+/// Ask magick to decode `pcx_bytes` to raw 8-bit packed RGB and return
+/// the bytes. `-depth 8` pins the output scale so palette entries and
+/// grey levels come back exactly as written.
+fn magick_to_raw_rgb(name: &str, pcx_bytes: &[u8], w: u16, h: u16) -> Vec<u8> {
+    let pcx_path = tmp(&format!("{name}.pcx"));
+    let raw_path = tmp(&format!("{name}.raw"));
+    std::fs::File::create(&pcx_path)
+        .unwrap()
+        .write_all(pcx_bytes)
+        .unwrap();
+    let status = Command::new("magick")
+        .arg(pcx_path.to_str().unwrap())
+        .arg("-depth")
+        .arg("8")
+        .arg(format!("rgb:{}", raw_path.to_str().unwrap()))
+        .status()
+        .expect("magick convert to raw rgb");
+    assert!(status.success(), "magick convert failed for {name}");
+    let raw = std::fs::read(&raw_path).unwrap();
+    assert_eq!(
+        raw.len(),
+        w as usize * h as usize * 3,
+        "unexpected raw size for {name}"
+    );
+    let _ = std::fs::remove_file(&pcx_path);
+    let _ = std::fs::remove_file(&raw_path);
+    raw
+}
+
+/// Every geometry the r401 auto ladder can emit that ImageMagick reads
+/// per the manual — Indexed4, Indexed1x4, Indexed8, Rgb24 — must decode
+/// through it to the exact source pixels. Three geometry families are
+/// deliberately excluded from the pixel-exact check and covered by the
+/// structural identify checks above instead:
+///
+/// * the CGA pair — the manual's "CGA Color Map" (header bytes 16 /
+///   19) is a palette *selector*, and ImageMagick instead reads the
+///   colormap's leading triples directly, so its CGA pixel output
+///   diverges from the spec by construction;
+/// * Mono1 — ImageMagick hard-codes the opposite 1-bpp polarity
+///   (bit 1 = black) and ignores the two-entry colormap our writer
+///   stores, on a point the manual never pins down explicitly;
+/// * Gray8 — ImageMagick unconditionally demands the appended VGA tail
+///   on 8 bpp × 1 plane files and errors on the spec's
+///   `palette_info = 2` tail-less form (the EGFF cross-reference notes
+///   most programs ignore that flag); callers who need such readers to
+///   consume their grayscale output can use `encode_pcx_8bpp_indexed`
+///   with a ramp palette — the Indexed8 rung is exactly that file.
+#[test]
+fn magick_re_decodes_every_unambiguous_ladder_geometry_exactly() {
+    if !have_magick() {
+        eprintln!("skipping: ImageMagick not on PATH");
+        return;
+    }
+    use oxideav_pcx::{encode_pcx_rgb_auto, PcxAutoMode};
+    let (w, h) = (64u16, 10u16);
+    let n = w as usize * h as usize;
+
+    // (name, pixel generator) — one flavour per unambiguous rung.
+    let mut cases: Vec<(&str, Vec<u8>, PcxAutoMode)> = Vec::new();
+    // Indexed4 (noise over 16 non-grey colours).
+    let mut st = 0x1DE4u32;
+    let mut xs = || {
+        st ^= st << 13;
+        st ^= st >> 17;
+        st ^= st << 5;
+        st
+    };
+    let idx4: Vec<u8> = (0..n)
+        .flat_map(|_| {
+            let k = (xs() % 16) as u8;
+            [13 + k * 11, 29 + k * 7, 47 + k * 5]
+        })
+        .collect();
+    cases.push(("indexed4", idx4, PcxAutoMode::Indexed4 { colors: 16 }));
+    // Indexed1x4 (plane-periodic stripes, 3 colours).
+    let stripes: Vec<u8> = (0..n)
+        .flat_map(|i| {
+            let pal: [[u8; 3]; 3] = [[10, 20, 30], [200, 30, 30], [30, 200, 30]];
+            pal[[0usize, 1, 0, 2][i % 4]]
+        })
+        .collect();
+    cases.push(("indexed1x4", stripes, PcxAutoMode::Indexed1x4 { colors: 3 }));
+    // Indexed8 (20 colours: too many for the 4-bit rungs).
+    let idx8: Vec<u8> = (0..n)
+        .flat_map(|i| {
+            let k = (i % 20) as u8;
+            [15 + k * 8, 40 + k * 6, 70 + k * 4]
+        })
+        .collect();
+    cases.push(("indexed8", idx8, PcxAutoMode::Indexed8 { colors: 20 }));
+    // Rgb24 (every pixel a distinct colour: 240 ≤ 256, so force the
+    // planar branch with > 256 distinct colours on a wider canvas is
+    // overkill — instead use a 300-colour 30×10 canvas).
+    let (w2, h2) = (30u16, 10u16);
+    let rgb24: Vec<u8> = (0..(w2 as usize * h2 as usize))
+        .flat_map(|i| [(i & 0xFF) as u8, (i >> 8) as u8, 0x33])
+        .collect();
+
+    for (name, rgb, want_mode) in cases {
+        let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+        assert_eq!(mode, want_mode, "{name}: unexpected ladder mode");
+        let raw = magick_to_raw_rgb(name, &bytes, w, h);
+        assert_eq!(raw, rgb, "{name}: magick pixels differ from source");
+    }
+    let (bytes, mode) = encode_pcx_rgb_auto(w2, h2, &rgb24).unwrap();
+    assert_eq!(mode, PcxAutoMode::Rgb24);
+    let raw = magick_to_raw_rgb("rgb24", &bytes, w2, h2);
+    assert_eq!(raw, rgb24, "rgb24: magick pixels differ from source");
+}

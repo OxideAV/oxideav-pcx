@@ -1227,18 +1227,28 @@ fn unpack_1bpp_1plane(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
     let w = header.width() as usize;
     let h = header.height() as usize;
     let bpl = header.bytes_per_line as usize;
+    // The EGFF canonical mode matrix treats `1 bpp × 1 plane` as the
+    // 2-colour paletted case of the header colormap, so when the file
+    // carries a non-zero colormap the two leading triples ARE the
+    // bit-0 / bit-1 colours (a foreign writer may legitimately store,
+    // say, white-on-blue). A zero-filled colormap — what PCX 3.0+
+    // writers commonly emit and what this crate's own mono writer
+    // wrote before r401 — falls back to the classic convention:
+    // bit 1 = white, bit 0 = black (spec §4.1 monochrome example).
+    let (c0, c1): ([u8; 3], [u8; 3]) = if header.ega_palette.iter().any(|&b| b != 0) {
+        let p = &header.ega_palette;
+        ([p[0], p[1], p[2]], [p[3], p[4], p[5]])
+    } else {
+        ([0x00; 3], [0xFF; 3])
+    };
+    let palette: [[u8; 4]; 2] = [[c0[0], c0[1], c0[2], 0xFF], [c1[0], c1[1], c1[2], 0xFF]];
     let mut out = vec![0u8; w * h * 4];
     let src_rows = planar.chunks_exact(bpl);
     let dst_rows = out.chunks_exact_mut(w * 4);
     for (row, dst_row) in src_rows.zip(dst_rows) {
         for (x, dst) in dst_row.chunks_exact_mut(4).enumerate() {
-            // 1 = white, 0 = black. (PCX 5.0 spec §4.1.)
             let bit = (row[x >> 3] >> (7 - (x & 7))) & 1;
-            let v = if bit != 0 { 0xFF } else { 0x00 };
-            dst[0] = v;
-            dst[1] = v;
-            dst[2] = v;
-            dst[3] = 0xFF;
+            dst.copy_from_slice(&palette[bit as usize]);
         }
     }
     out

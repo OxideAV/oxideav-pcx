@@ -1107,3 +1107,38 @@ fn ladder_never_loses_to_the_baselines() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Mono colormap (EGFF 2-colour paletted reading of 1 bpp × 1 plane)
+// ---------------------------------------------------------------------------
+
+/// A foreign 1 bpp × 1 plane file may carry a real two-entry colormap
+/// (the EGFF canonical mode matrix treats mono as the 2-colour paletted
+/// case): the decoder must resolve bit 0 / bit 1 through colormap
+/// entries 0 / 1 instead of hard-coding black / white. A zero-filled
+/// colormap keeps the classic bit 1 = white convention.
+#[test]
+fn mono_decoder_honours_a_foreign_two_entry_colormap() {
+    use oxideav_pcx::encode_pcx_1bpp_mono;
+    let pixels: Vec<u8> = (0..16).map(|i| (i % 2 == 0) as u8).collect();
+    let mut bytes = encode_pcx_1bpp_mono(16, 1, &pixels).unwrap();
+    // r401 writers store black/white in entries 0/1 — assert that first.
+    assert_eq!(&bytes[16..22], &[0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF]);
+    let img = parse_pcx(&bytes).unwrap();
+    assert_eq!(&img.data[0..3], &[0xFF, 0xFF, 0xFF], "bit 1 → entry 1");
+    assert_eq!(&img.data[4..7], &[0x00, 0x00, 0x00], "bit 0 → entry 0");
+    // Foreign palette: white-on-blue.
+    bytes[16..19].copy_from_slice(&[0x00, 0x00, 0xAA]); // entry 0 = blue
+    bytes[19..22].copy_from_slice(&[0xFF, 0xFF, 0xFF]); // entry 1 = white
+    let img = parse_pcx(&bytes).unwrap();
+    assert_eq!(&img.data[0..3], &[0xFF, 0xFF, 0xFF], "bit 1 → white");
+    assert_eq!(&img.data[4..7], &[0x00, 0x00, 0xAA], "bit 0 → blue");
+    // Zero-filled colormap (the pre-r401 output and the common PCX 3.0+
+    // form): classic convention.
+    for b in bytes[16..64].iter_mut() {
+        *b = 0;
+    }
+    let img = parse_pcx(&bytes).unwrap();
+    assert_eq!(&img.data[0..3], &[0xFF, 0xFF, 0xFF], "bit 1 = white");
+    assert_eq!(&img.data[4..7], &[0x00, 0x00, 0x00], "bit 0 = black");
+}

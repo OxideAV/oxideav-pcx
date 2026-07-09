@@ -37,6 +37,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- *(decode/encode)* **Monochrome files are now self-describing
+  2-colour paletted images.** The EGFF cross-reference's canonical
+  mode matrix treats `1 bpp × 1 plane` as the 2-colour case of the
+  header colormap, so `encode_pcx_1bpp_mono` (and its DPI variant) now
+  writes entries 0 / 1 as pure black / pure white, and the decoder
+  resolves bit 0 / bit 1 through a *non-zero* colormap's first two
+  triples — a foreign white-on-blue mono file now decodes faithfully
+  instead of being forced to black/white. A zero-filled colormap (the
+  common PCX 3.0+ form and this crate's own pre-r401 output) keeps the
+  classic bit 1 = white convention, byte-for-byte.
+
+- *(tests)* **Black-box cross-validation of the auto ladder through
+  ImageMagick.** Every ladder geometry ImageMagick reads per the
+  manual (Indexed4 / Indexed1x4 / Indexed8 / Rgb24) is decoded by it
+  to raw RGB and compared pixel-exactly against the source. Three
+  divergences are documented rather than chased: it resolves CGA
+  colours from the colormap triples instead of the manual's byte-16/19
+  selector, hard-codes the opposite 1-bpp polarity while ignoring the
+  mono colormap, and refuses the spec's tail-less `palette_info = 2`
+  grayscale form outright (callers needing such readers can emit the
+  ramp through `encode_pcx_8bpp_indexed` — the Indexed8 rung is
+  exactly that file).
+
 - *(encode)* **Auto ladder: `Cga2x1` + `Cga1x2` fixed-palette CGA
   candidates.** When the image has `≤ 4` distinct colours, the ladder
   searches the entire CGA header encoding space — 4 palette-family ×
