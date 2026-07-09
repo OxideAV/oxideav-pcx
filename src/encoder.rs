@@ -396,6 +396,27 @@ pub enum PcxAutoMode {
     /// run, which can compress differently from packed nibbles. The
     /// `usize` is the number of distinct colours found (`1..=16`).
     Indexed1x4 { colors: usize },
+    /// `≤ 4` distinct colours, ALL of which are exactly representable
+    /// by one of the fixed CGA hardware palettes (spec §"CGA Color
+    /// Map": header byte 19 bits 7/6 select the palette family +
+    /// intensity, header byte 16's high nibble picks the background
+    /// colour from the 16 EGA entries): 2 bpp × 1 plane packed bits —
+    /// two bits per pixel, no stored colour data beyond the two header
+    /// bytes. `palette_selector` / `background_index` record the header
+    /// encoding the match search chose.
+    Cga2x1 {
+        palette_selector: u8,
+        background_index: u8,
+    },
+    /// The same CGA-representability precondition in the
+    /// plane-oriented 1 bpp × 2 plane layout (the EGFF canonical CGA
+    /// mode matrix's `BitsPerPixel = 1, NumBitPlanes = 2` row). Same
+    /// two bits per pixel; different RLE behaviour, so both CGA forms
+    /// are tried and the byte count decides.
+    Cga1x2 {
+        palette_selector: u8,
+        background_index: u8,
+    },
 }
 
 /// Encode `width × height` packed RGB bytes (3 bytes per pixel,
@@ -416,6 +437,11 @@ pub enum PcxAutoMode {
 ///   * **Mono1** — every distinct colour is pure black or pure white:
 ///     1 bpp × 1 plane monochrome (spec §4.1), one bit per pixel — the
 ///     smallest geometry PCX defines.
+///   * **Cga2x1 / Cga1x2** — `≤ 4` distinct colours all exactly
+///     representable by a fixed CGA hardware palette (spec §"CGA Color
+///     Map"; entry 0 = any of the 16 EGA colours via header byte 16):
+///     2 bpp × 1 plane packed bits and its plane-oriented 1 bpp × 2
+///     plane sibling — two bits per pixel, both tried.
 ///   * **EgaRgb1x3** — every channel of every colour is `0x00` or
 ///     `0xFF` (the eight EGA RGB primaries): 1 bpp × 3 planes (spec §4
 ///     bit-plane example), three bits per pixel, no stored palette.
@@ -488,6 +514,35 @@ pub fn encode_pcx_rgb_auto(width: u16, height: u16, rgb: &[u8]) -> Result<(Vec<u
         candidates.push((
             encode_pcx_1bpp_mono(width, height, &mono)?,
             PcxAutoMode::Mono1,
+        ));
+    }
+    if let Some((palette_selector, background_index, lut)) = auto_cga_match(&palette, colors) {
+        let cga_indices: Vec<u8> = indices.iter().map(|&i| lut[i as usize]).collect();
+        candidates.push((
+            encode_pcx_2bpp_cga(
+                width,
+                height,
+                &cga_indices,
+                palette_selector,
+                background_index,
+            )?,
+            PcxAutoMode::Cga2x1 {
+                palette_selector,
+                background_index,
+            },
+        ));
+        candidates.push((
+            encode_pcx_1bpp_2planes_cga(
+                width,
+                height,
+                &cga_indices,
+                palette_selector,
+                background_index,
+            )?,
+            PcxAutoMode::Cga1x2 {
+                palette_selector,
+                background_index,
+            },
         ));
     }
     if auto_is_ega_primaries(&palette, colors) {
@@ -611,6 +666,56 @@ fn auto_palette48(palette: &[u8], colors: usize) -> Option<[u8; 48]> {
     let mut out = [0u8; 48];
     out[..colors * 3].copy_from_slice(&palette[..colors * 3]);
     Some(out)
+}
+
+/// Search the fixed CGA hardware palette space for an exact match of
+/// the image's `≤ 4` distinct colours, for the [`PcxAutoMode::Cga2x1`]
+/// / [`PcxAutoMode::Cga1x2`] candidates.
+///
+/// CGA stores no colour data: header byte 19 bits 7/6 select one of
+/// four fixed 3-colour palettes (spec §"CGA Color Map" — palette
+/// family × intensity) and header byte 16's high nibble picks palette
+/// entry 0 (the background) out of the 16 standard EGA colours. So a
+/// colour set is CGA-representable iff some `(selector, background)`
+/// pair yields a 4-entry palette containing every distinct colour. The
+/// search space is 4 selectors × 16 backgrounds = 64 resolved palettes,
+/// each resolved through the *decoder's own* header resolver
+/// ([`crate::decoder::cga_palette_from_header`]) so encode-side
+/// matching and decode-side reconstruction can never drift apart.
+///
+/// Returns the first match in a fixed scan order (selector `0x00`,
+/// `0x40`, `0x80`, `0xC0`; background `0..=15`) plus a
+/// source-index → CGA-index LUT (first matching palette entry, so ties
+/// inside a palette are deterministic too). `None` when `colors > 4`
+/// or no palette covers the set — the ladder never quantises.
+fn auto_cga_match(palette: &[u8], colors: usize) -> Option<(u8, u8, [u8; 4])> {
+    if colors > 4 {
+        return None;
+    }
+    for &selector in &[0x00u8, 0x40, 0x80, 0xC0] {
+        for background in 0..16u8 {
+            let mut raw = [0u8; 48];
+            raw[16] = background << 4;
+            raw[19] = selector;
+            let pal4 = crate::decoder::cga_palette_from_header(&raw);
+            let mut lut = [0u8; 4];
+            let mut ok = true;
+            for i in 0..colors {
+                let c = [palette[i * 3], palette[i * 3 + 1], palette[i * 3 + 2]];
+                match pal4.iter().position(|p| *p == c) {
+                    Some(j) => lut[i] = j as u8,
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok {
+                return Some((selector, background, lut));
+            }
+        }
+    }
+    None
 }
 
 /// Encode `width × height` packed RGB bytes (3 bytes per pixel,
@@ -1503,6 +1608,38 @@ pub fn encode_pcx_image_auto(image: &PcxImage) -> Result<(Vec<u8>, PcxAutoMode)>
                 let pal48 = auto_palette48(&palette, colors)
                     .expect("auto already proved ≤16 colours for this input");
                 encode_pcx_1bpp_4planes_ega_dpi(w, h, &indices, &pal48, dpi)?
+            }
+            PcxAutoMode::Cga2x1 {
+                palette_selector,
+                background_index,
+            } => {
+                let (_, _, lut) = auto_cga_match(&palette, colors)
+                    .expect("auto already proved a CGA palette match for this input");
+                let cga_indices: Vec<u8> = indices.iter().map(|&i| lut[i as usize]).collect();
+                encode_pcx_2bpp_cga_dpi(
+                    w,
+                    h,
+                    &cga_indices,
+                    palette_selector,
+                    background_index,
+                    dpi,
+                )?
+            }
+            PcxAutoMode::Cga1x2 {
+                palette_selector,
+                background_index,
+            } => {
+                let (_, _, lut) = auto_cga_match(&palette, colors)
+                    .expect("auto already proved a CGA palette match for this input");
+                let cga_indices: Vec<u8> = indices.iter().map(|&i| lut[i as usize]).collect();
+                encode_pcx_1bpp_2planes_cga_dpi(
+                    w,
+                    h,
+                    &cga_indices,
+                    palette_selector,
+                    background_index,
+                    dpi,
+                )?
             }
         }
     };

@@ -529,6 +529,248 @@ fn image_auto_threads_dpi_through_indexed4_and_indexed1x4() {
 }
 
 // ---------------------------------------------------------------------------
+// Cga2x1 / Cga1x2 candidates (≤ 4 colours, fixed hardware palettes)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cga_palette1_high_image_picks_a_cga_form() {
+    // Black + the palette-1 high-intensity triple (light cyan / light
+    // magenta / white): exactly the default CGA header encoding
+    // (selector 0x00, background 0). Two bits per pixel must beat the
+    // four-bit rungs on a canvas this size.
+    let pal: [[u8; 3]; 4] = [
+        [0x00, 0x00, 0x00],
+        [0x55, 0xFF, 0xFF],
+        [0xFF, 0x55, 0xFF],
+        [0xFF, 0xFF, 0xFF],
+    ];
+    let (w, h) = (128u16, 96u16);
+    let mut st = 0xC6Au32;
+    let mut rgb = Vec::new();
+    for _ in 0..(w as usize * h as usize) {
+        rgb.extend_from_slice(&pal[(xorshift32(&mut st) % 4) as usize]);
+    }
+    let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+    assert!(
+        matches!(
+            mode,
+            PcxAutoMode::Cga2x1 {
+                palette_selector: 0x00,
+                background_index: 0,
+            } | PcxAutoMode::Cga1x2 {
+                palette_selector: 0x00,
+                background_index: 0,
+            }
+        ),
+        "unexpected mode {mode:?}"
+    );
+    assert_lossless(&bytes, w, h, &rgb);
+    assert_eq!(bytes[65] as u16 * u16::from(bytes[3]), 2, "2 bits/pixel");
+}
+
+#[test]
+fn cga_palette0_low_family_is_found() {
+    // Green / red / brown are the palette-0 low-intensity triple —
+    // only the LAST selector in the scan order covers them, proving
+    // the search walks the whole family space. No background colour is
+    // needed (all colours sit in the fixed slots) so the first
+    // background candidate (0) is kept. Striped content (period 4)
+    // keeps every candidate's rows RLE-collapsible so the two-bit CGA
+    // geometry's raw-byte advantage decides the contest — 3-colour
+    // *noise* would instead drown the advantage in `>= 0xC0` escape
+    // bytes and legitimately hand the win to a four-bit planar rung.
+    let pal: [[u8; 3]; 3] = [
+        [0x00, 0xAA, 0x00], // green
+        [0xAA, 0x00, 0x00], // red
+        [0xAA, 0x55, 0x00], // brown
+    ];
+    let (w, h) = (120u16, 90u16);
+    let mut rgb = Vec::new();
+    for i in 0..(w as usize * h as usize) {
+        rgb.extend_from_slice(&pal[[0usize, 1, 0, 2][i % 4]]);
+    }
+    let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+    assert!(
+        matches!(
+            mode,
+            PcxAutoMode::Cga2x1 {
+                palette_selector: 0xC0,
+                background_index: 0,
+            } | PcxAutoMode::Cga1x2 {
+                palette_selector: 0xC0,
+                background_index: 0,
+            }
+        ),
+        "unexpected mode {mode:?}"
+    );
+    assert_lossless(&bytes, w, h, &rgb);
+}
+
+#[test]
+fn cga_background_search_resolves_off_palette_color() {
+    // Blue is in no fixed CGA slot but IS EGA entry 1, so it is only
+    // representable as the background colour: the match must land on
+    // selector 0x40 (palette 1 low = cyan / magenta / light grey) with
+    // background_index 1.
+    let pal: [[u8; 3]; 4] = [
+        [0x00, 0x00, 0xAA], // blue — background only
+        [0x00, 0xAA, 0xAA], // cyan
+        [0xAA, 0x00, 0xAA], // magenta
+        [0xAA, 0xAA, 0xAA], // light grey
+    ];
+    let (w, h) = (100u16, 60u16);
+    let mut st = 0xB16u32;
+    let mut rgb = Vec::new();
+    for _ in 0..(w as usize * h as usize) {
+        rgb.extend_from_slice(&pal[(xorshift32(&mut st) % 4) as usize]);
+    }
+    let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+    assert!(
+        matches!(
+            mode,
+            PcxAutoMode::Cga2x1 {
+                palette_selector: 0x40,
+                background_index: 1,
+            } | PcxAutoMode::Cga1x2 {
+                palette_selector: 0x40,
+                background_index: 1,
+            }
+        ),
+        "unexpected mode {mode:?}"
+    );
+    assert_lossless(&bytes, w, h, &rgb);
+}
+
+#[test]
+fn non_cga_four_color_set_skips_the_cga_rungs() {
+    // Four colours, one of which no CGA palette + background can
+    // produce: the CGA rungs must not fire (the ladder never
+    // quantises) and a four-bit header-palette form wins instead.
+    let pal: [[u8; 3]; 4] = [
+        [0x00, 0x00, 0x00],
+        [0x55, 0xFF, 0xFF],
+        [0xFF, 0x55, 0xFF],
+        [0x12, 0x34, 0x56], // representable nowhere in CGA space
+    ];
+    let (w, h) = (100u16, 60u16);
+    let mut st = 0x4C01u32;
+    let mut rgb = Vec::new();
+    for _ in 0..(w as usize * h as usize) {
+        rgb.extend_from_slice(&pal[(xorshift32(&mut st) % 4) as usize]);
+    }
+    let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+    assert!(
+        matches!(
+            mode,
+            PcxAutoMode::Indexed4 { colors: 4 } | PcxAutoMode::Indexed1x4 { colors: 4 }
+        ),
+        "unexpected mode {mode:?}"
+    );
+    assert_lossless(&bytes, w, h, &rgb);
+}
+
+#[test]
+fn five_colors_disqualify_cga() {
+    // CGA palettes hold exactly 4 entries; a fifth colour bars the
+    // rung even when the first four match a hardware palette.
+    let pal: [[u8; 3]; 5] = [
+        [0x00, 0x00, 0x00],
+        [0x55, 0xFF, 0xFF],
+        [0xFF, 0x55, 0xFF],
+        [0xFF, 0xFF, 0xFF],
+        [0x00, 0xAA, 0x00],
+    ];
+    let (w, h) = (100u16, 60u16);
+    let mut st = 0x5C01u32;
+    let mut rgb = Vec::new();
+    for _ in 0..(w as usize * h as usize) {
+        rgb.extend_from_slice(&pal[(xorshift32(&mut st) % 5) as usize]);
+    }
+    let (_bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+    assert!(
+        !matches!(
+            mode,
+            PcxAutoMode::Cga2x1 { .. } | PcxAutoMode::Cga1x2 { .. }
+        ),
+        "5 colours must not fit a CGA palette, got {mode:?}"
+    );
+}
+
+#[test]
+fn cga_beats_the_four_bit_rungs_at_scale() {
+    // Same content, direct-writer comparison: the chosen CGA file must
+    // be smaller than the 4 bpp packed candidate built from the same
+    // first-seen indices (2 bits/pixel vs 4).
+    use oxideav_pcx::encode_pcx_4bpp_packed;
+    let pal: [[u8; 3]; 4] = [
+        [0x00, 0x00, 0x00],
+        [0x55, 0xFF, 0xFF],
+        [0xFF, 0x55, 0xFF],
+        [0xFF, 0xFF, 0xFF],
+    ];
+    let (w, h) = (160u16, 100u16);
+    let mut st = 0xCA5Cu32;
+    let mut rgb = Vec::new();
+    let mut indices = Vec::new();
+    for _ in 0..(w as usize * h as usize) {
+        let i = (xorshift32(&mut st) % 4) as u8;
+        indices.push(i);
+        rgb.extend_from_slice(&pal[i as usize]);
+    }
+    let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+    assert!(matches!(
+        mode,
+        PcxAutoMode::Cga2x1 { .. } | PcxAutoMode::Cga1x2 { .. }
+    ));
+    let mut pal48 = [0u8; 48];
+    for (i, c) in pal.iter().enumerate() {
+        pal48[i * 3..i * 3 + 3].copy_from_slice(c);
+    }
+    let packed4 = encode_pcx_4bpp_packed(w, h, &indices, &pal48).unwrap();
+    assert!(
+        bytes.len() < packed4.len(),
+        "CGA ({}) must beat 4 bpp ({}) at 160×100",
+        bytes.len(),
+        packed4.len()
+    );
+    assert_lossless(&bytes, w, h, &rgb);
+}
+
+#[test]
+fn image_auto_threads_dpi_through_cga() {
+    let pal: [[u8; 3]; 4] = [
+        [0x00, 0x00, 0x00],
+        [0x55, 0xFF, 0xFF],
+        [0xFF, 0x55, 0xFF],
+        [0xFF, 0xFF, 0xFF],
+    ];
+    let (w, h) = (80u16, 50u16);
+    let mut st = 0xD9Au32;
+    let mut rgb = Vec::new();
+    for _ in 0..(w as usize * h as usize) {
+        rgb.extend_from_slice(&pal[(xorshift32(&mut st) % 4) as usize]);
+    }
+    let image = PcxImage {
+        width: w as u32,
+        height: h as u32,
+        pixel_format: PcxPixelFormat::Rgb24,
+        data: rgb.clone(),
+        pts: None,
+        dpi: Some((96, 96)),
+        window_origin: None,
+        screen_size: None,
+    };
+    let (bytes, mode) = encode_pcx_image_auto(&image).unwrap();
+    assert!(matches!(
+        mode,
+        PcxAutoMode::Cga2x1 { .. } | PcxAutoMode::Cga1x2 { .. }
+    ));
+    let decoded = parse_pcx(&bytes).unwrap();
+    assert_eq!(decoded.dpi, Some((96, 96)));
+    assert_lossless(&bytes, w, h, &rgb);
+}
+
+// ---------------------------------------------------------------------------
 // Ladder-wide invariants (extended as candidates land)
 // ---------------------------------------------------------------------------
 

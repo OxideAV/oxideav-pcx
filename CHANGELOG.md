@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- *(encode)* **Auto ladder: `Cga2x1` + `Cga1x2` fixed-palette CGA
+  candidates.** When the image has `≤ 4` distinct colours, the ladder
+  searches the entire CGA header encoding space — 4 palette-family ×
+  intensity selectors (header byte 19 bits 7/6, spec §"CGA Color Map")
+  × 16 background colours (header byte 16 high nibble, resolved
+  through the standard EGA table) = 64 fixed palettes — for one that
+  covers the colour set *exactly*. On a match both two-bit geometries
+  are tried (2 bpp × 1 plane packed and the plane-oriented 1 bpp × 2
+  planes) and the byte count decides; no match (or a 5th colour) skips
+  the rungs entirely — the ladder never quantises. Candidate palettes
+  are resolved through the decoder's own header resolver so encode-side
+  matching and decode-side reconstruction cannot drift. `PcxAutoMode`
+  gains `Cga2x1` / `Cga1x2` (each recording the chosen
+  `palette_selector` / `background_index`); both thread authoring DPI
+  through `encode_pcx_image_auto`.
+
 - *(encode)* **Auto ladder: `Indexed4` + `Indexed1x4` 16-colour
   header-palette candidates.** When the image has `≤ 16` distinct
   colours the ladder now tries both four-bit geometries: 4 bpp × 1
