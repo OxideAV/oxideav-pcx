@@ -108,17 +108,39 @@ probes count the planar-buffer bytes produced.
 | `encode_rgb_auto_truecolor_640x480`   | (scan-bound) | —         |
 | `encode_dcx_4_pages_320x240`          | 11 µs     | 60.6 GiB/s   |
 
-> The two `encode_rgb_auto_*` rows measure `encode_pcx_rgb_auto`, whose
-> cost is dominated by the per-pixel distinct-colour scan (a linear probe
-> over a ≤256-entry first-seen palette), not the RLE encode the other
-> rows isolate. The *lowcolor* case saturates the palette and runs the
-> scan over every pixel plus both candidate encodes + the size compare;
-> the *truecolor* case bails out of the scan as soon as a 257th colour
-> appears and then does a single planar encode, so its cost is the
-> early-exit scan plus one `encode_24bpp`. These rows exist to track the
-> scan's cost as a regression guard, not as a throughput headline — a
-> caller that already knows its colour count should call the specific
-> writer directly.
+> The `encode_rgb_auto_*` rows measure `encode_pcx_rgb_auto`, whose
+> cost is the per-pixel distinct-colour scan plus one encode per
+> applicable ladder candidate (r401 grew the ladder from 2 to up to 9
+> rungs). These rows exist to track that combined cost as a regression
+> guard, not as a throughput headline — a caller that already knows its
+> colour count should call the specific writer directly.
+
+## Round 401 — auto-ladder benches + colour-scan HashMap optimisation
+
+r401 replaced the colour scan's linear `position()` probe (O(colours ×
+pixels): a 176-level grayscale 640×480 scan was ~54M byte-triple
+compares) with a `HashMap` keyed on the packed 24-bit colour plus a
+one-entry last-colour cache; first-seen palette order — and therefore
+every output byte — is unchanged. Two new bench groups cover the r401
+rungs (`auto_bilevel` = the 9-candidate worst case picking Mono1;
+`auto_grayscale` = the Gray8 rung over 176 grey levels). Numbers on the
+same machine as the r311 baseline:
+
+| Scenario                              | before    | after     | Δ time  |
+| ------------------------------------- | --------- | --------- | ------- |
+| `encode_rgb_auto_lowcolor_640x480`    | 7.37 ms   | 5.82 ms   | −21%    |
+| `encode_rgb_auto_grayscale_640x480`   | 12.16 ms  | 2.95 ms   | −76%    |
+| `encode_rgb_auto_bilevel_640x480`     | 3.46 ms   | 3.72 ms   | +7.5%   |
+| `encode_rgb_auto_truecolor_640x480`   | 1.22 ms   | 1.25 ms   | neutral |
+
+The *before* column is the same commit's ladder with the r376 linear
+probe (measured immediately prior on the same machine); *lowcolor* /
+*grayscale* / *bilevel* all pay for the full candidate set the r401
+ladder tries, so they are not comparable to the two-candidate ~6.0 ms
+r376 row above. The bilevel regression is the hash + cache overhead on
+a 2-entry palette where the linear probe was already one compare; it is
+accepted as the price of the 4× grayscale win (a ≤8-colour fast path
+could recover it if bilevel batch encoding ever matters).
 
 ### Roundtrip (encode → decode)
 

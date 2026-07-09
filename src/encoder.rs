@@ -1691,25 +1691,51 @@ pub fn encode_pcx_image_auto(image: &PcxImage) -> Result<(Vec<u8>, PcxAutoMode)>
 /// [`encode_pcx_rgb_auto`] and the DPI-bearing indexed branch of
 /// [`encode_pcx_image_auto`] so the first-seen palette assignment is
 /// defined in exactly one place.
+///
+/// Lookup structure (r401): colour → index resolution goes through a
+/// `HashMap` keyed on the packed 24-bit colour instead of a linear
+/// `position()` probe of the palette vector. The linear probe made the
+/// scan `O(colours × pixels)` — the profiled hot spot of the whole
+/// auto ladder once the palette grows past a handful of entries (a
+/// 176-level grayscale 640×480 scan was ~54M byte-triple compares).
+/// First-seen assignment order is unchanged: the palette vector is
+/// still pushed in raster-scan discovery order and the map is only an
+/// index accelerator, so output bytes are identical.
 fn build_indexed_payload(width: u16, height: u16, rgb: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    use std::collections::HashMap;
     let n_pixels = width as usize * height as usize;
     if rgb.len() < n_pixels * 3 {
         return None;
     }
     let mut palette_rgb: Vec<[u8; 3]> = Vec::with_capacity(256);
+    let mut seen: HashMap<u32, u8> = HashMap::with_capacity(257);
     let mut indices: Vec<u8> = Vec::with_capacity(n_pixels);
+    // Consecutive pixels are frequently equal (runs are what PCX RLE
+    // exists for), so a one-entry last-colour cache short-circuits the
+    // hash for the common case.
+    let mut last: Option<(u32, u8)> = None;
     for p in rgb[..n_pixels * 3].chunks_exact(3) {
-        let key = [p[0], p[1], p[2]];
-        match palette_rgb.iter().position(|c| *c == key) {
-            Some(i) => indices.push(i as u8),
+        let key = u32::from(p[0]) << 16 | u32::from(p[1]) << 8 | u32::from(p[2]);
+        if let Some((lk, li)) = last {
+            if lk == key {
+                indices.push(li);
+                continue;
+            }
+        }
+        let idx = match seen.get(&key) {
+            Some(&i) => i,
             None => {
                 if palette_rgb.len() == 256 {
                     return None;
                 }
-                palette_rgb.push(key);
-                indices.push((palette_rgb.len() - 1) as u8);
+                let i = palette_rgb.len() as u8;
+                palette_rgb.push([p[0], p[1], p[2]]);
+                seen.insert(key, i);
+                i
             }
-        }
+        };
+        indices.push(idx);
+        last = Some((key, idx));
     }
     let mut palette = vec![0u8; PCX_VGA_PALETTE_BYTES];
     for (i, c) in palette_rgb.iter().enumerate() {

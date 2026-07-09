@@ -381,6 +381,47 @@ fn bench_encode_rgb_auto_truecolor_640x480(c: &mut Criterion) {
     g.finish();
 }
 
+fn bench_encode_rgb_auto_bilevel_640x480(c: &mut Criterion) {
+    // Black/white 640×480 text-like content → the r401 ladder's worst
+    // case for candidate count: mono, both CGA forms, EGA-RGB, both
+    // 4-bit forms, grayscale, indexed and planar ALL apply (nine
+    // encodes + the scan) before the byte count picks Mono1. Times the
+    // full-ladder overhead a caller pays for the smallest-file
+    // guarantee on bilevel input.
+    let mut rgb = Vec::with_capacity(640 * 480 * 3);
+    for i in 0..640usize * 480 {
+        let v = if (i / 3 + i / 640) % 2 == 0 {
+            0x00
+        } else {
+            0xFF
+        };
+        rgb.extend_from_slice(&[v, v, v]);
+    }
+    let mut g = c.benchmark_group("encode_rgb_auto_bilevel_640x480");
+    g.throughput(Throughput::Bytes((640 * 480 * 3) as u64));
+    g.bench_function(BenchmarkId::from_parameter("auto-mono/640x480"), |b| {
+        b.iter(|| encode_pcx_rgb_auto(640, 480, criterion::black_box(&rgb)).expect("auto"));
+    });
+    g.finish();
+}
+
+fn bench_encode_rgb_auto_grayscale_640x480(c: &mut Criterion) {
+    // Pure-grey gradient (176 levels, all below the RLE escape
+    // threshold) → Gray8 wins over Indexed8 by the 769-byte tail. Times
+    // the scan + Gray8 + Indexed8 + planar candidate set.
+    let mut rgb = Vec::with_capacity(640 * 480 * 3);
+    for i in 0..640usize * 480 {
+        let g8 = ((i * 3) % 0xB0) as u8;
+        rgb.extend_from_slice(&[g8, g8, g8]);
+    }
+    let mut g = c.benchmark_group("encode_rgb_auto_grayscale_640x480");
+    g.throughput(Throughput::Bytes((640 * 480 * 3) as u64));
+    g.bench_function(BenchmarkId::from_parameter("auto-gray/640x480"), |b| {
+        b.iter(|| encode_pcx_rgb_auto(640, 480, criterion::black_box(&rgb)).expect("auto"));
+    });
+    g.finish();
+}
+
 criterion_group!(
     benches,
     bench_encode_24bpp_1920x1080,
@@ -394,6 +435,8 @@ criterion_group!(
     bench_encode_1bpp_4planes_ega_320x240,
     bench_encode_rgb_auto_lowcolor_640x480,
     bench_encode_rgb_auto_truecolor_640x480,
+    bench_encode_rgb_auto_bilevel_640x480,
+    bench_encode_rgb_auto_grayscale_640x480,
     bench_encode_dcx_4_pages_320x240,
 );
 criterion_main!(benches);
