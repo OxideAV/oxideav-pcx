@@ -227,9 +227,10 @@ fn all_black_solid_is_mono1() {
 #[test]
 fn off_black_disqualifies_mono1() {
     // (1, 1, 1) is a grey but not pure black: Mono1 must not fire (it
-    // would quantise); Gray8 still applies. Both grey levels are kept
-    // below 0xC0 so RLE escape costs don't hand the byte count to the
-    // indexed candidate instead (that economics case has its own test).
+    // would quantise). With only two distinct greys the 4 bpp
+    // header-palette rung wins the byte count over Gray8 — what matters
+    // here is that no bilevel shortcut fires and the round-trip stays
+    // exact.
     let (w, h) = (64u16, 64u16);
     let mut rgb = Vec::new();
     for i in 0..(w as usize * h as usize) {
@@ -237,7 +238,8 @@ fn off_black_disqualifies_mono1() {
         rgb.extend_from_slice(&[v, v, v]);
     }
     let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
-    assert_eq!(mode, PcxAutoMode::Gray8);
+    assert_ne!(mode, PcxAutoMode::Mono1);
+    assert_eq!(mode, PcxAutoMode::Indexed4 { colors: 2 });
     assert_lossless(&bytes, w, h, &rgb);
 }
 
@@ -340,17 +342,27 @@ fn bilevel_prefers_mono1_over_ega_rgb() {
 
 #[test]
 fn image_auto_threads_dpi_through_ega_rgb_1x3() {
-    let (w, h) = (50u16, 30u16);
-    let prim: [[u8; 3]; 4] = [
+    // All eight primaries so every EGA index bit-plane is busy: a
+    // sparser primary set would leave the 16-colour planar rung's top
+    // bit-planes all-zero and hand it the byte count instead. Geometry
+    // matches eight_primary_image_picks_ega_rgb_1x3 (wide rows) — on a
+    // narrow row the noisy 1-bit planes' RLE escape overhead can tip
+    // the byte count to the escape-free packed-nibble rung instead.
+    let (w, h) = (96u16, 30u16);
+    let prim: [[u8; 3]; 8] = [
+        [0x00, 0x00, 0x00],
         [0xFF, 0x00, 0x00],
         [0x00, 0xFF, 0x00],
         [0x00, 0x00, 0xFF],
         [0xFF, 0xFF, 0x00],
+        [0x00, 0xFF, 0xFF],
+        [0xFF, 0x00, 0xFF],
+        [0xFF, 0xFF, 0xFF],
     ];
     let mut st = 0xACEu32;
     let mut rgb = Vec::new();
     for _ in 0..(w as usize * h as usize) {
-        rgb.extend_from_slice(&prim[(xorshift32(&mut st) % 4) as usize]);
+        rgb.extend_from_slice(&prim[(xorshift32(&mut st) % 8) as usize]);
     }
     let image = PcxImage {
         width: w as u32,
@@ -367,6 +379,153 @@ fn image_auto_threads_dpi_through_ega_rgb_1x3() {
     let decoded = parse_pcx(&bytes).unwrap();
     assert_eq!(decoded.dpi, Some((150, 150)));
     assert_lossless(&bytes, w, h, &rgb);
+}
+
+// ---------------------------------------------------------------------------
+// Indexed4 / Indexed1x4 candidates (≤ 16 colours, header palette)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sixteen_color_image_picks_a_header_palette_form() {
+    // Exactly 16 distinct non-grey, non-primary colours: both 4-bit
+    // rungs apply, no 8 bpp form can beat half-a-byte-per-pixel plus a
+    // free (in-header) palette on a canvas this size. Random noise has
+    // no bit-plane periodicity for the planar form to exploit, so the
+    // packed-nibble form wins.
+    let (w, h) = (100u16, 80u16);
+    let mut pal: Vec<[u8; 3]> = Vec::new();
+    for i in 0..16u8 {
+        pal.push([13 + i * 11, 29 + i * 7, 47 + i * 5]);
+    }
+    let mut st = 0x16C0_10E5u32;
+    let mut rgb = Vec::new();
+    for _ in 0..(w as usize * h as usize) {
+        rgb.extend_from_slice(&pal[(xorshift32(&mut st) % 16) as usize]);
+    }
+    let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+    assert_eq!(mode, PcxAutoMode::Indexed4 { colors: 16 });
+    assert_lossless(&bytes, w, h, &rgb);
+    assert_eq!(bytes[3], 4, "4 bpp");
+    assert_eq!(bytes[65], 1, "1 plane");
+    // The exact palette rides in the 48-byte header Colormap, in
+    // first-seen raster order — compare as a set.
+    let mut header_pal: Vec<[u8; 3]> = (0..16)
+        .map(|i| [bytes[16 + i * 3], bytes[17 + i * 3], bytes[18 + i * 3]])
+        .collect();
+    let mut want: Vec<[u8; 3]> = pal.clone();
+    header_pal.sort_unstable();
+    want.sort_unstable();
+    assert_eq!(header_pal, want);
+}
+
+#[test]
+fn seventeen_colors_disqualify_the_header_palette_forms() {
+    // One colour over the header palette's capacity: the 4-bit rungs
+    // must not fire and the ladder falls back to Indexed8.
+    let (w, h) = (100u16, 80u16);
+    let mut pal = Vec::new();
+    for i in 0..17u8 {
+        pal.push([13 + i * 11, 29 + i * 7, 47 + i * 5]);
+    }
+    let mut st = 0x17C0_10E5u32;
+    let mut rgb = Vec::new();
+    for _ in 0..(w as usize * h as usize) {
+        rgb.extend_from_slice(&pal[(xorshift32(&mut st) % 17) as usize]);
+    }
+    let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+    assert_eq!(mode, PcxAutoMode::Indexed8 { colors: 17 });
+    assert_lossless(&bytes, w, h, &rgb);
+}
+
+#[test]
+fn bit_plane_periodic_content_picks_the_planar_form() {
+    // Vertical stripes with period 4 make every bit-plane row a repeat
+    // of a single byte — the plane-oriented form RLE-collapses to a few
+    // packets per row while the packed-nibble form alternates bytes and
+    // cannot. The ladder must notice and pick Indexed1x4.
+    let (w, h) = (64u16, 64u16);
+    let pal: [[u8; 3]; 3] = [[10, 20, 30], [200, 30, 30], [30, 200, 30]];
+    let mut rgb = Vec::new();
+    for _y in 0..h as usize {
+        for x in 0..w as usize {
+            let idx = [0usize, 1, 0, 2][x % 4];
+            rgb.extend_from_slice(&pal[idx]);
+        }
+    }
+    let (bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+    assert_eq!(mode, PcxAutoMode::Indexed1x4 { colors: 3 });
+    assert_lossless(&bytes, w, h, &rgb);
+    assert_eq!(bytes[3], 1, "1 bpp");
+    assert_eq!(bytes[65], 4, "4 planes");
+}
+
+#[test]
+fn all_black_palette48_survives_the_hardware_substitution_corner() {
+    // Single distinct colour = pure black → the written 48-byte header
+    // palette is all zeros, which the 16-colour decode paths replace
+    // with the standard EGA hardware palette (spec table §3.1). Entry 0
+    // of that palette is also pure black, so the round-trip must stay
+    // exact. (Mono1 wins the ladder for all-black content, so pin the
+    // corner through the direct writers instead.)
+    use oxideav_pcx::{encode_pcx_1bpp_4planes_ega, encode_pcx_4bpp_packed};
+    let (w, h) = (16u16, 16u16);
+    let rgb = vec![0u8; w as usize * h as usize * 3];
+    let indices = vec![0u8; w as usize * h as usize];
+    let pal48 = [0u8; 48];
+    for bytes in [
+        encode_pcx_4bpp_packed(w, h, &indices, &pal48).unwrap(),
+        encode_pcx_1bpp_4planes_ega(w, h, &indices, &pal48).unwrap(),
+    ] {
+        assert_lossless(&bytes, w, h, &rgb);
+    }
+    // And the ladder itself still round-trips all-black exactly
+    // (whatever rung wins).
+    let (bytes, _mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();
+    assert_lossless(&bytes, w, h, &rgb);
+}
+
+#[test]
+fn image_auto_threads_dpi_through_indexed4_and_indexed1x4() {
+    // 16-colour noise (every index bit-plane busy) → Indexed4; striped
+    // low-colour input → Indexed1x4. Both must carry the authoring DPI
+    // through the re-emit.
+    let (w, h) = (60u16, 40u16);
+    let mut pal16: Vec<[u8; 3]> = Vec::new();
+    for i in 0..16u8 {
+        pal16.push([17 + i * 9, 33 + i * 6, 51 + i * 4]);
+    }
+    let stripe_pal: [[u8; 3]; 3] = [[10, 20, 30], [200, 30, 30], [30, 200, 30]];
+    let mut st = 0xD1D1u32;
+    let mut noise = Vec::new();
+    let mut stripes = Vec::new();
+    for i in 0..(w as usize * h as usize) {
+        noise.extend_from_slice(&pal16[(xorshift32(&mut st) % 16) as usize]);
+        stripes.extend_from_slice(&stripe_pal[[0usize, 1, 0, 2][i % 4]]);
+    }
+    for (data, want_planes) in [(noise, 1u8), (stripes, 4u8)] {
+        let image = PcxImage {
+            width: w as u32,
+            height: h as u32,
+            pixel_format: PcxPixelFormat::Rgb24,
+            data: data.clone(),
+            pts: None,
+            dpi: Some((300, 600)),
+            window_origin: None,
+            screen_size: None,
+        };
+        let (bytes, mode) = encode_pcx_image_auto(&image).unwrap();
+        assert!(
+            matches!(
+                mode,
+                PcxAutoMode::Indexed4 { .. } | PcxAutoMode::Indexed1x4 { .. }
+            ),
+            "unexpected mode {mode:?}"
+        );
+        assert_eq!(bytes[65], want_planes, "plane geometry");
+        let decoded = parse_pcx(&bytes).unwrap();
+        assert_eq!(decoded.dpi, Some((300, 600)));
+        assert_lossless(&bytes, w, h, &data);
+    }
 }
 
 // ---------------------------------------------------------------------------

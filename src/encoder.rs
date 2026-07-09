@@ -384,6 +384,18 @@ pub enum PcxAutoMode {
     /// example — one bit-plane per primary, plane order R, G, B). No
     /// palette is stored anywhere; three bits per pixel on disk.
     EgaRgb1x3,
+    /// `≤ 16` distinct colours: 4 bpp × 1 plane packed nibbles with the
+    /// exact palette carried in the 48-byte header `Colormap` field
+    /// (spec §3) — four bits per pixel and **no** VGA tail. The `usize`
+    /// is the number of distinct colours found (`1..=16`).
+    Indexed4 { colors: usize },
+    /// `≤ 16` distinct colours in the plane-oriented sibling geometry:
+    /// 1 bpp × 4 planes (spec table §3.1 bit-plane layout, plane `k`
+    /// carries index bit `k`), same 48-byte header palette, same four
+    /// bits per pixel — but RLE sees each bit-plane as its own byte
+    /// run, which can compress differently from packed nibbles. The
+    /// `usize` is the number of distinct colours found (`1..=16`).
+    Indexed1x4 { colors: usize },
 }
 
 /// Encode `width × height` packed RGB bytes (3 bytes per pixel,
@@ -407,6 +419,13 @@ pub enum PcxAutoMode {
 ///   * **EgaRgb1x3** — every channel of every colour is `0x00` or
 ///     `0xFF` (the eight EGA RGB primaries): 1 bpp × 3 planes (spec §4
 ///     bit-plane example), three bits per pixel, no stored palette.
+///   * **Indexed4** — `≤ 16` distinct colours: 4 bpp × 1 plane packed
+///     nibbles with the exact palette in the 48-byte header `Colormap`
+///     (spec §3), no VGA tail.
+///   * **Indexed1x4** — the same `≤ 16`-colour precondition in the
+///     plane-oriented 1 bpp × 4 plane geometry (spec table §3.1);
+///     identical bits per pixel but different RLE behaviour, so both
+///     forms are tried and the byte count decides.
 ///   * **Gray8** — every distinct colour is a pure grey (`r == g ==
 ///     b`): 8 bpp × 1 plane with `palette_info = 2` (spec §3), no VGA
 ///     tail. The pixel byte is the grey level, so this drops the fixed
@@ -475,6 +494,16 @@ pub fn encode_pcx_rgb_auto(width: u16, height: u16, rgb: &[u8]) -> Result<(Vec<u
         candidates.push((
             encode_pcx_1bpp_3planes_ega_rgb(width, height, rgb)?,
             PcxAutoMode::EgaRgb1x3,
+        ));
+    }
+    if let Some(pal48) = auto_palette48(&palette, colors) {
+        candidates.push((
+            encode_pcx_4bpp_packed(width, height, &indices, &pal48)?,
+            PcxAutoMode::Indexed4 { colors },
+        ));
+        candidates.push((
+            encode_pcx_1bpp_4planes_ega(width, height, &indices, &pal48)?,
+            PcxAutoMode::Indexed1x4 { colors },
         ));
     }
     if let Some(gray) = auto_gray_pixels(&indices, &palette, colors) {
@@ -560,6 +589,28 @@ fn auto_is_ega_primaries(palette: &[u8], colors: usize) -> bool {
     palette[..colors * 3]
         .iter()
         .all(|&c| c == 0x00 || c == 0xFF)
+}
+
+/// Build the 48-byte header palette (16 RGB triplets, spec §3
+/// `Colormap`) for the [`PcxAutoMode::Indexed4`] /
+/// [`PcxAutoMode::Indexed1x4`] candidates, or `None` when the image has
+/// more than 16 distinct colours.
+///
+/// The first `colors` triplets are copied verbatim from the first-seen
+/// scan; the rest stay zero (the index buffer never references them).
+/// Exactness note for the decode side: the 16-colour paths substitute
+/// the standard EGA hardware palette (spec table §3.1) only when the
+/// header field is **all zeros**, which here can only happen when the
+/// single distinct colour is pure black — and the hardware palette's
+/// entry 0 *is* pure black, so index 0 still decodes to the source
+/// colour and the round-trip stays exact in that corner too.
+fn auto_palette48(palette: &[u8], colors: usize) -> Option<[u8; 48]> {
+    if colors > 16 {
+        return None;
+    }
+    let mut out = [0u8; 48];
+    out[..colors * 3].copy_from_slice(&palette[..colors * 3]);
+    Some(out)
 }
 
 /// Encode `width × height` packed RGB bytes (3 bytes per pixel,
@@ -1443,6 +1494,16 @@ pub fn encode_pcx_image_auto(image: &PcxImage) -> Result<(Vec<u8>, PcxAutoMode)>
                 encode_pcx_1bpp_mono_dpi(w, h, &mono, dpi)?
             }
             PcxAutoMode::EgaRgb1x3 => encode_pcx_1bpp_3planes_ega_rgb_dpi(w, h, &rgb, dpi)?,
+            PcxAutoMode::Indexed4 { .. } => {
+                let pal48 = auto_palette48(&palette, colors)
+                    .expect("auto already proved ≤16 colours for this input");
+                encode_pcx_4bpp_packed_dpi(w, h, &indices, &pal48, dpi)?
+            }
+            PcxAutoMode::Indexed1x4 { .. } => {
+                let pal48 = auto_palette48(&palette, colors)
+                    .expect("auto already proved ≤16 colours for this input");
+                encode_pcx_1bpp_4planes_ega_dpi(w, h, &indices, &pal48, dpi)?
+            }
         }
     };
     Ok((bytes, mode))

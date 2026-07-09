@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- *(encode)* **Auto ladder: `Indexed4` + `Indexed1x4` 16-colour
+  header-palette candidates.** When the image has `≤ 16` distinct
+  colours the ladder now tries both four-bit geometries: 4 bpp × 1
+  plane packed nibbles and the plane-oriented 1 bpp × 4 planes (spec
+  table §3.1), each carrying the exact first-seen palette in the
+  48-byte header `Colormap` field (spec §3) — half a byte per pixel and
+  no 769-byte VGA tail. The two forms hold identical bits but RLE sees
+  them differently: packed nibbles win on noise (no bit-plane
+  periodicity, and index bytes stay below the `0xC0` escape threshold),
+  while striped/periodic content collapses whole bit-plane rows into
+  single RLE packets and hands the win to the planar form — the ladder
+  encodes both and lets the byte count decide. The all-zero-palette
+  corner (single pure-black colour) stays exact because the decoder's
+  hardware-EGA substitution maps index 0 to black too. `PcxAutoMode`
+  gains `Indexed4 { colors }` / `Indexed1x4 { colors }`; both thread
+  authoring DPI through `encode_pcx_image_auto`.
+
 - *(encode)* **Auto ladder: `Mono1` + `EgaRgb1x3` candidates.** When
   every distinct colour is pure black / pure white, the ladder now
   derives the 1 bpp × 1 plane monochrome form (spec §4.1, bit 1 =
