@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- *(tests)* **1 bpp monochrome bit polarity conformance-verified
+  against the reference doc's new errata (Issue #227) and pinned at
+  the raw-byte level** (`tests/round405_mono_polarity.rs`). The
+  errata resolves the polarity the ZSoft manual never states: the bit
+  value is used directly as the colormap index, with `colormap[0]` =
+  black / `colormap[1]` = white as the standard monochrome
+  convention — bit 1 = white. The crate's decoder (colormap-indexed
+  resolution with the classic bit 1 = white fallback for zero-filled
+  colormaps), the `encode_pcx_1bpp_mono` writer, the `Mono1`
+  auto-ladder rung (including the first-seen-palette-order trap and
+  the non-black bilevel fall-through to CGA), and the framework
+  `MonoBlack` / `MonoWhite` rungs were all verified conformant — no
+  inversion found, no behaviour change. A new black-box
+  cross-validation test confirms the writer's MSB-first bit geometry
+  modulo one global polarity complement and documents that a
+  mainstream reader hard-codes the opposite (non-conformant) polarity
+  and ignores the mono colormap (see the README interop caveat).
+
 ### Fixed
 
 - *(decode/encode)* **CGA palette bytes were read/written 16 positions

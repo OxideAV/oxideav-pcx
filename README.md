@@ -123,7 +123,12 @@ Standalone helpers:
   matrix treats mono as the 2-colour paletted case), and the decoder
   resolves bits through a *non-zero* colormap's first two triples —
   so a foreign white-on-blue mono file decodes faithfully while
-  zero-filled colormaps keep the classic convention.
+  zero-filled colormaps keep the classic convention. The reference
+  doc's errata (Issue #227) has since pinned exactly this reading:
+  the bit value is the colormap index, with `colormap[0]` = black /
+  `colormap[1]` = white as the standard monochrome convention —
+  bit 1 = white. r405 pins both directions at the raw-byte level
+  (`tests/round405_mono_polarity.rs`).
 * `encode_pcx_1bpp_3planes_ega_rgb(w, h, &rgb)` — 8-colour EGA RGB
   at 1 bpp × 3 planes. Each input channel byte is thresholded at
   0x80 to set its plane bit; the round-trip is exact when the
@@ -897,3 +902,15 @@ on both decode and encode.
   grayscale flag). Callers targeting such readers can emit the ramp
   through `encode_pcx_8bpp_indexed` — the Indexed8 rung is exactly
   that file, 769 bytes larger.
+* Interop caveat, not a capability gap: on 1 bpp × 1 plane files at
+  least one mainstream reader hard-codes the opposite bit polarity
+  (bit 1 = black) and ignores the two-entry colormap entirely, in
+  both its reader and its writer. The reference doc's errata
+  (Issue #227) pins the conformant reading this crate implements —
+  bit = colormap index, bit 1 = white — so such a reader shows our
+  mono files inverted and vice versa (measured black-box; the bit
+  *geometry* round-trips exactly, only the global polarity differs —
+  see `magick_confirms_mono_bit_geometry_modulo_polarity` in
+  `tests/cross_validate.rs`). Callers targeting such readers can
+  route bilevel content through the Indexed4 / Indexed8 palette
+  forms, which those readers resolve through the palette as written.

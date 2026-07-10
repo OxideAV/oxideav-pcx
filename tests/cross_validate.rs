@@ -383,7 +383,11 @@ fn magick_to_raw_rgb(name: &str, pcx_bytes: &[u8], w: u16, h: u16) -> Vec<u8> {
 ///   diverges from the spec by construction;
 /// * Mono1 — ImageMagick hard-codes the opposite 1-bpp polarity
 ///   (bit 1 = black) and ignores the two-entry colormap our writer
-///   stores, on a point the manual never pins down explicitly;
+///   stores; since r405 the reference doc's errata (Issue #227) pins
+///   the conformant reading — bit = colormap index, bit 1 = white —
+///   so the divergence is on ImageMagick's side. The bit *geometry*
+///   is still cross-checked below in
+///   [`magick_confirms_mono_bit_geometry_modulo_polarity`];
 /// * Gray8 — ImageMagick unconditionally demands the appended VGA tail
 ///   on 8 bpp × 1 plane files and errors on the spec's
 ///   `palette_info = 2` tail-less form (the EGFF cross-reference notes
@@ -451,4 +455,62 @@ fn magick_re_decodes_every_unambiguous_ladder_geometry_exactly() {
     assert_eq!(mode, PcxAutoMode::Rgb24);
     let raw = magick_to_raw_rgb("rgb24", &bytes, w2, h2);
     assert_eq!(raw, rgb24, "rgb24: magick pixels differ from source");
+}
+
+// ---------------------------------------------------------------------------
+// r405 — mono bit geometry cross-validated modulo the known polarity split
+// ---------------------------------------------------------------------------
+
+/// Black-box confirmation of the 1 bpp writer's *bit geometry* —
+/// MSB-first packing, the mid-byte row cutoff, and the even
+/// `bytes_per_line` pad — while staying robust to the one point where
+/// ImageMagick and the reference doc's errata (Issue #227) disagree:
+/// the errata pins bit = colormap index (so bit 1 = white via the
+/// stored black/white colormap), whereas ImageMagick hard-codes
+/// bit 1 = black and ignores the colormap (measured on ImageMagick
+/// 7.1.2). If the two readings agree pixel-for-pixel up to ONE global
+/// complement, every bit landed in the right position; anything else
+/// (a shifted bit, a pad bit bleeding into the image, a per-row flip)
+/// fails both arms.
+#[test]
+fn magick_confirms_mono_bit_geometry_modulo_polarity() {
+    if !have_magick() {
+        eprintln!("skipping: ImageMagick not on PATH");
+        return;
+    }
+    // Width 13 forces a mid-byte row end AND an even-padding byte;
+    // the per-row phase shift makes every bit position load-bearing.
+    let (w, h) = (13u16, 5u16);
+    let n = w as usize * h as usize;
+    let pixels: Vec<u8> = (0..n)
+        .map(|i| {
+            let (x, y) = (i % w as usize, i / w as usize);
+            ((x * (y + 1) + y) % 3 == 0) as u8
+        })
+        .collect();
+    let bytes = encode_pcx_1bpp_mono(w, h, &pixels).unwrap();
+    let raw = magick_to_raw_rgb("mono-geometry", &bytes, w, h);
+    // Classify magick's readback as bilevel 0/1 per pixel.
+    let theirs: Vec<u8> = raw
+        .chunks_exact(3)
+        .map(|c| match c {
+            [0xFF, 0xFF, 0xFF] => 1u8,
+            [0x00, 0x00, 0x00] => 0u8,
+            other => panic!("non-bilevel readback pixel {other:?}"),
+        })
+        .collect();
+    let complement: Vec<u8> = pixels.iter().map(|&p| 1 - p).collect();
+    assert!(
+        theirs == pixels || theirs == complement,
+        "bit geometry mismatch: readback is neither the source nor its global complement"
+    );
+    // Pin today's measured behaviour so a future ImageMagick that
+    // starts honouring the colormap (flipping to the errata's
+    // conformant reading) is noticed here rather than silently
+    // changing what this test proves.
+    assert_eq!(
+        theirs, complement,
+        "ImageMagick now decodes 1 bpp in the errata polarity — update this canary \
+         and consider promoting Mono1 into the pixel-exact ladder test above"
+    );
 }
