@@ -26,6 +26,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   modulo one global polarity complement and documents that a
   mainstream reader hard-codes the opposite (non-conformant) polarity
   and ignores the mono colormap (see the README interop caveat).
+- *(fuzz)* **Four encode-fuzz surfaces upgraded from no-panic checks
+  to semantic round-trip oracles**: the mono writer now asserts the
+  errata polarity (non-zero input byte → white, zero → black) on
+  every fuzz-chosen geometry, the grayscale writer asserts
+  `g → (g, g, g)`, and both CGA writers (packed 2 bpp and
+  plane-oriented 1 bpp × 2) assert `index & 0x03` plus the background
+  nibble round-trip through their typed accessors. Five named
+  polarity seeds added (inverted two-entry colormap, zero colormap,
+  foreign odd-`bytes_per_line` shape with a redundant VGA tail,
+  bilevel and CGA-index encode payloads); both corpora re-minimised
+  after the run. ~2.4M encode + ~33M decode iterations with the new
+  oracles live: zero findings.
 
 ### Fixed
 

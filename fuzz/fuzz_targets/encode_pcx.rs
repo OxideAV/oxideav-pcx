@@ -71,8 +71,42 @@ fuzz_target!(|data: &[u8]| {
         let _ = parse_pcx(&bytes);
         let _ = parse_pcx_indexed_8bpp(&bytes);
     }
-    let _ = encode_pcx_8bpp_grayscale(width, height, payload);
-    let _ = encode_pcx_1bpp_mono(width, height, payload);
+    // Grayscale: `palette_info = 2` decodes each sample byte `g`
+    // straight to `(g, g, g)`, so the fuzz payload itself is the
+    // oracle. The decode may legitimately `Err` when the RLE stream
+    // happens to place the `0x0C` tail-palette marker byte exactly 769
+    // bytes from EOF (the (8, 1) tail probe then mis-claims real pixel
+    // data — see the probe-confinement note in `decoder.rs`), so only
+    // an `Ok` decode is held to the pixel oracle.
+    if let Ok(bytes) = encode_pcx_8bpp_grayscale(width, height, payload) {
+        if let Ok(img) = parse_pcx(&bytes) {
+            for (i, px) in img.data.chunks_exact(4).enumerate() {
+                let g = payload[i];
+                assert_eq!(
+                    &px[..3],
+                    &[g, g, g],
+                    "grayscale sample must decode as (g, g, g)"
+                );
+            }
+        }
+    }
+    // Mono: bit polarity is pinned by the reference doc's errata
+    // (Issue #227) — the bit value is the colormap index, and the
+    // writer stores black / white in entries 0 / 1, so a non-zero
+    // input byte (bit 1) must decode white and a zero byte black.
+    // Attacker-driven `(width, height)` sweeps the polarity oracle
+    // across every row-phase / padding geometry.
+    if let Ok(bytes) = encode_pcx_1bpp_mono(width, height, payload) {
+        let img = parse_pcx(&bytes).expect("mono writer output must decode");
+        for (i, px) in img.data.chunks_exact(4).enumerate() {
+            let want = if payload[i] != 0 { 0xFF } else { 0x00 };
+            assert_eq!(
+                &px[..3],
+                &[want, want, want],
+                "mono polarity: bit 1 = white / bit 0 = black"
+            );
+        }
+    }
 
     if let Ok(bytes) = encode_pcx_4bpp_packed(width, height, payload, &ega_default_48()) {
         let _ = parse_pcx(&bytes);
@@ -91,9 +125,34 @@ fuzz_target!(|data: &[u8]| {
     let background = payload.get(1).copied().unwrap_or(0) & 0x0F;
     if let Ok(bytes) = encode_pcx_2bpp_cga(width, height, payload, selector, background) {
         let _ = parse_pcx(&bytes);
-        let _ = parse_pcx_indexed_2bpp_cga(&bytes);
+        // Packed CGA stores the low two bits of each input byte at
+        // four pixels per byte — same index oracle as the
+        // plane-oriented layout below.
+        let cga = parse_pcx_indexed_2bpp_cga(&bytes).expect("CGA 2bpp writer output must decode");
+        assert_eq!(
+            cga.background_index, background,
+            "CGA background must round-trip"
+        );
+        for (i, &idx) in cga.indices.iter().enumerate() {
+            assert_eq!(idx, payload[i] & 0x03, "CGA 2bpp index must round-trip");
+        }
     }
-    let _ = encode_pcx_1bpp_2planes_cga(width, height, payload, selector, background);
+    // Plane-oriented CGA: the packer takes the low two bits of each
+    // input byte (bit 0 → plane 0, bit 1 → plane 1), so the typed
+    // accessor must hand back exactly `input & 0x03` per pixel plus
+    // the selector geometry it was given.
+    if let Ok(bytes) = encode_pcx_1bpp_2planes_cga(width, height, payload, selector, background) {
+        let _ = parse_pcx(&bytes);
+        let cga = oxideav_pcx::parse_pcx_indexed_1bpp_2planes_cga(&bytes)
+            .expect("CGA 1bpp×2 writer output must decode");
+        assert_eq!(
+            cga.background_index, background,
+            "CGA background must round-trip"
+        );
+        for (i, &idx) in cga.indices.iter().enumerate() {
+            assert_eq!(idx, payload[i] & 0x03, "CGA 1bpp×2 index must round-trip");
+        }
+    }
 
     // Three-bytes-per-pixel packed-RGB inputs.
     if let Ok(bytes) = encode_pcx_24bpp(width, height, payload) {
