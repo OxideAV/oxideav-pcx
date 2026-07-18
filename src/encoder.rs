@@ -20,7 +20,7 @@
 //!   16-entry palette in the header.
 //!
 //! The framework-side `Encoder` constructed via [`make_encoder`]
-//! accepts video frames in seven [`oxideav_core::PixelFormat`]
+//! accepts video frames in eight [`oxideav_core::PixelFormat`]
 //! variants: `Rgba` / `Rgb24` / `Bgr24` / `Bgra` route to
 //! [`encode_pcx_24bpp`] (`Bgr*` per-pixel byte-swapped to RGB,
 //! alpha dropped from `Rgba` / `Bgra`); `Gray8` routes to
@@ -28,7 +28,12 @@
 //! 2`, no VGA tail palette per spec §3); `MonoBlack` / `MonoWhite`
 //! unpack the MSB-first 1-bit stride into one byte per pixel and
 //! route to [`encode_pcx_1bpp_mono`] (with `MonoWhite` bit-inverted
-//! so the on-disk PCX retains the spec §4.1 bit-1 = white polarity).
+//! so the on-disk PCX retains the spec §4.1 bit-1 = white polarity);
+//! `Pal8` reads the caller's colour table off the `VideoFrame`
+//! palette side-channel (trailing stride-0 plane) and routes to
+//! [`encode_pcx_indexed_auto`], which stores that table verbatim in
+//! the smallest applicable geometry (16-entry header colormap at
+//! ≤ 16 entries, 768-byte VGA tail otherwise).
 //!
 //! The RLE encoder coalesces runs of identical bytes (≤ 63 each) and
 //! escapes any singleton byte ≥ `0xC0` into a length-1 packet so the
@@ -171,6 +176,27 @@ impl Encoder for PcxEncoder {
                     /*invert=*/ true,
                 )?;
                 encode_pcx_1bpp_mono(w16, h16, &pixels)?
+            }
+            // Palette-indexed input: one index byte per pixel with the
+            // colour table riding the `VideoFrame` palette side-channel
+            // (trailing stride-0 plane, packed 3-byte RGB entries). The
+            // caller's palette is stored verbatim in the smallest PCX
+            // geometry that can carry it — see `encode_pcx_indexed_auto`
+            // for the rung ladder (16-entry header colormap vs 768-byte
+            // VGA tail) and the round-trip contract.
+            PixelFormat::Pal8 => {
+                let pal = vf.palette().ok_or_else(|| {
+                    oxideav_core::Error::invalid(
+                        "PCX encoder: Pal8 frame carries no palette side-channel \
+                         (attach one via VideoFrame::set_palette)",
+                    )
+                })?;
+                let idx_plane = vf.image_planes().first().ok_or_else(|| {
+                    oxideav_core::Error::invalid("PCX encoder: Pal8 frame has no index plane")
+                })?;
+                let tight = tighten_packed(idx_plane, width as usize, height as usize, 1)?;
+                let (bytes, _mode) = encode_pcx_indexed_auto(w16, h16, &tight, pal)?;
+                bytes
             }
             other => {
                 return Err(oxideav_core::Error::invalid(format!(
@@ -572,6 +598,115 @@ pub fn encode_pcx_rgb_auto(width: u16, height: u16, rgb: &[u8]) -> Result<(Vec<u
         PcxAutoMode::Indexed8 { colors },
     ));
     candidates.push((encode_pcx_24bpp(width, height, rgb)?, PcxAutoMode::Rgb24));
+    Ok(pick_smallest_candidate(candidates))
+}
+
+/// Encode `width × height` palette indices (one byte per pixel,
+/// row-major, top-down) plus a **caller-supplied** packed-RGB palette
+/// into the most compact PCX 5.0 geometry that stores that palette
+/// *verbatim*.
+///
+/// This is the caller-palette sibling of [`encode_pcx_rgb_auto`]: where
+/// the RGB auto writer derives a first-seen palette from the pixels,
+/// this writer treats the palette as caller-owned data — entry order,
+/// entry values, and the index → entry association are preserved
+/// exactly, never re-derived, re-ordered, or quantised. `palette` is
+/// packed 3-byte RGB entries (entry `i` at bytes `3*i .. 3*i + 3`),
+/// non-empty, a multiple of 3, and at most [`PCX_VGA_PALETTE_BYTES`]
+/// (768) bytes long — the same layout the `oxideav_core::VideoFrame`
+/// palette side-channel carries, which is how the framework `Encoder`'s
+/// `Pal8` path reaches this function.
+///
+/// Only the spec geometries that carry a stored palette **verbatim**
+/// are candidates. The CGA modes store a palette *family selector*
+/// (manual §"CGA Color Map"), the monochrome and EGA-RGB modes store no
+/// arbitrary palette at all — routing through any of those would lose
+/// the caller's table, so unlike [`encode_pcx_rgb_auto`] they are never
+/// tried here:
+///
+/// * **Indexed4 / Indexed1x4** — the two 16-entry header `Colormap`
+///   rungs (spec §3; packed nibbles and the plane-oriented spec table
+///   §3.1 sibling). Applicable when the caller's table has ≤ 16
+///   entries, every index is ≤ 15 (a larger index cannot be stored in
+///   4 bits), and at least one palette byte is non-zero — an all-zero
+///   16-entry colormap is indistinguishable from the "unset" header a
+///   PCX 3.0+ writer emits, which readers (including this crate's
+///   [`crate::parse_pcx_indexed_4bpp`]) resolve to the spec table §3.1
+///   hardware default; the VGA-tail rung below has no such sentinel
+///   collision, so all-black tables route there and stay byte-exact.
+///   Colormap entries beyond the caller's count are zero-padded.
+/// * **Indexed8** — 8 bpp × 1 plane plus the 768-byte VGA tail (spec
+///   §"VGA 256-color palette"), always applicable; the caller's
+///   entries are written first and the remainder of the 256-entry
+///   block is zero-padded.
+///
+/// Every applicable candidate is encoded and the fewest-byte file wins;
+/// exact size ties keep the earlier candidate in the fixed order above
+/// (Indexed4, Indexed1x4, Indexed8), so identical input always yields
+/// byte-identical output — the same determinism contract as
+/// [`encode_pcx_rgb_auto`]. The returned [`PcxAutoMode`] reports the
+/// chosen geometry with `colors` = the caller's entry count.
+///
+/// Round-trip contract: decoding the produced file through the typed
+/// accessor matching the reported mode
+/// ([`crate::parse_pcx_indexed_4bpp`] /
+/// [`crate::parse_pcx_indexed_1bpp_4planes`] /
+/// [`crate::parse_pcx_indexed_8bpp`]) returns the caller's indices
+/// byte-exactly and a palette whose first `palette.len()` bytes equal
+/// the caller's table (the tail of the fixed-size on-disk table is the
+/// zero padding). Indices at or beyond the caller's entry count are
+/// accepted — they resolve to the zero padding (black), matching the
+/// missing-entry policy the `VideoFrame` palette side-channel
+/// documents.
+pub fn encode_pcx_indexed_auto(
+    width: u16,
+    height: u16,
+    indices: &[u8],
+    palette: &[u8],
+) -> Result<(Vec<u8>, PcxAutoMode)> {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX encoder: zero dimension"));
+    }
+    let n_pixels = width as usize * height as usize;
+    if indices.len() < n_pixels {
+        return Err(Error::invalid(
+            "PCX encoder: indexed input shorter than width × height",
+        ));
+    }
+    if palette.is_empty() || palette.len() % 3 != 0 || palette.len() > PCX_VGA_PALETTE_BYTES {
+        return Err(Error::invalid(format!(
+            "PCX encoder: caller palette must be packed RGB triplets — non-empty, a multiple \
+             of 3 bytes, at most {PCX_VGA_PALETTE_BYTES} (got {})",
+            palette.len()
+        )));
+    }
+    let colors = palette.len() / 3;
+    let mut candidates: Vec<(Vec<u8>, PcxAutoMode)> = Vec::new();
+    // The 16-entry header-colormap rungs: see the doc comment for the
+    // three-part precondition (entry count, index width, and the
+    // all-zero-colormap sentinel collision that forces all-black tables
+    // onto the VGA-tail rung).
+    let header_rung_ok = colors <= 16
+        && indices[..n_pixels].iter().all(|&i| i <= 0x0F)
+        && palette.iter().any(|&b| b != 0);
+    if header_rung_ok {
+        let mut pal48 = [0u8; 48];
+        pal48[..palette.len()].copy_from_slice(palette);
+        candidates.push((
+            encode_pcx_4bpp_packed(width, height, indices, &pal48)?,
+            PcxAutoMode::Indexed4 { colors },
+        ));
+        candidates.push((
+            encode_pcx_1bpp_4planes_ega(width, height, indices, &pal48)?,
+            PcxAutoMode::Indexed1x4 { colors },
+        ));
+    }
+    let mut pal768 = vec![0u8; PCX_VGA_PALETTE_BYTES];
+    pal768[..palette.len()].copy_from_slice(palette);
+    candidates.push((
+        encode_pcx_8bpp_indexed(width, height, indices, &pal768)?,
+        PcxAutoMode::Indexed8 { colors },
+    ));
     Ok(pick_smallest_candidate(candidates))
 }
 

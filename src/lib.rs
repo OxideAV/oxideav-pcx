@@ -48,6 +48,11 @@
 //! * [`encode_pcx_24bpp_window`] — like [`encode_pcx_24bpp`] but lets
 //!   the caller set a non-zero `(x_min, y_min)` window origin for the
 //!   PCX 3.0+ pixel-region edge case.
+//! * [`encode_pcx_indexed_auto`] — caller-palette compact writer:
+//!   stores a caller-supplied packed-RGB palette **verbatim** (never
+//!   re-derived or re-ordered) in the smallest applicable geometry —
+//!   the two 16-entry header-colormap rungs at ≤ 16 entries, the
+//!   VGA-tail rung otherwise. Backs the framework `Pal8` encode path.
 //! * [`encode_pcx_rgb_auto`] / [`encode_pcx_image_auto`] — the
 //!   compact-mode **candidate ladder**: every spec mode whose
 //!   losslessness precondition holds for the input (mono, both CGA
@@ -187,7 +192,7 @@
 //!
 //! ## Framework `Encoder` accepted pixel formats
 //!
-//! The default-on `registry` feature's `make_encoder` accepts seven
+//! The default-on `registry` feature's `make_encoder` accepts eight
 //! `oxideav_core::PixelFormat` variants. `Rgba` / `Rgb24` / `Bgr24` /
 //! `Bgra` route to [`encode_pcx_24bpp`] (with per-pixel byte swap for
 //! the `Bgr*` variants, and alpha dropped from `Rgba` / `Bgra`).
@@ -195,7 +200,19 @@
 //! `MonoWhite` unpack the MSB-first 1-bit stride into one byte per
 //! pixel and route to [`encode_pcx_1bpp_mono`]; `MonoWhite` is
 //! bit-inverted on the way in so the on-disk PCX always carries the
-//! spec §4.1 bit-1 = white polarity.
+//! spec §4.1 bit-1 = white polarity. `Pal8` reads the caller's colour
+//! table off the `VideoFrame` palette side-channel (trailing stride-0
+//! plane, packed 3-byte RGB entries) and routes to
+//! [`encode_pcx_indexed_auto`], which stores the table **verbatim** in
+//! the smallest applicable spec geometry: the 16-entry header colormap
+//! rungs (4 bpp × 1 plane / 1 bpp × 4 planes, whichever RLEs smaller)
+//! when the table has ≤ 16 entries, every index is ≤ 15 and the
+//! colormap would not collide with the all-zero "unset" sentinel, and
+//! the 8 bpp × 1 plane + 768-byte VGA tail rung otherwise. The
+//! symmetric decode side: constructing the framework `Decoder` with
+//! `CodecParameters.pixel_format = Some(Pal8)` returns index frames
+//! with the file's palette attached to the same side-channel instead
+//! of the default packed-`Rgba` expansion.
 //!
 //! ## Standalone vs registry-integrated
 //!
@@ -243,7 +260,7 @@ pub use encoder::{
     encode_pcx_2bpp_cga, encode_pcx_2bpp_cga_cpi, encode_pcx_2bpp_cga_dpi, encode_pcx_4bpp_4planes,
     encode_pcx_4bpp_packed, encode_pcx_4bpp_packed_dpi, encode_pcx_8bpp_grayscale,
     encode_pcx_8bpp_grayscale_dpi, encode_pcx_8bpp_indexed, encode_pcx_8bpp_indexed_dpi,
-    encode_pcx_image_auto, encode_pcx_rgb_auto, PcxAutoMode,
+    encode_pcx_image_auto, encode_pcx_indexed_auto, encode_pcx_rgb_auto, PcxAutoMode,
 };
 pub use error::{PcxError, Result};
 pub use image::{

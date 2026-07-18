@@ -47,6 +47,7 @@ pub fn register_codecs(reg: &mut CodecRegistry) {
             PixelFormat::Gray8,
             PixelFormat::MonoBlack,
             PixelFormat::MonoWhite,
+            PixelFormat::Pal8,
         ]);
     reg.register(
         CodecInfo::new(CodecId::new(crate::CODEC_ID_STR))
