@@ -55,37 +55,30 @@ authoring metadata (`*_dpi`, and for 24-bit also `*_window` /
 
 ## Using it through the oxideav framework
 
-With the default `registry` feature the crate plugs into
-`oxideav-core`'s registries — this is the generic image path the
-framework CLI and pipelines use. You normally don't register anything
-yourself: `oxideav-meta`'s `register_all(&mut RuntimeContext)` invokes
-this crate's entry point along with every other enabled sibling, and
+With the default `registry` feature the crate plugs into the oxideav
+framework — this is the generic image path the framework CLI and
+pipelines use. You don't register anything yourself: `oxideav-meta`'s
+`register_all(&mut RuntimeContext)` sets up every enabled sibling, and
 `.pcx` / `.pcc` files are then probed and routed by extension *and*
 magic through the generic demux→decode flow:
 
 ```rust
-let mut ctx = oxideav_core::RuntimeContext::new();
+use oxideav_core::{CodecId, CodecParameters, Frame, Packet, RuntimeContext, TimeBase};
+
+let mut ctx = RuntimeContext::new();
 oxideav_meta::register_all(&mut ctx);
-// ctx.codecs knows "pcx"; ctx.containers probes .pcx/.pcc/.dcx files.
-```
-
-Only slim embedded builds that skip `oxideav-meta` register the crate
-directly — `register_runtime(&mut ctx)`, or `register(&mut codecs,
-&mut containers)` / `register_codecs` for a single registry:
-
-```rust
-use oxideav_core::{CodecId, CodecParameters, CodecRegistry, Frame, Packet, TimeBase};
-
-let mut reg = CodecRegistry::new();
-oxideav_pcx::register_codecs(&mut reg);
 
 // Decode: the whole file is one packet.
 let params = CodecParameters::video(CodecId::new("pcx"));
-let mut dec = reg.make_decoder(&params)?;
+let mut dec = ctx.codecs.make_decoder(&params)?;
 dec.send_packet(&Packet::new(0, TimeBase::new(1, 1), std::fs::read("in.pcx")?))?;
 let Frame::Video(frame) = dec.receive_frame()? else { unreachable!() };
 // frame.planes[0] is packed RGBA (or the format you requested — see below)
 ```
+
+(If you don't want the framework at all, use `default-features =
+false` and the standalone API above — those are the two supported
+ways to consume the crate.)
 
 The registered decoder honours `CodecParameters::pixel_format` for the
 output surface; the registered encoder accepts eight input formats:
@@ -101,10 +94,10 @@ stores it verbatim in the fewest-byte indexed mode; a `Pal8`-requested
 decode returns index frames with the file's palette attached — frames
 are self-describing in both directions.
 
-`register_containers` (or the combined `register`) additionally
-registers the PCX single-image container (probe + `.pcx`/`.pcc`
-extensions, demuxer + muxer) and the DCX multi-page bundle, so generic
-demux→decode pipelines open PCX/DCX files without format-specific code.
+The framework registration also covers the PCX single-image container
+(probe + `.pcx`/`.pcc` extensions, demuxer + muxer) and the DCX
+multi-page bundle, so generic demux→decode pipelines open PCX/DCX
+files without format-specific code.
 
 ## Decode coverage
 
