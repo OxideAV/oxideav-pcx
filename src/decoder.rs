@@ -49,10 +49,26 @@ use oxideav_core::{CodecId, CodecParameters, Frame, Packet, VideoFrame, VideoPla
 
 /// Factory registered with the codec registry. Consumes one packet
 /// per whole PCX file and produces one frame.
+///
+/// Output shape is selected by `params.pixel_format`:
+///
+/// * `Some(PixelFormat::Pal8)` — the decoder returns palette-indexed
+///   frames: one `Gray8`-shaped index plane (one byte per pixel,
+///   stride = width) with the file's palette attached to the
+///   `VideoFrame` palette side-channel (trailing stride-0 plane,
+///   packed 3-byte RGB entries). Every paletted `(bpp, planes)`
+///   geometry is covered — see [`packet_to_pal8_frame`]'s table — and
+///   the palette length reflects the file's own table size (768 bytes
+///   for 8 bpp / grayscale, 48 for the 16-colour header-colormap
+///   modes, 24 for 8-colour EGA RGB, 12 for CGA, 6 for monochrome).
+///   The palette-free 24-bit mode is rejected.
+/// * anything else (the container demuxer requests `Rgba`) — the
+///   historical packed-`Rgba` expansion via [`parse_pcx`], unchanged.
 #[cfg(feature = "registry")]
-pub fn make_decoder(_params: &CodecParameters) -> oxideav_core::Result<Box<dyn Decoder>> {
+pub fn make_decoder(params: &CodecParameters) -> oxideav_core::Result<Box<dyn Decoder>> {
     Ok(Box::new(PcxDecoder {
         codec_id: CodecId::new(crate::CODEC_ID_STR),
+        want_pal8: params.pixel_format == Some(oxideav_core::PixelFormat::Pal8),
         pending: None,
         eof: false,
     }))
@@ -61,6 +77,11 @@ pub fn make_decoder(_params: &CodecParameters) -> oxideav_core::Result<Box<dyn D
 #[cfg(feature = "registry")]
 struct PcxDecoder {
     codec_id: CodecId,
+    /// `true` when the constructing `CodecParameters` requested
+    /// `PixelFormat::Pal8` output: frames carry raw palette indices
+    /// plus the file's palette on the side-channel instead of the
+    /// default packed-`Rgba` expansion.
+    want_pal8: bool,
     pending: Option<VideoFrame>,
     eof: bool,
 }
@@ -71,8 +92,12 @@ impl Decoder for PcxDecoder {
         &self.codec_id
     }
     fn send_packet(&mut self, packet: &Packet) -> oxideav_core::Result<()> {
-        let image = parse_pcx(&packet.data)?;
-        self.pending = Some(image_to_video_frame(image));
+        if self.want_pal8 {
+            self.pending = Some(packet_to_pal8_frame(&packet.data)?);
+        } else {
+            let image = parse_pcx(&packet.data)?;
+            self.pending = Some(image_to_video_frame(image));
+        }
         Ok(())
     }
     fn receive_frame(&mut self) -> oxideav_core::Result<Frame> {
@@ -103,6 +128,118 @@ fn image_to_video_frame(image: PcxImage) -> VideoFrame {
             data: image.data,
         }],
     }
+}
+
+/// Flatten a fixed-size `[[u8; 3]; N]` RGB palette into the packed
+/// 3-byte-per-entry byte vector the `VideoFrame` palette side-channel
+/// carries.
+#[cfg(feature = "registry")]
+fn flatten_palette<const N: usize>(pal: &[[u8; 3]; N]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(N * 3);
+    for e in pal {
+        out.extend_from_slice(e);
+    }
+    out
+}
+
+/// Decode a whole PCX file into a palette-indexed `VideoFrame`: one
+/// index plane (one byte per pixel, stride = width) plus the file's
+/// palette attached to the `VideoFrame` palette side-channel.
+///
+/// Per-geometry dispatch (every paletted mode the crate reads):
+///
+/// | bpp | planes | index source                        | palette bytes |
+/// | --- | ------ | ----------------------------------- | ------------- |
+/// | 1   | 1      | bit value = colormap index (§4.1)   | 6 (2 entries) |
+/// | 1   | 2      | CGA planar (`p0 \| p1 << 1`)        | 12            |
+/// | 1   | 3      | EGA RGB (`r \| g << 1 \| b << 2`)   | 24            |
+/// | 1   | 4      | EGA bit-planes (plane k = bit k)    | 48            |
+/// | 2   | 1      | CGA packed bits (full C / P / I)    | 12            |
+/// | 4   | 1      | packed nibbles                      | 48            |
+/// | 8   | 1      | index bytes (VGA tail / grayscale)  | 768           |
+///
+/// Each row reuses the matching typed accessor's palette resolution, so
+/// the attached side-channel bytes are exactly what the standalone
+/// typed views surface (header colormap or documented default /
+/// grayscale-ramp fallback). The monochrome row mirrors the
+/// `unpack_1bpp_1plane` colormap rule: a non-zero header colormap's
+/// first two triples are the bit-0 / bit-1 colours; a zero-filled
+/// colormap falls back to the classic black / white convention.
+///
+/// The palette-free modes — 24-bit `(8, 3)` and the composite-index
+/// `(4, 4)` slot (no spec palette geometry at 65536 entries) — cannot
+/// be represented as `Pal8` and are rejected with
+/// [`Error::unsupported`].
+#[cfg(feature = "registry")]
+fn packet_to_pal8_frame(input: &[u8]) -> Result<VideoFrame> {
+    let header =
+        crate::types::parse_header(input).ok_or_else(|| Error::invalid("PCX: header truncated"))?;
+    let (width, indices, palette): (u32, Vec<u8>, Vec<u8>) =
+        match (header.bits_per_pixel, header.n_planes) {
+            (1, 1) => {
+                let (header, scanlines, _vga) = decode_planar_scanlines(input)?;
+                let w = header.width() as usize;
+                let bpl = header.bytes_per_line as usize;
+                let mut indices = Vec::with_capacity(w * header.height() as usize);
+                for row in scanlines.chunks_exact(bpl) {
+                    for x in 0..w {
+                        indices.push((row[x >> 3] >> (7 - (x & 7))) & 1);
+                    }
+                }
+                // Same colormap rule as the `unpack_1bpp_1plane`
+                // flatten path (EGFF canonical mode matrix: mono is the
+                // 2-colour paletted case; zero-filled colormaps keep
+                // the spec §4.1 bit 1 = white convention).
+                let pal: [[u8; 3]; 2] = if header.ega_palette.iter().any(|&b| b != 0) {
+                    let p = &header.ega_palette;
+                    [[p[0], p[1], p[2]], [p[3], p[4], p[5]]]
+                } else {
+                    [[0x00; 3], [0xFF; 3]]
+                };
+                (header.width(), indices, flatten_palette(&pal))
+            }
+            (1, 2) => {
+                let v = parse_pcx_indexed_1bpp_2planes_cga(input)?;
+                (v.width, v.indices, flatten_palette(&v.palette))
+            }
+            (1, 3) => {
+                let v = parse_pcx_indexed_1bpp_3planes(input)?;
+                (v.width, v.indices, flatten_palette(&v.palette))
+            }
+            (1, 4) => {
+                let v = parse_pcx_indexed_1bpp_4planes(input)?;
+                (v.width, v.indices, flatten_palette(&v.palette))
+            }
+            (2, 1) => {
+                // The spec-faithful C / P / I accessor so the
+                // monochrome composite-grey ramp (`C = 1`) resolves
+                // correctly on the side-channel.
+                let v = parse_pcx_indexed_2bpp_cga_cpi(input)?;
+                (v.width, v.indices, flatten_palette(&v.palette))
+            }
+            (4, 1) => {
+                let v = parse_pcx_indexed_4bpp(input)?;
+                (v.width, v.indices, flatten_palette(&v.palette))
+            }
+            (8, 1) => {
+                let v = parse_pcx_indexed_8bpp(input)?;
+                (v.width, v.indices, flatten_palette(&v.palette))
+            }
+            (bpp, n) => {
+                return Err(Error::unsupported(format!(
+                    "PCX: (bits_per_pixel={bpp}, n_planes={n}) carries no palette \
+                     and cannot be decoded as Pal8 (request Rgba output instead)"
+                )))
+            }
+        };
+    Ok(VideoFrame {
+        pts: None,
+        planes: vec![VideoPlane {
+            stride: width as usize,
+            data: indices,
+        }],
+    }
+    .with_palette(palette))
 }
 
 // ---------------------------------------------------------------------------
