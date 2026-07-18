@@ -54,6 +54,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the standalone and framework boundaries, Pal8 decode across all
   seven paletted geometries, and the unchanged palette-free `Rgba`
   default path.
+- *(fuzz)* **Caller-palette rung added to the encode target**: palette
+  SIZE (1..=256 entries) and CONTENT are attacker data, the index
+  buffer is masked through a fuzz-selected significant-bit width so
+  the header-colormap rungs fire often (with the unmasked arm keeping
+  the out-of-table-index path live), and every
+  `encode_pcx_indexed_auto` output is held to the semantic oracle —
+  indices byte-exact, caller palette entries verbatim, on-disk
+  padding all-zero — through the typed accessor matching the reported
+  mode (plus the tail-resolution check on the VGA rung). Three named
+  seeds (16-entry header-rung shape, 256-entry tail shape, all-black
+  sentinel-collision shape); ~2.2M encode + ~19.5M decode iterations
+  with the oracle live: zero findings; both corpora re-minimised.
 - *(tests)* **1 bpp monochrome bit polarity conformance-verified
   against the reference doc's new errata (Issue #227) and pinned at
   the raw-byte level** (`tests/round405_mono_polarity.rs`). The

@@ -39,9 +39,9 @@ use oxideav_pcx::{
     encode_pcx_1bpp_2planes_cga, encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega,
     encode_pcx_1bpp_mono, encode_pcx_24bpp, encode_pcx_2bpp_cga, encode_pcx_4bpp_4planes,
     encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed,
-    encode_pcx_rgb_auto, parse_pcx, parse_pcx_indexed_1bpp_3planes, parse_pcx_indexed_1bpp_4planes,
-    parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_4bpp, parse_pcx_indexed_4bpp_4planes,
-    parse_pcx_indexed_8bpp,
+    encode_pcx_indexed_auto, encode_pcx_rgb_auto, parse_pcx, parse_pcx_indexed_1bpp_3planes,
+    parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_4bpp,
+    parse_pcx_indexed_4bpp_4planes, parse_pcx_indexed_8bpp, PcxAutoMode, PcxPaletteSource,
 };
 
 /// Cap each dimension so the dimension×dimension pixel count stays well
@@ -222,6 +222,64 @@ fuzz_target!(|data: &[u8]| {
                     "low-colour auto ladder must round-trip exactly"
                 );
             }
+        }
+    }
+    // Caller-palette rung (r417): `encode_pcx_indexed_auto` must store a
+    // fuzz-chosen palette VERBATIM in one of the three palette-verbatim
+    // geometries (4 bpp packed / 1 bpp × 4 planes header colormap, or
+    // 8 bpp + VGA tail) and round-trip both the indices and the palette
+    // prefix exactly through the typed accessor matching the reported
+    // mode. Palette SIZE (1..=256 entries) and CONTENT are attacker
+    // data; the index buffer is masked through a fuzz-selected width
+    // (1 / 2 / 4 / 8 significant bits) so the ≤ 15-index precondition of
+    // the header rungs fires often instead of almost never on
+    // high-entropy bytes — and the unmasked arm keeps the out-of-table
+    // index path (indices at/beyond the entry count resolve to the zero
+    // padding) under fuzz too.
+    {
+        let n = width as usize * height as usize;
+        if payload.len() >= 3 && n > 0 && n <= 1 << 14 {
+            let entries = 1 + payload[0] as usize; // 1..=256
+            let mask = [0x01u8, 0x03, 0x0F, 0xFF][(payload[1] & 3) as usize];
+            let pal: Vec<u8> = (0..entries * 3)
+                .map(|i| payload[2 + i % (payload.len() - 2)])
+                .collect();
+            let idx: Vec<u8> = (0..n).map(|i| payload[i % payload.len()] & mask).collect();
+            let (bytes, mode) =
+                encode_pcx_indexed_auto(width, height, &idx, &pal).expect("caller-palette encode");
+            let (got_idx, got_pal): (Vec<u8>, Vec<u8>) = match mode {
+                PcxAutoMode::Indexed4 { .. } => {
+                    let v = parse_pcx_indexed_4bpp(&bytes)
+                        .expect("caller-palette 4bpp output must decode");
+                    (v.indices, v.palette.iter().flatten().copied().collect())
+                }
+                PcxAutoMode::Indexed1x4 { .. } => {
+                    let v = parse_pcx_indexed_1bpp_4planes(&bytes)
+                        .expect("caller-palette 1bpp×4 output must decode");
+                    (v.indices, v.palette.iter().flatten().copied().collect())
+                }
+                PcxAutoMode::Indexed8 { .. } => {
+                    let v = parse_pcx_indexed_8bpp(&bytes)
+                        .expect("caller-palette 8bpp output must decode");
+                    assert_eq!(
+                        v.palette_source,
+                        PcxPaletteSource::VgaTail,
+                        "the VGA-tail rung must be tail-resolved"
+                    );
+                    (v.indices, v.palette.iter().flatten().copied().collect())
+                }
+                other => panic!("caller-palette ladder emitted a non-verbatim rung: {other:?}"),
+            };
+            assert_eq!(got_idx, idx, "caller-palette indices must round-trip");
+            assert_eq!(
+                &got_pal[..pal.len()],
+                &pal[..],
+                "caller palette entries must round-trip verbatim"
+            );
+            assert!(
+                got_pal[pal.len()..].iter().all(|&b| b == 0),
+                "on-disk palette padding must stay zero"
+            );
         }
     }
     if let Ok(bytes) = encode_pcx_1bpp_3planes_ega_rgb(width, height, payload) {
