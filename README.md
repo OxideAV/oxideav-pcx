@@ -90,9 +90,9 @@ truth for bitstream behaviour in this crate.
 
 ## Encode
 
-The framework-side [`Encoder`] (`make_encoder`) accepts seven
+The framework-side [`Encoder`] (`make_encoder`) accepts eight
 `oxideav_core::PixelFormat` variants — `Rgba`, `Rgb24`, `Bgr24`,
-`Bgra`, `Gray8`, `MonoBlack`, and `MonoWhite`:
+`Bgra`, `Gray8`, `MonoBlack`, `MonoWhite`, and `Pal8`:
 
 * `Rgba` / `Rgb24` / `Bgr24` / `Bgra` route to the 24-bit RGB writer
   (`encode_pcx_24bpp`). The `Bgr*` variants are per-pixel byte-swapped
@@ -107,8 +107,29 @@ The framework-side [`Encoder`] (`make_encoder`) accepts seven
   direct map onto the spec §4.1 monochrome writer; `MonoWhite`
   (0 = white, 1 = black) inverts the bit before emission so the
   decoder still sees bit 1 = white.
+* `Pal8` (r417) reads the caller's colour table off the
+  `oxideav-core` 0.1.30 `VideoFrame` **palette side-channel** (a
+  trailing stride-0 plane of packed 3-byte RGB entries) and routes
+  through `encode_pcx_indexed_auto`, which stores the table
+  **verbatim** — never re-derived, re-ordered, or quantised — in the
+  smallest applicable spec geometry: the two 16-entry header
+  `Colormap` rungs (spec §3 packed nibbles / spec table §3.1
+  bit-planes, fewest bytes wins, ties to the packed form) when the
+  table has ≤ 16 entries, every index fits in 4 bits, and the
+  zero-padded colormap would not collide with the all-zero "unset"
+  sentinel readers resolve to the hardware default; the 8 bpp ×
+  1 plane + 768-byte VGA tail otherwise. A `Pal8` frame without the
+  side-channel is rejected. The symmetric decode side: constructing
+  the framework `Decoder` with `pixel_format = Some(Pal8)` returns
+  index frames with the file's palette attached to the side-channel
+  (for every paletted geometry in the decode table above; the
+  palette-free 24-bit and 4 bpp × 4 planes modes are rejected),
+  while the default `Rgba` expansion the container demuxer requests
+  is unchanged. Round-trip contract: index-exact always,
+  palette-exact up to the caller's entry count (fixed-size on-disk
+  tables zero-pad beyond it).
 
-The codec capabilities advertise the same seven pixel formats so a
+The codec capabilities advertise the same eight pixel formats so a
 pipeline that picks formats from `accepted_pixel_formats` can hand
 PCX whichever variant matches its source frame directly.
 
@@ -116,6 +137,12 @@ Standalone helpers:
 
 * `encode_pcx_8bpp_indexed(w, h, &indices, &palette)` — 8 bpp × 1
   plane plus a 768-byte VGA tail palette.
+* `encode_pcx_indexed_auto(w, h, &indices, &palette)` (r417) — the
+  caller-palette compact writer behind the framework `Pal8` path:
+  takes 1..=256 packed-RGB entries, keeps them verbatim, and emits
+  the fewest-byte palette-carrying geometry (16-entry header
+  colormap vs VGA tail; see the `Pal8` bullet above for the exact
+  rung preconditions). Returns the chosen `PcxAutoMode`.
 * `encode_pcx_24bpp(w, h, &rgb)` — 8 bpp × 3 planes, planar RGB.
 * `encode_pcx_1bpp_mono(w, h, &pixels)` — 1 bpp × 1 plane mono
   (bit 1 = white, bit 0 = black). Since r401 the writer also stores
@@ -300,7 +327,15 @@ encoder. Each must return `Ok`/`Err` without panicking, going out of
 bounds, or overflowing; where it succeeds, the bytes it emits are fed
 straight back through `parse_pcx` and the matching typed accessor so the
 **encode→decode seam** is under the same no-panic contract. A 40-second
-run executes 958k+ iterations with zero crashes.
+run executes 958k+ iterations with zero crashes. Since r405 four of the
+surfaces carry semantic round-trip oracles (mono polarity, grayscale
+`g → (g, g, g)`, both CGA index paths), and r417 adds the
+**caller-palette rung**: `encode_pcx_indexed_auto` is driven with
+attacker-chosen palette size (1..=256 entries) and content plus a
+fuzz-selected index bit-width, and every output must round-trip the
+indices byte-exactly and the caller palette entries verbatim (padding
+all-zero) through the typed accessor matching the reported mode — ~2.2M
+iterations with the oracle live, zero findings.
 
 ```sh
 cd fuzz && cargo +nightly fuzz run encode_pcx -- -max_total_time=60
@@ -881,13 +916,6 @@ on both decode and encode.
 
 ## Lacks
 
-* `PixelFormat::Pal8` input to the framework `Encoder`. The
-  out-of-band palette companion needed by `Pal8` isn't currently
-  carried by `VideoFrame`; standalone callers can still reach
-  `encode_pcx_8bpp_indexed` / `encode_pcx_4bpp_packed` /
-  `encode_pcx_2bpp_cga` / `encode_pcx_1bpp_2planes_cga` /
-  `encode_pcx_1bpp_4planes_ega` directly with an explicit palette
-  argument.
 * The framework `Encoder` always emits the 24-bit planar form for RGB
   input (predictable bytes for pipeline consumers). A standalone caller
   that wants the smallest lossless file without pre-choosing a mode can
