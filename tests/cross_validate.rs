@@ -514,3 +514,77 @@ fn magick_confirms_mono_bit_geometry_modulo_polarity() {
          and consider promoting Mono1 into the pixel-exact ladder test above"
     );
 }
+
+// ---------------------------------------------------------------------------
+// r417 — caller-palette (Pal8 side-channel) ladder outputs cross-validated
+// ---------------------------------------------------------------------------
+
+/// The VGA-tail rung of `encode_pcx_indexed_auto` (a caller table of
+/// more than 16 entries) must be readable by an independent black-box
+/// decoder with the caller's palette applied verbatim: every readback
+/// pixel is the exact entry its index selects.
+#[test]
+fn magick_re_decodes_caller_palette_vga_tail_exactly() {
+    if !have_magick() {
+        eprintln!("skipping: ImageMagick not on PATH");
+        return;
+    }
+    use oxideav_pcx::{encode_pcx_indexed_auto, PcxAutoMode};
+    let (w, h) = (23u16, 6u16);
+    let n = w as usize * h as usize;
+    // 20 entries (> 16 forces the VGA tail), values chosen with no
+    // arithmetic relation to the index so a palette re-derivation or
+    // off-by-one would show up in the readback.
+    let pal: Vec<u8> = (0..20u8)
+        .flat_map(|i| [i * 12 + 5, 250 - i * 9, i.wrapping_mul(29) ^ 0x11])
+        .collect();
+    let idx: Vec<u8> = (0..n).map(|i| ((i * 3 + 1) % 20) as u8).collect();
+    let (bytes, mode) = encode_pcx_indexed_auto(w, h, &idx, &pal).unwrap();
+    assert_eq!(mode, PcxAutoMode::Indexed8 { colors: 20 });
+    let raw = magick_to_raw_rgb("r417-tail", &bytes, w, h);
+    for (i, px) in raw.chunks_exact(3).enumerate() {
+        let e = idx[i] as usize * 3;
+        assert_eq!(
+            px,
+            &pal[e..e + 3],
+            "pixel {i} (index {}) differs from the caller entry",
+            idx[i]
+        );
+    }
+}
+
+/// The header-colormap rung of `encode_pcx_indexed_auto` (≤ 16 caller
+/// entries) under the same black-box contract: the independent decoder
+/// must resolve every pixel through the caller's 48-byte header table.
+#[test]
+fn magick_re_decodes_caller_palette_header_rung_exactly() {
+    if !have_magick() {
+        eprintln!("skipping: ImageMagick not on PATH");
+        return;
+    }
+    use oxideav_pcx::{encode_pcx_indexed_auto, PcxAutoMode};
+    let (w, h) = (17u16, 9u16);
+    let n = w as usize * h as usize;
+    let pal: Vec<u8> = (0..11u8)
+        .flat_map(|i| [7 + i * 19, 240 - i * 13, i.wrapping_mul(41) ^ 0x2C])
+        .collect();
+    let idx: Vec<u8> = (0..n).map(|i| ((i * 5 + 2) % 11) as u8).collect();
+    let (bytes, mode) = encode_pcx_indexed_auto(w, h, &idx, &pal).unwrap();
+    assert!(
+        matches!(
+            mode,
+            PcxAutoMode::Indexed4 { colors: 11 } | PcxAutoMode::Indexed1x4 { colors: 11 }
+        ),
+        "11-entry table must ride a header rung, got {mode:?}"
+    );
+    let raw = magick_to_raw_rgb("r417-header", &bytes, w, h);
+    for (i, px) in raw.chunks_exact(3).enumerate() {
+        let e = idx[i] as usize * 3;
+        assert_eq!(
+            px,
+            &pal[e..e + 3],
+            "pixel {i} (index {}) differs from the caller entry",
+            idx[i]
+        );
+    }
+}

@@ -53,7 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fallbacks to the VGA tail), malformed-palette rejection at both
   the standalone and framework boundaries, Pal8 decode across all
   seven paletted geometries, and the unchanged palette-free `Rgba`
-  default path.
+  default path. Two black-box cross-validation tests
+  (`tests/cross_validate.rs`) additionally confirm an independent
+  reader resolves both caller-palette rungs pixel-exactly — every
+  readback pixel equals the caller entry its index selects, on both
+  the VGA-tail and header-colormap forms.
 - *(fuzz)* **Caller-palette rung added to the encode target**: palette
   SIZE (1..=256 entries) and CONTENT are attacker data, the index
   buffer is masked through a fuzz-selected significant-bit width so
