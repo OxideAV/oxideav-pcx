@@ -82,11 +82,7 @@ truth for bitstream behaviour in this crate.
   Color Map" C / P / I decomposition (bit 7 = color burst 0 color /
   1 monochrome, bit 6 = palette 0 yellow / 1 white family, bit 5 =
   intensity 0 dim / 1 bright), with the background colour pulled from
-  the high nibble of header byte 16 (the colormap's first byte). Fixed
-  in r401: both bytes were previously read 16 positions too deep into
-  the colormap (header bytes 32 / 35) with an inverted two-bit palette
-  convention, so foreign spec-conforming CGA files always decoded with
-  the default palette.
+  the high nibble of header byte 16 (the colormap's first byte).
 
 ## Encode
 
@@ -107,7 +103,7 @@ The framework-side [`Encoder`] (`make_encoder`) accepts eight
   direct map onto the spec §4.1 monochrome writer; `MonoWhite`
   (0 = white, 1 = black) inverts the bit before emission so the
   decoder still sees bit 1 = white.
-* `Pal8` (r417) reads the caller's colour table off the
+* `Pal8` reads the caller's colour table off the
   `oxideav-core` 0.1.30 `VideoFrame` **palette side-channel** (a
   trailing stride-0 plane of packed 3-byte RGB entries) and routes
   through `encode_pcx_indexed_auto`, which stores the table
@@ -137,7 +133,7 @@ Standalone helpers:
 
 * `encode_pcx_8bpp_indexed(w, h, &indices, &palette)` — 8 bpp × 1
   plane plus a 768-byte VGA tail palette.
-* `encode_pcx_indexed_auto(w, h, &indices, &palette)` (r417) — the
+* `encode_pcx_indexed_auto(w, h, &indices, &palette)` — the
   caller-palette compact writer behind the framework `Pal8` path:
   takes 1..=256 packed-RGB entries, keeps them verbatim, and emits
   the fewest-byte palette-carrying geometry (16-entry header
@@ -145,7 +141,7 @@ Standalone helpers:
   rung preconditions). Returns the chosen `PcxAutoMode`.
 * `encode_pcx_24bpp(w, h, &rgb)` — 8 bpp × 3 planes, planar RGB.
 * `encode_pcx_1bpp_mono(w, h, &pixels)` — 1 bpp × 1 plane mono
-  (bit 1 = white, bit 0 = black). Since r401 the writer also stores
+  (bit 1 = white, bit 0 = black). The writer also stores
   black / white in colormap entries 0 / 1 (the EGFF canonical mode
   matrix treats mono as the 2-colour paletted case), and the decoder
   resolves bits through a *non-zero* colormap's first two triples —
@@ -154,7 +150,7 @@ Standalone helpers:
   doc's errata (Issue #227) has since pinned exactly this reading:
   the bit value is the colormap index, with `colormap[0]` = black /
   `colormap[1]` = white as the standard monochrome convention —
-  bit 1 = white. r405 pins both directions at the raw-byte level
+  bit 1 = white. Both directions are pinned at the raw-byte level
   (`tests/round405_mono_polarity.rs`).
 * `encode_pcx_1bpp_3planes_ega_rgb(w, h, &rgb)` — 8-colour EGA RGB
   at 1 bpp × 3 planes. Each input channel byte is thresholded at
@@ -183,7 +179,7 @@ Standalone helpers:
   origin for the PCX 3.0+ pixel-region edge case.
 * `encode_pcx_rgb_auto(w, h, &rgb) -> (Vec<u8>, PcxAutoMode)` — emits
   the **smallest lossless** PCX the way PC Paintbrush did, via a full
-  candidate ladder over the crate's spec modes (r401). A raster scan
+  candidate ladder over the crate's spec modes. A raster scan
   assigns each colour a first-seen index and bails on the 257th colour
   (`> 256` → planar 24-bit, byte-identical to `encode_pcx_24bpp`);
   otherwise every candidate whose losslessness precondition holds is
@@ -327,9 +323,9 @@ encoder. Each must return `Ok`/`Err` without panicking, going out of
 bounds, or overflowing; where it succeeds, the bytes it emits are fed
 straight back through `parse_pcx` and the matching typed accessor so the
 **encode→decode seam** is under the same no-panic contract. A 40-second
-run executes 958k+ iterations with zero crashes. Since r405 four of the
+run executes 958k+ iterations with zero crashes. Four of the
 surfaces carry semantic round-trip oracles (mono polarity, grayscale
-`g → (g, g, g)`, both CGA index paths), and r417 adds the
+`g → (g, g, g)`, both CGA index paths), plus the
 **caller-palette rung**: `encode_pcx_indexed_auto` is driven with
 attacker-chosen palette size (1..=256 entries) and content plus a
 fuzz-selected index bit-width, and every output must round-trip the
@@ -919,7 +915,7 @@ on both decode and encode.
 * The framework `Encoder` always emits the 24-bit planar form for RGB
   input (predictable bytes for pipeline consumers). A standalone caller
   that wants the smallest lossless file without pre-choosing a mode can
-  use `encode_pcx_rgb_auto` / `encode_pcx_image_auto`, whose r401
+  use `encode_pcx_rgb_auto` / `encode_pcx_image_auto`, whose
   candidate ladder covers every compact spec mode (mono, both CGA
   layouts, EGA-RGB, both 16-colour header-palette layouts, grayscale,
   indexed, planar) and provably returns the fewest-byte exact file.
