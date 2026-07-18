@@ -212,15 +212,38 @@ fuzz_target!(|data: &[u8]| {
                 let sel = payload[1 + i % (payload.len() - 1)] as usize % pal_len;
                 rgb.extend_from_slice(&palette[sel]);
             }
-            let (bytes, _mode) =
+            let (bytes, mode) =
                 encode_pcx_rgb_auto(width, height, &rgb).expect("low-colour auto encode");
-            let img = parse_pcx(&bytes).expect("low-colour auto output must decode");
-            for (i, px) in img.data.chunks_exact(4).enumerate() {
-                assert_eq!(
-                    &px[..3],
-                    &rgb[i * 3..i * 3 + 3],
-                    "low-colour auto ladder must round-trip exactly"
-                );
+            match parse_pcx(&bytes) {
+                Ok(img) => {
+                    for (i, px) in img.data.chunks_exact(4).enumerate() {
+                        assert_eq!(
+                            &px[..3],
+                            &rgb[i * 3..i * 3 + 3],
+                            "low-colour auto ladder must round-trip exactly"
+                        );
+                    }
+                }
+                Err(_) => {
+                    // The one legitimate decode failure (same caveat as
+                    // the grayscale block above): the Gray8 rung emits an
+                    // (8, 1) file with NO tail, and the (8, 1) tail probe
+                    // may mis-claim 769 bytes of real pixel data when the
+                    // RLE stream coincidentally places the 0x0C marker
+                    // byte exactly 769 bytes from EOF. Every other rung
+                    // either writes a genuine tail (Indexed8) or is not
+                    // an (8, 1) geometry at all, so a decode failure
+                    // there is a real defect — pin the failure to the
+                    // exact documented coincidence.
+                    assert!(
+                        matches!(mode, oxideav_pcx::PcxAutoMode::Gray8),
+                        "only the tail-less Gray8 rung may fail to decode, not {mode:?}"
+                    );
+                    assert!(
+                        bytes.len() >= 769 && bytes[bytes.len() - 769] == 0x0C,
+                        "Gray8 decode failure without the coincidental tail marker"
+                    );
+                }
             }
         }
     }

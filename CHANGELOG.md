@@ -70,6 +70,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   seeds (16-entry header-rung shape, 256-entry tail shape, all-black
   sentinel-collision shape); ~2.2M encode + ~19.5M decode iterations
   with the oracle live: zero findings; both corpora re-minimised.
+
+### Fixed
+
+- *(fuzz)* **r401 low-colour auto-ladder oracle had a wrong hard-fail
+  premise the r417 run exposed** (~4M total encode iterations this
+  round; one finding, harness-side): it `expect`ed every auto-ladder
+  output to decode, but the `Gray8` rung emits an `(8, 1)` file with
+  no VGA tail, and the `(8, 1)` tail probe may legitimately mis-claim
+  769 bytes of real pixel data when the RLE stream coincidentally
+  places the `0x0C` marker byte exactly 769 bytes from EOF — the
+  documented decode caveat the grayscale fuzz block already
+  tolerated. The oracle now pins the failure to that exact
+  coincidence (mode must be `Gray8` AND the marker byte must sit at
+  `len - 769`); any other rung failing to decode is still a hard
+  fuzz failure. A named regression seed
+  (`seed_gray8_coincident_tail_marker.bin`, 370×39 two-grey shape)
+  keeps the coincidence in the corpus. No library-code change — the
+  encoder output and decoder behaviour are both conformant; only the
+  harness premise was wrong.
 - *(tests)* **1 bpp monochrome bit polarity conformance-verified
   against the reference doc's new errata (Issue #227) and pinned at
   the raw-byte level** (`tests/round405_mono_polarity.rs`). The
