@@ -57,9 +57,21 @@ authoring metadata (`*_dpi`, and for 24-bit also `*_window` /
 
 With the default `registry` feature the crate plugs into
 `oxideav-core`'s registries — this is the generic image path the
-framework CLI and pipelines use (`oxideav-meta`'s `register_all` wires
-it up automatically; `.pcx` / `.pcc` files are probed and routed by
-extension *and* magic):
+framework CLI and pipelines use. You normally don't register anything
+yourself: `oxideav-meta`'s `register_all(&mut RuntimeContext)` invokes
+this crate's entry point along with every other enabled sibling, and
+`.pcx` / `.pcc` files are then probed and routed by extension *and*
+magic through the generic demux→decode flow:
+
+```rust
+let mut ctx = oxideav_core::RuntimeContext::new();
+oxideav_meta::register_all(&mut ctx);
+// ctx.codecs knows "pcx"; ctx.containers probes .pcx/.pcc/.dcx files.
+```
+
+Only slim embedded builds that skip `oxideav-meta` register the crate
+directly — `register_runtime(&mut ctx)`, or `register(&mut codecs,
+&mut containers)` / `register_codecs` for a single registry:
 
 ```rust
 use oxideav_core::{CodecId, CodecParameters, CodecRegistry, Frame, Packet, TimeBase};
