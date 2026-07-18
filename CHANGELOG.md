@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`PixelFormat::Pal8` framework encode via the `oxideav-core` 0.1.30
+  `VideoFrame` palette side-channel** — the encoder's last accepted-
+  pixel-format gap. A `Pal8` frame carries one index byte per pixel
+  plus its colour table on the side-channel (trailing stride-0 plane,
+  packed 3-byte RGB entries); the encoder stores that table
+  **verbatim** — never re-derived, re-ordered, or quantised — in the
+  smallest applicable spec geometry via the new standalone
+  `encode_pcx_indexed_auto(width, height, &indices, &palette)`:
+  the two 16-entry header `Colormap` rungs (spec §3 packed nibbles /
+  spec table §3.1 bit-planes, whichever RLEs smaller, ties to the
+  packed form) when the table has ≤ 16 entries, every index fits in
+  4 bits, and the zero-padded colormap would not collide with the
+  all-zero "unset" header sentinel (readers substitute the spec table
+  §3.1 hardware default for an all-zero colormap, so all-black tables
+  route to the tail rung and stay byte-exact); the 8 bpp × 1 plane +
+  768-byte VGA tail (spec §"VGA 256-color palette") otherwise.
+  Entries beyond the caller's count are zero-padded; indices at or
+  beyond the entry count are legal and resolve to the padding
+  (black), matching the side-channel's documented missing-entry
+  policy. The codec registration now advertises `Pal8` alongside the
+  seven historical formats.
+- **Pal8-requested framework decode** — constructing the `Decoder`
+  with `CodecParameters.pixel_format = Some(Pal8)` returns raw
+  palette indices (one byte per pixel, stride = width) with the
+  file's own palette attached to the side-channel, across every
+  paletted `(bpp, planes)` geometry the crate reads: monochrome
+  (2-entry colormap per the EGFF canonical-matrix rule the flatten
+  path already used), both CGA layouts (the packed form through the
+  spec-faithful C / P / I resolution so composite-grey monochrome
+  files surface the ramp), 8-colour EGA RGB (fixed primaries),
+  both 16-colour header-colormap modes, and 8 bpp (VGA tail /
+  grayscale flag / ramp fallback). The palette-free 24-bit and
+  4 bpp × 4 planes modes are rejected rather than quantised. The
+  default packed-`Rgba` expansion (what the container demuxer
+  requests) is byte-for-byte unchanged — the Pal8 path is purely
+  additive.
+- *(tests)* `tests/round417_pal8.rs`: 22 tests pinning the Pal8
+  round-trip contract (index-exact always; palette-exact up to the
+  caller's entry count, zero padding beyond), the rung-selection
+  ladder (fewest-byte candidate across a spread of shapes,
+  deterministic tie-break, all-black-sentinel and index-above-15
+  fallbacks to the VGA tail), malformed-palette rejection at both
+  the standalone and framework boundaries, Pal8 decode across all
+  seven paletted geometries, and the unchanged palette-free `Rgba`
+  default path.
 - *(tests)* **1 bpp monochrome bit polarity conformance-verified
   against the reference doc's new errata (Issue #227) and pinned at
   the raw-byte level** (`tests/round405_mono_polarity.rs`). The
