@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0](https://github.com/OxideAV/oxideav-pcx/compare/v0.0.3...v0.1.0) - 2026-07-18
+
+### Other
+
+- drop round-history annotations — describe the finished surface timelessly
+- pin the r401 low-colour oracle's one legitimate decode failure; regression seed; cmin
+- Pal8 side-channel encode/decode + caller-palette ladder documented
+- black-box cross-validation of both caller-palette rungs
+- caller-palette rung in the encode target — verbatim-palette oracle; cmin both corpora
+- round-417 Pal8 side-channel round-trip + rung-ladder conformance
+- Pal8-requested frames carry the file palette on the side-channel
+- Pal8 side-channel input — caller-palette verbatim rung ladder (encode_pcx_indexed_auto)
+- mono-polarity + grayscale + CGA-index round-trip oracles in the encode target; polarity seeds; cmin
+- 1-bpp mono bit-polarity conformance pinned to the reference errata (Issue #227)
+- README + crate docs — r401 candidate ladder, mono colormap, grayscale interop caveat
+- r401 auto-ladder rows + colour-scan HashMap optimisation (grayscale scan 4x faster); restore named fuzz seeds cmin dropped
+- cmin both corpora after the r401 low-colour-invariant run
+- low-colour auto-ladder round-trip invariant in encode_pcx target
+- mono colormap self-description + magick cross-validation of the auto ladder
+- CGA palette bytes conformance fix — header bytes 16/19, full C/P/I (off-by-16)
+- auto ladder — Cga2x1 + Cga1x2 fixed-palette CGA candidates with exact match search
+- auto ladder — Indexed4 + Indexed1x4 16-colour header-palette candidates
+- auto ladder — Mono1 + EgaRgb1x3 bilevel/primary candidates
+- auto ladder — Gray8 candidate (palette_info=2, drops the 769-byte VGA tail)
+- add CI / crates.io / docs.rs / MIT-license badges
+- document standalone auto-compact-mode encoders in README Lacks (r376)
+- cover encode_pcx_rgb_auto with a lossless round-trip invariant (r376)
+- cover encode_pcx_rgb_auto colour-scan hot path (r376)
+- encode_pcx_image_auto — PcxImage-level compact-mode wrapper (r376)
+- encode_pcx_rgb_auto now size-compares both candidates (r376)
+- encode_pcx_rgb_auto — compact-mode auto-selecting RGB writer (r376)
+- byte-pack 1-bpp-per-plane scatter (mono/CGA-2/EGA-RGB-3/EGA-4) — 5–9× faster, byte-exact
+- document over-padded bytes_per_line decode robustness in README (r354)
+- over-padded stride equivalence + bomb/under-minimum rejection edges (r354)
+- over-padded bytes_per_line decode robustness suite (r354)
+- exhaustive cross-dimensional round-trip + RLE codec property tests (r345)
+- commit fuzz/Cargo.lock; anchor .gitignore Cargo.lock to crate root
+- encoder no-panic + lossless-roundtrip hardening (r337)
+- extend decode_pcx target to every public decode entry point
+- decode RLE continuously across the whole image (row-straddling runs)
+- 4 bpp × 4 planes composite-index mode (decode + encode)
+- Round 319: EGA hardware 4-level palette quantisation
+- Round 314: spec-faithful CGA flatten entry point parse_pcx_cga_cpi
+- refresh to current status, drop per-round changelog cruft
+
 ### Added
 
 - **`PixelFormat::Pal8` framework encode via the `oxideav-core` 0.1.30
