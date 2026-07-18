@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `register_runtime` + the `oxideav_core::register!` entry point, so
+  `oxideav_meta::register_all` now dispatches this crate automatically;
+  the two-registry `register` remains the direct API.
+
 ## [0.1.0](https://github.com/OxideAV/oxideav-pcx/compare/v0.0.3...v0.1.0) - 2026-07-18
 
 ### Other
