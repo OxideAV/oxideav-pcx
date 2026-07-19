@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/OxideAV/oxideav-pcx/compare/v0.1.0...v0.1.1) - 2026-07-18
+
+### Other
+
+- document only the two supported consumption paths — oxideav-meta or no registry
+- the normal framework path is oxideav-meta::register_all — direct registration is for slim builds
+- RuntimeContext entry point — register_runtime + the register! macro
+- rewrite usage-first — plain-image-library and framework paths up front
+
 ### Added
 
 - `register_runtime` + the `oxideav_core::register!` entry point, so
