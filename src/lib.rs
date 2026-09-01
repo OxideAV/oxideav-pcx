@@ -275,6 +275,7 @@ pub use types::{
 };
 
 #[cfg(feature = "registry")]
-pub use registry::{
-    __oxideav_entry, register, register_codecs, register_containers, register_runtime,
-};
+#[doc(hidden)]
+pub use registry::__oxideav_entry;
+#[cfg(feature = "registry")]
+pub use registry::{register, register_codecs, register_containers, register_runtime};
