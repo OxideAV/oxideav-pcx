@@ -5,9 +5,9 @@
 //! Framework-free: this file runs under `--no-default-features` too.
 
 use oxideav_pcx::{
-    decode, decode_all, decode_from, decode_rgb8, decode_rgba8, decode_with, encode, encode_dcx,
-    encode_rgb8, encode_rgba8, encode_to, header, info, probe, ColorInfo, ColorRange,
-    DecodeOptions, EncodeOptions, Error, Metadata, Palette, PcxError, PcxImage, PcxLayout,
+    decode, decode_all, decode_from, decode_rgb8, decode_rgba8, decode_with, encode, encode_all,
+    encode_dcx, encode_rgb8, encode_rgba8, encode_to, header, info, probe, ColorInfo, ColorRange,
+    DecodeOptions, EncodeOptions, Error, Frame, Metadata, Palette, PcxError, PcxImage, PcxLayout,
     PcxPixelFormat, PixelFormat, Plane,
 };
 
@@ -641,6 +641,54 @@ fn decode_all_walks_dcx_pages() {
     let one = decode_all(&files[1]).unwrap();
     assert_eq!(one.len(), 1);
     assert_eq!(one[0].image.format, PixelFormat::Gray8);
+}
+
+#[test]
+fn encode_all_mirrors_decode_all_losslessly() {
+    let pages = [rgb(), gray(), pal(&sixteen(), 50), pal(&cga(), 51)];
+    let frames: Vec<Frame> = pages
+        .iter()
+        .enumerate()
+        .map(|(i, p)| Frame::new(p.clone(), i as u32))
+        .collect();
+    let bundle = encode_all(&frames, &EncodeOptions::default()).unwrap();
+    assert!(probe(&bundle));
+    assert_eq!(info(&bundle).unwrap().frames, 4);
+    let back = decode_all(&bundle).unwrap();
+    assert_eq!(back.len(), frames.len());
+    for (b, f) in back.iter().zip(&frames) {
+        // `layout` is None on a caller-built image, Some on a decoded
+        // one; everything else round-trips exactly.
+        let mut img = b.image.clone();
+        img.layout = None;
+        assert_eq!(img, f.image);
+        assert_eq!(b.index, f.index);
+        assert_eq!(b.delay, None);
+    }
+    // Same bytes as the depth alias over per-page `encode` output.
+    let files: Vec<Vec<u8>> = pages
+        .iter()
+        .map(|p| encode(p, &EncodeOptions::default()).unwrap())
+        .collect();
+    assert_eq!(bundle, encode_dcx(&files).unwrap());
+    // Options apply to every page.
+    let dpi = encode_all(&frames, &EncodeOptions::default().with_dpi((300, 300))).unwrap();
+    for fr in decode_all(&dpi).unwrap() {
+        assert_eq!(fr.image.dpi, Some((300, 300)));
+    }
+    // One frame is still a (one-page) bundle; none is an error.
+    let one = encode_all(&frames[..1], &EncodeOptions::default()).unwrap();
+    assert_eq!(decode_all(&one).unwrap().len(), 1);
+    assert!(matches!(
+        encode_all(&[], &EncodeOptions::default()),
+        Err(Error::InvalidData(_))
+    ));
+    // A page the format cannot carry fails the whole bundle.
+    let rgba = Frame::new(PcxImage::from_rgba8(W, H, seeded(N * 4, 52)).unwrap(), 0);
+    assert!(matches!(
+        encode_all(&[rgba], &EncodeOptions::default()),
+        Err(Error::Unsupported(_))
+    ));
 }
 
 // ---- Error shape -----------------------------------------------------------------

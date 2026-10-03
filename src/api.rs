@@ -109,6 +109,24 @@ pub fn encode_rgba8(width: u32, height: u32, rgba: &[u8], opts: &EncodeOptions) 
     encode_image(&PcxImage::from_rgba8(width, height, rgba.to_vec())?, &opts)
 }
 
+/// Encode several images as one DCX bundle — the mirror of
+/// [`decode_all`]. Every `frames[i].image` is written with [`encode`]
+/// under `opts` (so each page keeps its own geometry; `delay` and
+/// `index` are not stored, DCX has no field for either) and the pages
+/// are wrapped by [`crate::encode_dcx`]. A single frame still yields a
+/// one-page bundle; use [`encode`] for a plain PCX. An empty slice, or
+/// more than [`crate::DCX_MAX_PAGES`] frames, is [`Error::InvalidData`].
+pub fn encode_all(frames: &[Frame], opts: &EncodeOptions) -> Result<Vec<u8>> {
+    if frames.is_empty() {
+        return Err(Error::invalid("DCX: encode_all needs at least one frame"));
+    }
+    let pages = frames
+        .iter()
+        .map(|f| encode_image(&f.image, opts))
+        .collect::<Result<Vec<_>>>()?;
+    crate::dcx::encode_dcx(&pages)
+}
+
 /// [`encode`] straight into a writer.
 pub fn encode_to<W: Write>(image: &PcxImage, opts: &EncodeOptions, mut w: W) -> Result<()> {
     let bytes = encode_image(image, opts)?;

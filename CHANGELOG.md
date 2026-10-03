@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `encode_all(&[Frame], &EncodeOptions) -> Result<Vec<u8>, Error>`: the
+  mirror of `decode_all`, writing one DCX page per frame (each page as
+  `encode` would write it, options applied to every page). `encode_dcx`
+  stays as the byte-level depth alias over already-encoded PCX streams.
+- `Cargo.toml` `exclude = ["/tests", "/fuzz"]` (crates.io 10 MiB cap).
+
 ### Changed
 
 - **IMAGE_CRATE_API conformance.** The crate root now exposes the

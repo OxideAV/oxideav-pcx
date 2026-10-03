@@ -50,6 +50,7 @@ if oxideav_pcx::probe(&bytes) {
 | `decode_from` | `fn<R: Read>(R) -> Result<PcxImage, Error>` |
 | `encode` | `fn(&PcxImage, &EncodeOptions) -> Result<Vec<u8>, Error>` — the image's own geometry, never a silent conversion |
 | `encode_rgb8` / `encode_rgba8` | `fn(w, h, &[u8], &EncodeOptions)` — 24-bit (8 bpp × 3 planes); `encode_rgba8` drops alpha |
+| `encode_all` | `fn(&[Frame], &EncodeOptions) -> Result<Vec<u8>, Error>` — a DCX bundle, one page per frame (each written as `encode` would); the mirror of `decode_all` |
 | `encode_to` | `fn<W: Write>(&PcxImage, &EncodeOptions, W) -> Result<(), Error>` |
 | `PcxImage` | `{ width, height, format: PixelFormat, planes: Vec<Plane>, color: ColorInfo, metadata: Metadata, palette: Option<Palette>, dpi, window_origin, screen_size: Option<(u16, u16)>, layout: Option<PcxLayout> }` with `new` / `new_indexed` / `packed` / `from_rgb8` / `from_rgba8` / `from_gray8` (all `-> Result`), `width()` / `height()` / `format()` / `stride()`, `as_bytes()` / `into_raw()`, `to_rgb8()` / `to_rgba8()` (+ `try_` variants), `to_indexed()`, `into_legacy_layout()` |
 | `PixelFormat` | `= PcxPixelFormat`: `Pal8`, `Gray8`, `Rgb24`, `Rgba` (input only — names mirror `oxideav_core::PixelFormat`) |
@@ -221,9 +222,12 @@ geometry, every paletted mode has a typed accessor:
 
 ### DCX multi-page bundles
 
-`decode_all` / `encode_dcx` handle the Microsoft FAX multi-page wrapper
+`decode_all` / `encode_all` handle the Microsoft FAX multi-page wrapper
 (4-byte magic `0x3ADE68B1`, up to `DCX_MAX_PAGES` = 1023 single-page
-PCX members); `probe` / `info` / `decode` accept a bundle too. The
+PCX members); `probe` / `info` / `decode` accept a bundle too, and
+`decode_all(encode_all(frames)) == frames` (page `layout` aside, which
+is `None` on a caller-built image). `encode_dcx` is the byte-level
+depth alias that wraps already-encoded PCX streams. The
 framework side registers it as its own container, so a DCX demuxes as
 one video stream with one packet per page.
 

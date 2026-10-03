@@ -57,8 +57,8 @@
 //!
 //! ## DCX multi-page bundles
 //!
-//! [`decode_all`] / [`encode_dcx`] handle the Microsoft FAX multi-page
-//! wrapper: 4-byte LE magic [`DCX_MAGIC`] (`0x3ADE_68B1`) + up to 1023
+//! [`decode_all`] / [`encode_all`] (and the byte-level [`encode_dcx`])
+//! handle the Microsoft FAX multi-page wrapper: 4-byte LE magic [`DCX_MAGIC`] (`0x3ADE_68B1`) + up to 1023
 //! u32 LE page offsets terminated by a zero sentinel + concatenated
 //! stand-alone PCX 5.0 streams. [`probe`] / [`info`] / [`decode`]
 //! accept a bundle too (`decode` = the first page).
@@ -104,7 +104,7 @@ pub const CODEC_ID_STR: &str = "pcx";
 // ---- The image-crate contract (IMAGE_CRATE_API) ----
 pub use api::{
     decode, decode_all, decode_all_with, decode_from, decode_rgb8, decode_rgba8, decode_with,
-    encode, encode_rgb8, encode_rgba8, encode_to, header, info, probe,
+    encode, encode_all, encode_rgb8, encode_rgba8, encode_to, header, info, probe,
 };
 pub use error::{Error, PcxError, Result};
 pub use image::{

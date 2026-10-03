@@ -9,6 +9,8 @@ homepage = "https://github.com/OxideAV/oxideav-pcx"
 authors = ["Mark Karpeles"]
 description = "Pure-Rust PCX (ZSoft PC Paintbrush) reader/writer for oxideav — clean-room from the PCX 5.0 spec"
 readme = "README.md"
+# crates.io caps packages at 10 MiB; the fixture corpus and fuzz tree stay in git only.
+exclude = ["/tests", "/fuzz"]
 keywords = ["multimedia", "image", "pcx", "paintbrush", "pure-rust"]
 categories = ["multimedia::encoding", "multimedia::images"]
 
