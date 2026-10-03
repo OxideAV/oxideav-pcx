@@ -7,6 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **IMAGE_CRATE_API conformance.** The crate root now exposes the
+  image-crate contract vocabulary: `probe`, `info -> ImageInfo`,
+  `header -> PcxHeader`, `decode` / `decode_with(&DecodeOptions)` ->
+  `PcxImage`, `decode_rgb8` / `decode_rgba8`, `decode_all` /
+  `decode_all_with` -> `Vec<Frame>` (DCX pages), `decode_from<R>`,
+  `encode(&PcxImage, &EncodeOptions)`, `encode_rgb8` / `encode_rgba8`,
+  `encode_to<W>`.
+- `PcxImage` takes the contract shape (`width`, `height`, `format`,
+  `planes`, `color`, `metadata`, `palette`, plus the header extras
+  `dpi`, `window_origin`, `screen_size` and the on-disk `layout`);
+  constructors `new` / `new_indexed` / `packed` / `from_rgb8` /
+  `from_rgba8` / `from_gray8` validate geometry and return `Result`;
+  `to_rgb8` / `to_rgba8` (+ `try_` variants), `as_bytes`, `into_raw`,
+  `to_indexed`, `into_legacy_layout`. The struct is `#[non_exhaustive]`;
+  the former `pixel_format` / `data` / `pts` fields are gone (`format`,
+  `data()` / `as_bytes()`; the registry adapter stamps `pts` on the
+  frame).
+- `decode` returns the **native layout**: `Pal8` + palette for every
+  sub-24-bit geometry (2 / 4 / 8 / 16 / 256 entries), `Gray8` for
+  `palette_info = 2` or tail-less 8 bpp files, `Rgb24` for 24-bit.
+  `PcxPixelFormat` is now `{ Rgba, Rgb24, Gray8, Pal8 }` (`Indexed8`
+  removed; `Rgba` is input-only). The framework `Decoder` emits the same
+  native layout (palette on the `VideoFrame` side-channel) whatever
+  `pixel_format` the parameters request, and the PCX / DCX demuxers
+  declare it; the `Pal8`-request switch is gone.
+- `EncodeOptions` fields replace the writer-name suffixes: `layout`
+  (force a `PcxLayout`), `compact` (the smallest-file ladder), `dpi`,
+  `window_origin`, `screen_size`, `version`, `drop_alpha`, `gray_tail`
+  (default on: grayscale files carry the grey-ramp VGA tail, which the
+  black-box reader requires on every 8 bpp file). `encode`
+  writes an image in its own geometry and refuses unfit ones with
+  `Unsupported`; without a DPI it writes `0 / 0` (unset) where the
+  pre-contract writers stamped 72 × 72 (those keep 72 × 72).
+- `DecodeOptions` limits (`max_width` / `max_height` / `max_pixels` /
+  `max_bytes`, 1 GiB default) are enforced before allocation; `strict`
+  rejects row-spanning RLE packets, an odd `bytes_per_line` and a
+  non-zero reserved byte.
+- `PcxError` gains `LimitExceeded` and `Io(std::io::Error)` (+ `From`),
+  is `#[non_exhaustive]` and no longer derives `Clone` / `PartialEq`;
+  `pub type Error = PcxError`.
+- Registry: `register(&mut RuntimeContext)` is the fleet entry point
+  (the two-registry form is `register_registries`); `make_decoder` /
+  `make_encoder` are re-exported at the root; `From<PcxImage> for
+  VideoFrame`, `PcxImage::from_video_frame` and `TryFrom<(&VideoFrame,
+  &CodecParameters)>` bridge frames; the framework `Decoder` /
+  `Encoder` call the standalone functions. The encoder's `Pal8` path
+  rejects a side-channel whose length is not a multiple of 3.
+- `probe` / `info` / `decode` accept a DCX bundle (first page; `frames`
+  = page count). The deprecated `parse_pcx` keeps rejecting bundles.
+- `parse_pcx_indexed_4bpp_4planes` and `encode_pcx_4bpp_4planes` stay as
+  depth entry points (the composite slot has no `PcxImage` layout).
+- Tests: `tests/contract.rs` (conformance) and `tests/golden_pins.rs`
+  with `tests/golden/` (60 fixtures from the previous release pinning
+  every pre-contract writer and the flatten reader byte-for-byte);
+  framework tests gated on `registry` so the suite runs
+  `--no-default-features`. Fuzz: `decode_pcx` drives the contract
+  vocabulary plus the encode → decode round trip; `encode_pcx` adds
+  `encode` over `Pal8` / `Gray8` / `Rgb24` images. CI: the standalone
+  job builds, tests and lints without the registry feature.
+
+### Fixed
+
+- Writing a window origin with `x_min + width == 65536` (or the same on
+  the y axis) overflowed the `x_max` / `y_max` header arithmetic in
+  debug builds (found by the `decode_pcx` fuzz target's new encode →
+  decode round trip); the sum is now formed in `u32`.
+
+### Deprecated
+
+- `parse_pcx` (use `decode`), `parse_pcx_cga_cpi` (`decode`),
+  `parse_header` (`header`), `parse_dcx` / `DcxImage` (`decode_all`),
+  `register_runtime` (`register`), `PcxAutoMode` (`PcxLayout`), and
+  every `encode_pcx_*` writer — `encode_pcx_24bpp` (+ `_dpi`,
+  `_window`, `_window_dpi`, `_screen`, `_window_dpi_screen`, `_image`),
+  `encode_pcx_8bpp_indexed` (+ `_dpi`), `encode_pcx_8bpp_grayscale`
+  (+ `_dpi`), `encode_pcx_1bpp_mono` (+ `_dpi`),
+  `encode_pcx_1bpp_3planes_ega_rgb` (+ `_dpi`),
+  `encode_pcx_1bpp_4planes_ega` (+ `_dpi`), `encode_pcx_4bpp_packed`
+  (+ `_dpi`), `encode_pcx_2bpp_cga` (+ `_dpi`, `_cpi`),
+  `encode_pcx_1bpp_2planes_cga` (+ `_dpi`), `encode_pcx_rgb_auto`,
+  `encode_pcx_indexed_auto`, `encode_pcx_image_auto` — all kept for one
+  release as thin wrappers with byte-identical output.
+
 ## [0.1.1](https://github.com/OxideAV/oxideav-pcx/compare/v0.1.0...v0.1.1) - 2026-07-18
 
 ### Other
