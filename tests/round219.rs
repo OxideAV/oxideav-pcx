@@ -18,6 +18,11 @@
 //! threads `PcxImage::dpi` through automatically so a round-trip
 //! through that helper preserves the metadata end-to-end.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::types::PCX_HEADER_SIZE;
 use oxideav_pcx::{
     encode_pcx_1bpp_mono, encode_pcx_1bpp_mono_dpi, encode_pcx_24bpp, encode_pcx_24bpp_dpi,
@@ -159,7 +164,7 @@ fn pcximage_wrapper_threads_dpi_through_encode_round_trip() {
     let re_decoded = parse_pcx(&re_encoded).unwrap();
     assert_eq!(re_decoded.dpi, Some((300, 300)));
     // Pixel data still round-trips bit-identically.
-    assert_eq!(re_decoded.data, decoded.data);
+    assert_eq!(re_decoded.data(), decoded.data());
 }
 
 #[test]
@@ -168,16 +173,11 @@ fn pcximage_wrapper_uses_default_72_when_dpi_is_none() {
     // through the wrapper at the 72×72 default — the wrapper doesn't
     // bake in 0×0.
     let rgb = dummy_rgb(4, 2);
-    let img = PcxImage {
-        width: 4,
-        height: 2,
-        pixel_format: PcxPixelFormat::Rgb24,
-        data: rgb,
-        pts: None,
-        dpi: None,
-        window_origin: None,
-        screen_size: None,
-    };
+    let img = PcxImage::from_rgb8(4, 2, rgb)
+        .unwrap()
+        .with_dpi(None)
+        .with_window_origin(None)
+        .with_screen_size(None);
     let bytes = encode_pcx_24bpp_image(&img).unwrap();
     assert_eq!(read_u16_le(&bytes, 12), 72);
     assert_eq!(read_u16_le(&bytes, 14), 72);
@@ -225,8 +225,8 @@ fn dpi_writer_round_trip_preserves_decoded_pixels() {
     assert_eq!(img.dpi, Some((200, 200)));
     assert_eq!(img.width, 8);
     assert_eq!(img.height, 4);
-    assert_eq!(img.pixel_format, PcxPixelFormat::Rgba);
-    for (i, chunk) in img.data.chunks_exact(4).enumerate() {
+    assert_eq!(img.format, PcxPixelFormat::Rgba);
+    for (i, chunk) in img.data().chunks_exact(4).enumerate() {
         let expected = pixels[i];
         assert_eq!(chunk[0], expected);
         assert_eq!(chunk[1], expected);

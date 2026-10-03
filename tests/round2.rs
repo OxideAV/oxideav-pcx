@@ -2,6 +2,11 @@
 //! 2 bpp + 4 bpp packed-bits decoder additions, plus DCX multi-page
 //! container demux + mux roundtrips.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::{
     encode_dcx, encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono, encode_pcx_24bpp,
     encode_pcx_2bpp_cga, encode_pcx_4bpp_packed, parse_dcx, parse_pcx, DCX_MAGIC, DCX_MAX_PAGES,
@@ -27,12 +32,17 @@ fn roundtrip_1bpp_mono_writer() {
     // White = 0xFF, black = 0x00.
     for (x, &p) in pixels.iter().take(8).enumerate() {
         let exp = if p != 0 { 0xFF } else { 0x00 };
-        assert_eq!(img.data[x * 4], exp, "row 0 pixel {x} should be {:#x}", exp);
+        assert_eq!(
+            img.data()[x * 4],
+            exp,
+            "row 0 pixel {x} should be {:#x}",
+            exp
+        );
     }
     for (x, &p) in pixels.iter().skip(8).take(8).enumerate() {
         let exp = if p != 0 { 0xFF } else { 0x00 };
         assert_eq!(
-            img.data[(8 + x) * 4],
+            img.data()[(8 + x) * 4],
             exp,
             "row 1 pixel {x} should be {:#x}",
             exp
@@ -50,7 +60,7 @@ fn roundtrip_1bpp_mono_odd_width() {
     let img = parse_pcx(&bytes).unwrap();
     for (x, &p) in pixels.iter().take(5).enumerate() {
         let exp = if p != 0 { 0xFF } else { 0x00 };
-        assert_eq!(img.data[x * 4], exp);
+        assert_eq!(img.data()[x * 4], exp);
     }
 }
 
@@ -90,7 +100,7 @@ fn roundtrip_4bpp_packed_writer_and_decoder() {
     for (i, &idx) in indices.iter().enumerate() {
         let off = idx as usize * 3;
         let want = [palette[off], palette[off + 1], palette[off + 2], 0xFF];
-        assert_eq!(img.data[i * 4..i * 4 + 4], want, "pixel {i} idx {idx}");
+        assert_eq!(img.data()[i * 4..i * 4 + 4], want, "pixel {i} idx {idx}");
     }
 }
 
@@ -106,7 +116,7 @@ fn roundtrip_4bpp_packed_solid_compresses() {
     );
     let img = parse_pcx(&bytes).unwrap();
     let want = [palette[7 * 3], palette[7 * 3 + 1], palette[7 * 3 + 2], 0xFF];
-    for px in img.data.chunks_exact(4) {
+    for px in img.data().chunks_exact(4) {
         assert_eq!(px, &want);
     }
 }
@@ -136,7 +146,7 @@ fn roundtrip_2bpp_cga_palette_1_high() {
     for (i, &idx) in indices.iter().enumerate() {
         let want = expected[idx as usize];
         assert_eq!(
-            img.data[i * 4..i * 4 + 4],
+            img.data()[i * 4..i * 4 + 4],
             [want[0], want[1], want[2], 0xFF],
             "pixel {i}"
         );
@@ -161,7 +171,7 @@ fn roundtrip_2bpp_cga_palette_0_low_with_bg() {
     for (i, &idx) in indices.iter().enumerate() {
         let want = expected[idx as usize];
         assert_eq!(
-            img.data[i * 4..i * 4 + 4],
+            img.data()[i * 4..i * 4 + 4],
             [want[0], want[1], want[2], 0xFF],
             "pixel {i}"
         );
@@ -200,7 +210,7 @@ fn roundtrip_1bpp_4planes_ega_writer() {
     for (i, &idx) in indices.iter().enumerate() {
         let off = idx as usize * 3;
         let want = [palette[off], palette[off + 1], palette[off + 2], 0xFF];
-        assert_eq!(img.data[i * 4..i * 4 + 4], want, "pixel {i} idx {idx}");
+        assert_eq!(img.data()[i * 4..i * 4 + 4], want, "pixel {i} idx {idx}");
     }
 }
 
@@ -220,7 +230,7 @@ fn roundtrip_1bpp_4planes_ega_multirow() {
     for (i, &idx) in indices.iter().enumerate() {
         let off = idx as usize * 3;
         let want = [palette[off], palette[off + 1], palette[off + 2], 0xFF];
-        assert_eq!(img.data[i * 4..i * 4 + 4], want, "pixel {i} idx {idx}");
+        assert_eq!(img.data()[i * 4..i * 4 + 4], want, "pixel {i} idx {idx}");
     }
 }
 
@@ -251,9 +261,9 @@ fn dcx_roundtrip_three_pages() {
     assert_eq!(parsed.pages.len(), 3);
     assert_eq!(parsed.pages[0].width, 8);
     // First pixel of each page is the solid colour.
-    assert_eq!(&parsed.pages[0].data[..3], &[255, 0, 0]);
-    assert_eq!(&parsed.pages[1].data[..3], &[0, 255, 0]);
-    assert_eq!(&parsed.pages[2].data[..3], &[0, 0, 255]);
+    assert_eq!(&parsed.pages[0].data()[..3], &[255, 0, 0]);
+    assert_eq!(&parsed.pages[1].data()[..3], &[0, 255, 0]);
+    assert_eq!(&parsed.pages[2].data()[..3], &[0, 0, 255]);
 }
 
 #[test]
@@ -264,7 +274,7 @@ fn dcx_roundtrip_one_page() {
     assert_eq!(parsed.pages.len(), 1);
     assert_eq!(parsed.pages[0].width, 4);
     assert_eq!(parsed.pages[0].height, 4);
-    assert_eq!(&parsed.pages[0].data[..3], &[128, 64, 32]);
+    assert_eq!(&parsed.pages[0].data()[..3], &[128, 64, 32]);
 }
 
 #[test]

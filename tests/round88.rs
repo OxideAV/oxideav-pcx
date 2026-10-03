@@ -3,13 +3,17 @@
 //! writer (8 bpp × 1 plane PCX 5.0 with `palette_info = 2` set per
 //! spec §3 and no VGA tail palette appended).
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
 #![cfg(feature = "registry")]
 
 use oxideav_core::{
     CodecId, CodecParameters, Frame, MediaType, PixelFormat, VideoFrame, VideoPlane,
 };
 
-use oxideav_pcx::encoder::make_encoder;
+use oxideav_pcx::make_encoder;
 use oxideav_pcx::types::PCX_HEADER_SIZE;
 use oxideav_pcx::{parse_pcx, PcxPixelFormat};
 
@@ -48,13 +52,20 @@ fn framework_encoder_accepts_gray8_frame() {
     // bits_per_pixel = 8, n_planes = 1.
     assert_eq!(pkt.data[3], 8);
     assert_eq!(pkt.data[65], 1);
-    // No tail VGA palette: total length stays small (header + a handful
-    // of RLE bytes).
+    // The contract encoder appends the grey-ramp VGA tail by default
+    // (`EncodeOptions::gray_tail`, for readers that require a VGA block
+    // on every 8 bpp file): header + a handful of RLE bytes + 769.
     assert!(
-        pkt.data.len() < PCX_HEADER_SIZE + 80,
-        "Gray8 encode must not append a VGA tail palette; got {} bytes",
+        pkt.data.len() < PCX_HEADER_SIZE + 80 + 769,
+        "Gray8 encode grew beyond header + RLE + grey-ramp tail; got {} bytes",
         pkt.data.len()
     );
+    assert_eq!(
+        pkt.data[pkt.data.len() - 769],
+        0x0C,
+        "grey-ramp tail marker"
+    );
+    assert_eq!(&pkt.data[pkt.data.len() - 768..][..6], &[0, 0, 0, 1, 1, 1]);
     assert!(pkt.flags.keyframe);
 }
 
@@ -69,14 +80,14 @@ fn framework_encoder_gray8_roundtrip_pixel_exact() {
     let img = parse_pcx(&pkt.data).unwrap();
     assert_eq!(img.width, 12);
     assert_eq!(img.height, 5);
-    assert_eq!(img.pixel_format, PcxPixelFormat::Rgba);
+    assert_eq!(img.format, PcxPixelFormat::Rgba);
     let plane = &frame.planes[0];
     for y in 0..5usize {
         for x in 0..12usize {
             let v = plane.data[y * plane.stride + x];
             let off = (y * 12 + x) * 4;
             assert_eq!(
-                &img.data[off..off + 4],
+                &img.data()[off..off + 4],
                 &[v, v, v, 0xFF],
                 "Gray8 pixel ({x},{y}) v={v} should decode as ({v},{v},{v},255)"
             );
@@ -116,7 +127,7 @@ fn framework_encoder_gray8_honours_non_tight_stride() {
             let v = (x * 30 + y * 7) as u8;
             let off = (y * width as usize + x) * 4;
             assert_eq!(
-                &img.data[off..off + 4],
+                &img.data()[off..off + 4],
                 &[v, v, v, 0xFF],
                 "stride-padded Gray8 ({x},{y}) should still roundtrip"
             );

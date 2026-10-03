@@ -9,9 +9,13 @@
 //! is the colour-count decision, the first-seen palette assignment, and
 //! the lossless round-trip through `parse_pcx` in both branches.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::{
     encode_pcx_24bpp, encode_pcx_image_auto, encode_pcx_rgb_auto, parse_pcx, PcxAutoMode, PcxImage,
-    PcxPixelFormat,
 };
 
 /// Deterministic generator so every run exercises the same pixels.
@@ -29,7 +33,7 @@ fn xorshift32(state: &mut u32) -> u32 {
 fn decode_to_rgb(bytes: &[u8]) -> (u16, u16, Vec<u8>) {
     let img = parse_pcx(bytes).expect("decode");
     let mut rgb = Vec::with_capacity(img.width as usize * img.height as usize * 3);
-    for px in img.data.chunks_exact(4) {
+    for px in img.data().chunks_exact(4) {
         rgb.extend_from_slice(&px[..3]);
     }
     (img.width as u16, img.height as u16, rgb)
@@ -266,16 +270,11 @@ fn rgba_image(
     for c in rgb.chunks_exact(3) {
         data.extend_from_slice(&[c[0], c[1], c[2], 0xFF]);
     }
-    PcxImage {
-        width: w,
-        height: h,
-        pixel_format: PcxPixelFormat::Rgba,
-        data,
-        pts: None,
-        dpi,
-        window_origin,
-        screen_size,
-    }
+    PcxImage::from_rgba8(w, h, data)
+        .unwrap()
+        .with_dpi(dpi)
+        .with_window_origin(window_origin)
+        .with_screen_size(screen_size)
 }
 
 #[test]
@@ -370,15 +369,10 @@ fn image_auto_true_color_falls_back_to_planar() {
 
 #[test]
 fn image_auto_rejects_indexed8_input() {
-    let img = PcxImage {
-        width: 4,
-        height: 1,
-        pixel_format: PcxPixelFormat::Indexed8,
-        data: vec![0, 1, 2, 3],
-        pts: None,
-        dpi: None,
-        window_origin: None,
-        screen_size: None,
-    };
+    let img = PcxImage::from_gray8(4, 1, vec![0, 1, 2, 3])
+        .unwrap()
+        .with_dpi(None)
+        .with_window_origin(None)
+        .with_screen_size(None);
     assert!(encode_pcx_image_auto(&img).is_err());
 }

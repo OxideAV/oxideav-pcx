@@ -24,9 +24,9 @@
 //! (header + RLE pixel data + optional VGA tail palette). The container
 //! does not interpret PCX page contents — it only locates them.
 
-use crate::decoder::parse_pcx;
 use crate::error::{PcxError as Error, Result};
-use crate::image::PcxImage;
+use crate::image::{Frame, PcxImage};
+use crate::options::DecodeOptions;
 
 /// 4-byte little-endian magic that prefixes every DCX file.
 pub const DCX_MAGIC: u32 = 0x3ADE_68B1;
@@ -36,28 +36,19 @@ pub const DCX_MAGIC: u32 = 0x3ADE_68B1;
 /// for the terminating zero, so up to 1023 pages can be carried.
 pub const DCX_MAX_PAGES: usize = 1023;
 
-/// One decoded DCX bundle.
-#[derive(Debug, Clone)]
-pub struct DcxImage {
-    /// One [`PcxImage`] per page in the bundle. `pages.len() ≤
-    /// `DCX_MAX_PAGES`].
-    pub pages: Vec<PcxImage>,
+/// `true` when `input` starts with the DCX magic.
+pub(crate) fn is_dcx(input: &[u8]) -> bool {
+    input.len() >= 4 && u32::from_le_bytes([input[0], input[1], input[2], input[3]]) == DCX_MAGIC
 }
 
-/// Parse a DCX file: magic check, walk the offset table, then decode
-/// each embedded PCX page with [`parse_pcx`].
-///
-/// Returns an error if the magic doesn't match, the offset table is
-/// truncated, an offset is out of range, or any embedded PCX page
-/// fails to decode.
-pub fn parse_dcx(input: &[u8]) -> Result<DcxImage> {
+/// Slice a DCX bundle into its stand-alone PCX pages (magic check,
+/// offset table, per-page byte ranges). The end of a page is the start
+/// of the next, or EOF for the last — PCX has no length field of its
+/// own.
+pub(crate) fn page_slices(input: &[u8]) -> Result<Vec<&[u8]>> {
     let offsets = parse_offset_table(input)?;
     let mut pages = Vec::with_capacity(offsets.len());
     for (i, &start) in offsets.iter().enumerate() {
-        // The end of this page is the start of the next page, OR EOF
-        // for the last page. PCX has no length field in its own header
-        // so we slice the bundle accordingly before handing the bytes
-        // to `parse_pcx`.
         let end = offsets.get(i + 1).copied().unwrap_or(input.len());
         if end > input.len() || end < start {
             return Err(Error::invalid(format!(
@@ -65,17 +56,60 @@ pub fn parse_dcx(input: &[u8]) -> Result<DcxImage> {
                 input.len()
             )));
         }
-        let page_bytes = &input[start..end];
-        let img = parse_pcx(page_bytes)
-            .map_err(|e| Error::invalid(format!("DCX: page {i} parse failed: {e}")))?;
-        pages.push(img);
+        pages.push(&input[start..end]);
     }
+    Ok(pages)
+}
+
+/// [`crate::decode_all`]: every page of a DCX bundle as a [`Frame`]
+/// (native layout, `delay` `None`, `index` = page number), or the one
+/// image of a plain PCX file.
+pub(crate) fn decode_all_with(input: &[u8], opts: &DecodeOptions) -> Result<Vec<Frame>> {
+    if !is_dcx(input) {
+        return Ok(vec![Frame::new(
+            crate::decoder::decode_image(input, opts)?,
+            0,
+        )]);
+    }
+    let pages = page_slices(input)?;
+    let mut out = Vec::with_capacity(pages.len());
+    for (i, page) in pages.iter().enumerate() {
+        let img = crate::decoder::decode_page(page, opts)
+            .map_err(|e| Error::invalid(format!("DCX: page {i} parse failed: {e}")))?;
+        out.push(Frame::new(img, i as u32));
+    }
+    Ok(out)
+}
+
+/// One decoded DCX bundle — the pre-contract shape; [`crate::decode_all`]
+/// returns `Vec<Frame>` instead.
+#[deprecated(note = "use oxideav_pcx::decode_all (IMAGE_CRATE_API)")]
+#[derive(Debug, Clone)]
+pub struct DcxImage {
+    /// One [`PcxImage`] per page in the bundle (packed `Rgba`, the
+    /// pre-contract flatten). `pages.len() ≤ DCX_MAX_PAGES`.
+    pub pages: Vec<PcxImage>,
+}
+
+/// Parse a DCX file into packed-`Rgba` pages — the pre-contract shape.
+/// [`crate::decode_all`] returns the native layouts.
+#[deprecated(note = "use oxideav_pcx::decode_all (IMAGE_CRATE_API)")]
+#[allow(deprecated)]
+pub fn parse_dcx(input: &[u8]) -> Result<DcxImage> {
+    if !is_dcx(input) {
+        // Keep the historical error shape for a non-DCX input.
+        parse_offset_table(input)?;
+    }
+    let pages = decode_all_with(input, &DecodeOptions::default())?
+        .into_iter()
+        .map(|f| f.image.into_legacy_layout())
+        .collect();
     Ok(DcxImage { pages })
 }
 
 /// Parse the DCX offset table and return the in-bundle byte offsets of
-/// each PCX page. Used internally by [`parse_dcx`] but also exposed
-/// for callers that want to demux pages lazily.
+/// each PCX page. Used internally by [`crate::decode_all`] but also
+/// exposed for callers that want to demux pages lazily.
 pub fn parse_offset_table(input: &[u8]) -> Result<Vec<usize>> {
     if input.len() < 4 {
         return Err(Error::invalid("DCX: file shorter than magic (4 bytes)"));
@@ -138,7 +172,7 @@ pub fn parse_offset_table(input: &[u8]) -> Result<Vec<usize>> {
 
 /// Build a DCX bundle from a list of stand-alone PCX byte streams.
 ///
-/// The bundle layout matches what [`parse_dcx`] consumes: 4-byte magic,
+/// The bundle layout matches what [`crate::decode_all`] consumes: 4-byte magic,
 /// `pages.len() + 1` u32 LE offsets (with a trailing zero sentinel),
 /// then the concatenated pages. Returns an error if more than
 /// `DCX_MAX_PAGES` pages are supplied.

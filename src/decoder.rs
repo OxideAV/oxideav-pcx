@@ -1,311 +1,220 @@
-//! PCX decode. Always normalises to packed `Rgba` (top-left origin).
+//! PCX decode: header validation, RLE expansion and the per-geometry
+//! unpack into the native layout ([`PcxImage`]).
 //!
-//! Supports the (depth, planes) combinations called out by spec §4.1:
+//! Supports the (depth, planes) combinations called out by spec §4.1
+//! and the EGFF mode table:
 //!
-//! * 1 bpp × 1 plane — monochrome (each bit = one pixel).
-//! * 1 bpp × 3 planes — 8-colour EGA RGB. One plane per primary; plane
-//!   order is R, G, B per spec §4 (the bit-plane example at lines
-//!   46-58 of the rev-5 technical reference). Each plane bit toggles
-//!   its channel between 0x00 and 0xFF, giving the eight on/off
-//!   primary combinations.
-//! * 1 bpp × 4 planes — 16-colour EGA. Each plane carries the matching
-//!   bit-position of an EGA colour index; planes are read in BGR-IRGB
-//!   order per the spec table.
+//! * 1 bpp × 1 plane — monochrome (each bit = one pixel): `Pal8` with
+//!   the two header-colormap colours (black / white when zero-filled).
 //! * 1 bpp × 2 planes — 4-colour CGA, plane-oriented (the EGFF
 //!   canonical mode matrix lists CGA as `BitsPerPixel = 1,
-//!   NumBitPlanes = 2`). Each scanline carries plane 0 then plane 1;
-//!   the bit at the same x-position in each plane stacks into the 2-bit
-//!   palette index (`p0 | p1 << 1`). Same CGA palette resolution as the
-//!   packed `2 bpp × 1 plane` mode.
-//! * 2 bpp × 1 plane — 4-colour CGA, packed (4 pixels/byte). Palette is
-//!   the legacy CGA palette selected from header byte 16 (background
-//!   nibble) + header byte 19 (C / P / I bits, "CGA Color Map"
-//!   selector).
-//! * 4 bpp × 1 plane — 16-colour packed-bits (2 pixels/byte). Palette
-//!   is the in-header `ega_palette` (or default EGA fallback).
-//! * 8 bpp × 1 plane — 256-colour palette. Palette is the 768-byte
-//!   block at end-of-file when the byte 769 from EOF is `0x0C`; if
-//!   absent, the decoder produces a grayscale ramp as a fallback.
-//! * 8 bpp × 3 planes — 24-bit truecolour. Plane order is R, G, B.
+//!   NumBitPlanes = 2`): `Pal8` with the 4-entry CGA palette.
+//! * 1 bpp × 3 planes — 8-colour EGA RGB, one plane per primary (plane
+//!   order R, G, B per spec §4): `Pal8` with the fixed primaries.
+//! * 1 bpp × 4 planes — 16-colour EGA bit-planes: `Pal8` with the
+//!   header colormap (or the EGA hardware default when zero-filled).
+//! * 2 bpp × 1 plane — 4-colour CGA, packed (4 pixels/byte): `Pal8`,
+//!   palette from header byte 16 (background nibble) + header byte 19
+//!   (C / P / I bits, "CGA Color Map" selector).
+//! * 4 bpp × 1 plane — 16-colour packed-bits (2 pixels/byte): `Pal8`
+//!   with the header colormap (or the EGA default).
+//! * 8 bpp × 1 plane — 256-colour palette from the 768-byte block at
+//!   end-of-file when the byte 769 from EOF is `0x0C` (`Pal8`); with
+//!   `palette_info = 2`, or when no tail is present, the pixel byte is
+//!   the grey level (`Gray8`).
+//! * 8 bpp × 3 planes — 24-bit truecolour, plane order R, G, B
+//!   (`Rgb24`).
 //!
-//! With the default `registry` feature on, the gated `PcxDecoder`
-//! trait impl wraps [`parse_pcx`] for the `oxideav_core::Decoder`
-//! surface.
+//! The typed paletted accessors (`parse_pcx_indexed_*`) are the depth
+//! layer below the contract: they return the raw indices plus a
+//! palette-source tag per geometry. The registry adapter lives in
+//! `crate::registry`.
 
 use crate::error::{PcxError as Error, Result};
 use crate::image::{
-    Pcx1bpp3PlanesPaletteSource, Pcx1bpp4PlanesPaletteSource, Pcx2bppCgaCpi,
+    ImageInfo, Palette, Pcx1bpp3PlanesPaletteSource, Pcx1bpp4PlanesPaletteSource, Pcx2bppCgaCpi,
     Pcx2bppCgaPaletteSource, Pcx4bppPaletteSource, PcxImage, PcxIndexed1x2Cga, PcxIndexed1x3,
     PcxIndexed1x4, PcxIndexed2x1Cga, PcxIndexed2x1CgaCpi, PcxIndexed4, PcxIndexed4x4, PcxIndexed8,
-    PcxPaletteSource, PcxPixelFormat,
+    PcxLayout, PcxPaletteSource, PcxPixelFormat, Plane,
 };
+use crate::options::DecodeOptions;
 use crate::rle;
 use crate::types::*;
 
-#[cfg(feature = "registry")]
-use oxideav_core::Decoder;
-#[cfg(feature = "registry")]
-use oxideav_core::{CodecId, CodecParameters, Frame, Packet, VideoFrame, VideoPlane};
-
-/// Factory registered with the codec registry. Consumes one packet
-/// per whole PCX file and produces one frame.
-///
-/// Output shape is selected by `params.pixel_format`:
-///
-/// * `Some(PixelFormat::Pal8)` — the decoder returns palette-indexed
-///   frames: one `Gray8`-shaped index plane (one byte per pixel,
-///   stride = width) with the file's palette attached to the
-///   `VideoFrame` palette side-channel (trailing stride-0 plane,
-///   packed 3-byte RGB entries). Every paletted `(bpp, planes)`
-///   geometry is covered — see [`packet_to_pal8_frame`]'s table — and
-///   the palette length reflects the file's own table size (768 bytes
-///   for 8 bpp / grayscale, 48 for the 16-colour header-colormap
-///   modes, 24 for 8-colour EGA RGB, 12 for CGA, 6 for monochrome).
-///   The palette-free 24-bit mode is rejected.
-/// * anything else (the container demuxer requests `Rgba`) — the
-///   historical packed-`Rgba` expansion via [`parse_pcx`], unchanged.
-#[cfg(feature = "registry")]
-pub fn make_decoder(params: &CodecParameters) -> oxideav_core::Result<Box<dyn Decoder>> {
-    Ok(Box::new(PcxDecoder {
-        codec_id: CodecId::new(crate::CODEC_ID_STR),
-        want_pal8: params.pixel_format == Some(oxideav_core::PixelFormat::Pal8),
-        pending: None,
-        eof: false,
-    }))
-}
-
-#[cfg(feature = "registry")]
-struct PcxDecoder {
-    codec_id: CodecId,
-    /// `true` when the constructing `CodecParameters` requested
-    /// `PixelFormat::Pal8` output: frames carry raw palette indices
-    /// plus the file's palette on the side-channel instead of the
-    /// default packed-`Rgba` expansion.
-    want_pal8: bool,
-    pending: Option<VideoFrame>,
-    eof: bool,
-}
-
-#[cfg(feature = "registry")]
-impl Decoder for PcxDecoder {
-    fn codec_id(&self) -> &CodecId {
-        &self.codec_id
-    }
-    fn send_packet(&mut self, packet: &Packet) -> oxideav_core::Result<()> {
-        if self.want_pal8 {
-            self.pending = Some(packet_to_pal8_frame(&packet.data)?);
-        } else {
-            let image = parse_pcx(&packet.data)?;
-            self.pending = Some(image_to_video_frame(image));
-        }
-        Ok(())
-    }
-    fn receive_frame(&mut self) -> oxideav_core::Result<Frame> {
-        match self.pending.take() {
-            Some(f) => Ok(Frame::Video(f)),
-            None => {
-                if self.eof {
-                    Err(oxideav_core::Error::Eof)
-                } else {
-                    Err(oxideav_core::Error::NeedMore)
-                }
-            }
-        }
-    }
-    fn flush(&mut self) -> oxideav_core::Result<()> {
-        self.eof = true;
-        Ok(())
-    }
-}
-
-#[cfg(feature = "registry")]
-fn image_to_video_frame(image: PcxImage) -> VideoFrame {
-    let stride = image.stride();
-    VideoFrame {
-        pts: image.pts,
-        planes: vec![VideoPlane {
-            stride,
-            data: image.data,
-        }],
-    }
-}
-
-/// Flatten a fixed-size `[[u8; 3]; N]` RGB palette into the packed
-/// 3-byte-per-entry byte vector the `VideoFrame` palette side-channel
-/// carries.
-#[cfg(feature = "registry")]
-fn flatten_palette<const N: usize>(pal: &[[u8; 3]; N]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(N * 3);
-    for e in pal {
-        out.extend_from_slice(e);
-    }
-    out
-}
-
-/// Decode a whole PCX file into a palette-indexed `VideoFrame`: one
-/// index plane (one byte per pixel, stride = width) plus the file's
-/// palette attached to the `VideoFrame` palette side-channel.
-///
-/// Per-geometry dispatch (every paletted mode the crate reads):
-///
-/// | bpp | planes | index source                        | palette bytes |
-/// | --- | ------ | ----------------------------------- | ------------- |
-/// | 1   | 1      | bit value = colormap index (§4.1)   | 6 (2 entries) |
-/// | 1   | 2      | CGA planar (`p0 \| p1 << 1`)        | 12            |
-/// | 1   | 3      | EGA RGB (`r \| g << 1 \| b << 2`)   | 24            |
-/// | 1   | 4      | EGA bit-planes (plane k = bit k)    | 48            |
-/// | 2   | 1      | CGA packed bits (full C / P / I)    | 12            |
-/// | 4   | 1      | packed nibbles                      | 48            |
-/// | 8   | 1      | index bytes (VGA tail / grayscale)  | 768           |
-///
-/// Each row reuses the matching typed accessor's palette resolution, so
-/// the attached side-channel bytes are exactly what the standalone
-/// typed views surface (header colormap or documented default /
-/// grayscale-ramp fallback). The monochrome row mirrors the
-/// `unpack_1bpp_1plane` colormap rule: a non-zero header colormap's
-/// first two triples are the bit-0 / bit-1 colours; a zero-filled
-/// colormap falls back to the classic black / white convention.
-///
-/// The palette-free modes — 24-bit `(8, 3)` and the composite-index
-/// `(4, 4)` slot (no spec palette geometry at 65536 entries) — cannot
-/// be represented as `Pal8` and are rejected with
-/// [`Error::unsupported`].
-#[cfg(feature = "registry")]
-fn packet_to_pal8_frame(input: &[u8]) -> Result<VideoFrame> {
-    let header =
-        crate::types::parse_header(input).ok_or_else(|| Error::invalid("PCX: header truncated"))?;
-    let (width, indices, palette): (u32, Vec<u8>, Vec<u8>) =
-        match (header.bits_per_pixel, header.n_planes) {
-            (1, 1) => {
-                let (header, scanlines, _vga) = decode_planar_scanlines(input)?;
-                let w = header.width() as usize;
-                let bpl = header.bytes_per_line as usize;
-                let mut indices = Vec::with_capacity(w * header.height() as usize);
-                for row in scanlines.chunks_exact(bpl) {
-                    for x in 0..w {
-                        indices.push((row[x >> 3] >> (7 - (x & 7))) & 1);
-                    }
-                }
-                // Same colormap rule as the `unpack_1bpp_1plane`
-                // flatten path (EGFF canonical mode matrix: mono is the
-                // 2-colour paletted case; zero-filled colormaps keep
-                // the spec §4.1 bit 1 = white convention).
-                let pal: [[u8; 3]; 2] = if header.ega_palette.iter().any(|&b| b != 0) {
-                    let p = &header.ega_palette;
-                    [[p[0], p[1], p[2]], [p[3], p[4], p[5]]]
-                } else {
-                    [[0x00; 3], [0xFF; 3]]
-                };
-                (header.width(), indices, flatten_palette(&pal))
-            }
-            (1, 2) => {
-                let v = parse_pcx_indexed_1bpp_2planes_cga(input)?;
-                (v.width, v.indices, flatten_palette(&v.palette))
-            }
-            (1, 3) => {
-                let v = parse_pcx_indexed_1bpp_3planes(input)?;
-                (v.width, v.indices, flatten_palette(&v.palette))
-            }
-            (1, 4) => {
-                let v = parse_pcx_indexed_1bpp_4planes(input)?;
-                (v.width, v.indices, flatten_palette(&v.palette))
-            }
-            (2, 1) => {
-                // The spec-faithful C / P / I accessor so the
-                // monochrome composite-grey ramp (`C = 1`) resolves
-                // correctly on the side-channel.
-                let v = parse_pcx_indexed_2bpp_cga_cpi(input)?;
-                (v.width, v.indices, flatten_palette(&v.palette))
-            }
-            (4, 1) => {
-                let v = parse_pcx_indexed_4bpp(input)?;
-                (v.width, v.indices, flatten_palette(&v.palette))
-            }
-            (8, 1) => {
-                let v = parse_pcx_indexed_8bpp(input)?;
-                (v.width, v.indices, flatten_palette(&v.palette))
-            }
-            (bpp, n) => {
-                return Err(Error::unsupported(format!(
-                    "PCX: (bits_per_pixel={bpp}, n_planes={n}) carries no palette \
-                     and cannot be decoded as Pal8 (request Rgba output instead)"
-                )))
-            }
-        };
-    Ok(VideoFrame {
-        pts: None,
-        planes: vec![VideoPlane {
-            stride: width as usize,
-            data: indices,
-        }],
-    }
-    .with_palette(palette))
-}
-
 // ---------------------------------------------------------------------------
-// Public standalone API
+// Header validation (shared by probe / info / header / decode)
 // ---------------------------------------------------------------------------
 
-/// Decode a complete PCX file into a [`PcxImage`].
-///
-/// The returned image is always packed [`PcxPixelFormat::Rgba`]
-/// (palette lookup, planar→packed merging, and 1-bit expansion all
-/// happen at decode time so consumers don't have to know the on-disk
-/// quirks). Top-left origin.
-pub fn parse_pcx(input: &[u8]) -> Result<PcxImage> {
-    // Shared validation + RLE decode (see `decode_planar_scanlines`):
-    // every clean-room guard — manufacturer byte, version table,
-    // encoding byte, dimension underflow, `bytes_per_line < min_bpl`
-    // mis-framing, `scanline × height` overflow, decompression-bomb
-    // cap — lives in one place so the typed paletted accessors (e.g.
-    // `parse_pcx_indexed_8bpp`) stay in lockstep with this entry point.
-    let (header, pixels_planar, vga_palette) = decode_planar_scanlines(input)?;
+/// `true` when `bytes` starts with a plausible PCX header: manufacturer
+/// `0x0A`, a known version byte, encoding `1`, a spec depth and plane
+/// count, and a non-inverted window. Also `true` for a DCX bundle (the
+/// 4-byte magic), since [`crate::decode_all`] opens those. Allocation-
+/// free; `false` on short input.
+pub(crate) fn probe_bytes(bytes: &[u8]) -> bool {
+    if crate::dcx::is_dcx(bytes) {
+        return true;
+    }
+    let Some(h) = read_header(bytes) else {
+        return false;
+    };
+    h.manufacturer == PCX_MANUFACTURER
+        && matches!(h.version, 0 | 2 | 3 | 4 | 5)
+        && h.encoding == PCX_ENCODING_RLE
+        && matches!(h.bits_per_pixel, 1 | 2 | 4 | 8)
+        && matches!(h.n_planes, 1..=4)
+        && h.x_max >= h.x_min
+        && h.y_max >= h.y_min
+}
+
+/// A header that passed every check [`crate::decode`] applies before
+/// touching pixel data, plus the resolved VGA tail and geometry.
+pub(crate) struct Validated<'a> {
+    pub header: PcxHeader,
+    /// The 768 palette bytes of the VGA tail block, when the file is
+    /// `8 bpp × 1 plane` and ends in one.
+    pub vga_palette: Option<&'a [u8]>,
+    /// The spec geometry, or `None` for the `4 bpp × 4 planes`
+    /// composite slot (structurally valid, no palette geometry — only
+    /// the typed accessor reads it).
+    pub layout: Option<PcxLayout>,
+}
+
+/// Validate the 128-byte header: manufacturer byte, version table,
+/// encoding byte, dimension underflow, zero dimensions, zero planes /
+/// `bytes_per_line`, `bytes_per_line < min_bpl` mis-framing, and a
+/// geometry the spec defines. In `strict` mode the spec's *should*
+/// rules are enforced too: an even `bytes_per_line` and a zero
+/// reserved byte.
+pub(crate) fn validate_header(input: &[u8], strict: bool) -> Result<Validated<'_>> {
+    let header = read_header(input).ok_or_else(|| Error::invalid("PCX: header truncated"))?;
+    if header.manufacturer != PCX_MANUFACTURER {
+        return Err(Error::invalid(format!(
+            "PCX: bad manufacturer byte 0x{:02X} (expected 0x0A)",
+            header.manufacturer
+        )));
+    }
+    if !matches!(header.version, 0 | 2 | 3 | 4 | 5) {
+        return Err(Error::invalid(format!(
+            "PCX: unknown version byte {} (expected 0/2/3/4/5)",
+            header.version
+        )));
+    }
+    if header.encoding != PCX_ENCODING_RLE {
+        return Err(Error::unsupported(format!(
+            "PCX: encoding byte {} not supported (only 1 = RLE is defined)",
+            header.encoding
+        )));
+    }
     let width = header.width();
     let height = header.height();
-
-    // Re-pack planar scanlines into packed RGBA pixels per
-    // (depth, n_planes) combination.
-    let data = match (header.bits_per_pixel, header.n_planes) {
-        (1, 1) => unpack_1bpp_1plane(&header, &pixels_planar),
-        (1, 2) => unpack_1bpp_2planes_cga(&header, &pixels_planar),
-        (1, 3) => unpack_1bpp_3planes(&header, &pixels_planar),
-        (1, 4) => unpack_1bpp_4planes(&header, &pixels_planar),
-        (2, 1) => unpack_2bpp_1plane_cga(&header, &pixels_planar),
-        (4, 1) => unpack_4bpp_1plane(&header, &pixels_planar),
-        (8, 1) => {
-            // `palette_info == 2` (spec §3) forces the grayscale
-            // interpretation regardless of whether a tail palette is
-            // present. Some scanner / FAX-era tools emit a grayscale
-            // PCX with `palette_info=2` and no VGA tail; some emit
-            // the flag AND a redundant tail palette. We honour the
-            // flag in both cases.
-            let palette = if header.palette_info == 2 {
-                None
-            } else {
-                vga_palette
-            };
-            unpack_8bpp_1plane(&header, &pixels_planar, palette)?
-        }
-        (8, 3) => unpack_8bpp_3planes(&header, &pixels_planar),
-        (bpp, n) => {
+    if width == 0 || height == 0 {
+        return Err(Error::invalid("PCX: zero dimension"));
+    }
+    if header.x_max < header.x_min || header.y_max < header.y_min {
+        return Err(Error::invalid("PCX: x_max < x_min or y_max < y_min"));
+    }
+    if header.bytes_per_line == 0 {
+        return Err(Error::invalid("PCX: bytes_per_line == 0"));
+    }
+    if header.n_planes == 0 {
+        return Err(Error::invalid("PCX: n_planes == 0"));
+    }
+    let min_bpl: u32 = match header.bits_per_pixel {
+        1 => width.div_ceil(8),
+        2 => width.div_ceil(4),
+        4 => width.div_ceil(2),
+        8 => width,
+        bpp => {
             return Err(Error::unsupported(format!(
-                "PCX: (bits_per_pixel={bpp}, n_planes={n}) combination not supported"
+                "PCX: bits_per_pixel={bpp} not in the {{1,2,4,8}} set the spec defines"
             )))
         }
     };
-
-    let (dpi, window_origin, screen_size) = surface_header_metadata(&header);
-
-    Ok(PcxImage {
-        width,
-        height,
-        pixel_format: PcxPixelFormat::Rgba,
-        data,
-        pts: None,
-        dpi,
-        window_origin,
-        screen_size,
+    if (header.bytes_per_line as u32) < min_bpl {
+        return Err(Error::invalid(format!(
+            "PCX: bytes_per_line={} too small for width={} at {} bpp (need ≥ {})",
+            header.bytes_per_line, width, header.bits_per_pixel, min_bpl
+        )));
+    }
+    if strict {
+        if header.bytes_per_line % 2 != 0 {
+            return Err(Error::invalid(format!(
+                "PCX (strict): bytes_per_line={} is odd; spec §3 says it MUST be even",
+                header.bytes_per_line
+            )));
+        }
+        if header.reserved != 0 {
+            return Err(Error::invalid(format!(
+                "PCX (strict): reserved byte 64 is 0x{:02X}, should be 0",
+                header.reserved
+            )));
+        }
+    }
+    // The appended 768-byte VGA palette (marker `0x0C` 769 bytes from EOF)
+    // belongs to the 256-colour Extended VGA mode *only* — spec §"VGA
+    // 256-color palette" introduces it as the carrier for "more than 16
+    // colors", and spec §"24-bit .PCX files" states 24-bit (8 bpp ×
+    // 3-plane) images "do **not** contain a palette". Every sub-256-colour
+    // mode (mono / CGA / EGA / 16-colour) carries its palette in the header
+    // `Colormap` field, never as a tail block. So the tail-palette probe is
+    // confined to `(8 bpp, 1 plane)`. The cross-reference summary
+    // (`docs/image/pcx/pcx-egff-fileformat-info.html`) flags exactly why
+    // this matters: "24-bit PCX images are always marked as v3.0, yet never
+    // have an attached color palette" and the `0x0C` marker byte "might be
+    // 0Ch by coincidence" — a 24-bit (or CGA/EGA) stream whose RLE data
+    // happens to end with that pattern would otherwise have 769 bytes of
+    // real pixel data mis-claimed as a palette and stripped from the RLE
+    // region, corrupting the decode.
+    let vga_palette = if (header.bits_per_pixel, header.n_planes) == (8, 1) {
+        find_vga_palette(input)
+    } else {
+        None
+    };
+    let layout = header.layout(vga_palette.is_some());
+    if layout.is_none() && (header.bits_per_pixel, header.n_planes) != (4, 4) {
+        return Err(unsupported_geometry(&header));
+    }
+    Ok(Validated {
+        header,
+        vga_palette,
+        layout,
     })
+}
+
+fn unsupported_geometry(header: &PcxHeader) -> Error {
+    Error::unsupported(format!(
+        "PCX: (bits_per_pixel={}, n_planes={}) combination not supported",
+        header.bits_per_pixel, header.n_planes
+    ))
+}
+
+/// [`crate::info`]: the header-only description of a PCX file, or of a
+/// DCX bundle's first page (with `frames` = the page count).
+pub(crate) fn header_info(input: &[u8]) -> Result<ImageInfo> {
+    if crate::dcx::is_dcx(input) {
+        let pages = crate::dcx::page_slices(input)?;
+        let first = pages
+            .first()
+            .ok_or_else(|| Error::invalid("DCX: bundle has no pages"))?;
+        let mut info = header_info(first)?;
+        info.frames = u32::try_from(pages.len()).unwrap_or(u32::MAX);
+        return Ok(info);
+    }
+    let v = validate_header(input, false)?;
+    let h = &v.header;
+    let layout = v.layout.ok_or_else(|| unsupported_geometry(h))?;
+    let (dpi, window_origin, screen_size) = surface_header_metadata(h);
+    let mut info = ImageInfo::new(h.width(), h.height(), layout);
+    info.version = h.version;
+    info.bits_per_pixel = h.bits_per_pixel;
+    info.n_planes = h.n_planes;
+    info.bytes_per_line = h.bytes_per_line;
+    info.palette_info = h.palette_info;
+    info.has_vga_palette = v.vga_palette.is_some();
+    info.dpi = dpi;
+    info.window_origin = window_origin;
+    info.screen_size = screen_size;
+    Ok(info)
 }
 
 /// The three optional authoring-metadata pairs surfaced on a decoded
@@ -317,8 +226,7 @@ type HeaderMetadata = (Option<(u16, u16)>, Option<(u16, u16)>, Option<(u16, u16)
 /// header — printer/scanner DPI (`h_dpi` / `v_dpi`), the source crop
 /// origin (`x_min` / `y_min`), and the PB IV authoring screen size
 /// (`h_screen_size` / `v_screen_size`) — applying the spec §3 "0 = unset"
-/// sentinel uniformly so every flatten entry point surfaces the same
-/// `Option` shape.
+/// sentinel uniformly.
 ///
 /// * DPI and screen size require BOTH components non-zero: per spec §3 a
 ///   0 in either means "unset" (many drawing programs leave the field at
@@ -328,9 +236,8 @@ type HeaderMetadata = (Option<(u16, u16)>, Option<(u16, u16)>, Option<(u16, u16)
 ///   PCX 3.0+ allows a non-zero origin to record the source crop region
 ///   (spec §3 derives visible width/height as `x_max - x_min + 1` /
 ///   `y_max - y_min + 1`); the common screen-authored `(0, 0)` collapses
-///   to `None` so a re-encode wrapper doesn't restate an implicit
-///   default.
-fn surface_header_metadata(header: &PcxHeader) -> HeaderMetadata {
+///   to `None`.
+pub(crate) fn surface_header_metadata(header: &PcxHeader) -> HeaderMetadata {
     let dpi = if header.h_dpi != 0 && header.v_dpi != 0 {
         Some((header.h_dpi, header.v_dpi))
     } else {
@@ -349,56 +256,476 @@ fn surface_header_metadata(header: &PcxHeader) -> HeaderMetadata {
     (dpi, window_origin, screen_size)
 }
 
+// ---------------------------------------------------------------------------
+// RLE expansion
+// ---------------------------------------------------------------------------
+
+/// Return shape of [`decode_planar_scanlines`]: the validated header
+/// (+ VGA tail + layout) and the fully-RLE-decoded planar pixel buffer
+/// (`n_planes × bytes_per_line × height` bytes).
+type PlanarDecode<'a> = (Validated<'a>, Vec<u8>);
+
+/// Shared header-validation + RLE-decode step that produces the planar
+/// scanline buffer (`n_planes × bytes_per_line × height` bytes).
+/// Centralising the validation keeps [`decode_image`] and the typed
+/// accessors in lockstep on every clean-room guard: manufacturer byte,
+/// version table, encoding byte, dimension underflow, `bytes_per_line <
+/// min_bpl` mis-framing, `scanline × height` overflow, the
+/// [`DecodeOptions`] limits (checked before any allocation) and the
+/// decompression-bomb cap.
+fn decode_planar_scanlines<'a>(input: &'a [u8], opts: &DecodeOptions) -> Result<PlanarDecode<'a>> {
+    let v = validate_header(input, opts.strict)?;
+    let header = &v.header;
+    let width = header.width();
+    let height = header.height();
+
+    let scanline = header.scanline_bytes();
+    let total_planar = scanline
+        .checked_mul(height as usize)
+        .ok_or_else(|| Error::invalid("PCX: scanline × height overflows usize"))?;
+    // Limits first: the planar buffer and the native output plane are
+    // the two allocations a decode makes; each must fit `max_bytes`.
+    let native_bpp = v
+        .layout
+        .map(|l| l.pixel_format().bytes_per_pixel())
+        .unwrap_or(2);
+    let native_bytes = u64::from(width) * u64::from(height) * native_bpp as u64;
+    opts.check(width, height, (total_planar as u64).max(native_bytes))?;
+
+    let cursor = PCX_HEADER_SIZE;
+    let rle_end = if v.vga_palette.is_some() {
+        input.len() - PCX_VGA_PALETTE_BLOCK_BYTES
+    } else {
+        input.len()
+    };
+    if rle_end < cursor {
+        return Err(Error::invalid("PCX: pixel data section is empty"));
+    }
+    let available = rle_end - cursor;
+    let max_plausible_output = available.saturating_mul(63);
+    if total_planar > max_plausible_output {
+        return Err(Error::invalid(format!(
+            "PCX: claimed pixel data ({total_planar} bytes) exceeds what {available} RLE bytes can decode"
+        )));
+    }
+    let mut pixels_planar = Vec::with_capacity(total_planar);
+    let stream = &input[cursor..rle_end];
+    if opts.strict {
+        // Spec §"Decoding .PCX Files": "there should always be a
+        // decoding break at the end of each scan line" — strict mode
+        // holds the writer to it by decoding one scanline at a time and
+        // rejecting a run packet that would spill into the next row.
+        let mut pos = 0usize;
+        for y in 0..height as usize {
+            let consumed = rle::decode(&stream[pos..], &mut pixels_planar, scanline)
+                .map_err(|e| Error::invalid(format!("PCX (strict): scanline {y}: {e}")))?;
+            pos += consumed;
+        }
+    } else {
+        // Decode the whole image as a single continuous RLE stream of
+        // `total_planar = scanline × height` bytes, exactly as the manual's
+        // own decode fragment does (`pcx-pcgpe.txt` lines 316-326: the
+        // `for (l = 0; l < lsize; )` loop runs over `BytesPerLine * Nplanes *
+        // (1 + Ymax - Ymin)` with no per-scanline RLE reset). The prose
+        // "there should always be a decoding break at the end of each scan
+        // line" (spec §"Decoding .PCX Files") is an *encoder* convention —
+        // a "should", not a decode-time requirement — and the manual's C
+        // reader honours it by consuming the stream straight through. A
+        // file written by an encoder that lets a run packet straddle the
+        // row boundary therefore decodes identically here, instead of being
+        // rejected mid-row. The flat `total_planar` buffer is re-split into
+        // per-row `chunks_exact(bytes_per_line)` slices by the plane-unpack
+        // paths downstream, so a continuous decode yields a byte-identical
+        // buffer to a per-scanline loop for any spec-conformant file.
+        rle::decode(stream, &mut pixels_planar, total_planar)?;
+    }
+    Ok((v, pixels_planar))
+}
+
+/// The lenient-default planar decode the typed accessors use.
+fn planar_default(input: &[u8]) -> Result<PlanarDecode<'_>> {
+    decode_planar_scanlines(input, &DecodeOptions::default())
+}
+
+/// Benchmark probe: run only the header-validation + RLE-decode phase
+/// of [`decode_image`] and return the length of the resulting planar
+/// scanline buffer (`n_planes × bytes_per_line × height` bytes).
+///
+/// This exists so the Criterion suite can time the RLE-unpack phase in
+/// isolation from the per-plane assembly phase, making the BENCHMARKS.md
+/// hotspot ranking a measured split rather than an inference. It runs
+/// the exact same `decode_planar_scanlines` the production decoder
+/// calls — no parallel code path — so the timing is faithful. Not part
+/// of the stable API; hidden from docs and intended for benches only.
+#[doc(hidden)]
+pub fn __bench_decode_planar_len(input: &[u8]) -> Result<usize> {
+    let (_v, pixels_planar) = planar_default(input)?;
+    Ok(pixels_planar.len())
+}
+
+// ---------------------------------------------------------------------------
+// Native decode
+// ---------------------------------------------------------------------------
+
+/// [`crate::decode_with`]: the native-layout image.
+pub(crate) fn decode_image(input: &[u8], opts: &DecodeOptions) -> Result<PcxImage> {
+    if crate::dcx::is_dcx(input) {
+        let pages = crate::dcx::page_slices(input)?;
+        let first = pages
+            .first()
+            .ok_or_else(|| Error::invalid("DCX: bundle has no pages"))?;
+        return decode_page(first, opts);
+    }
+    decode_page(input, opts)
+}
+
+/// [`decode_image`] for one stand-alone PCX stream (a DCX bundle is
+/// rejected at the manufacturer byte).
+pub(crate) fn decode_page(input: &[u8], opts: &DecodeOptions) -> Result<PcxImage> {
+    let (v, planar) = decode_planar_scanlines(input, opts)?;
+    let header = &v.header;
+    let layout = v.layout.ok_or_else(|| unsupported_geometry(header))?;
+    let width = header.width();
+    let height = header.height();
+    let (format, data, palette): (PcxPixelFormat, Vec<u8>, Option<Palette>) = match layout {
+        PcxLayout::Mono1 => (
+            PcxPixelFormat::Pal8,
+            indices_1bpp_1plane(header, &planar),
+            Some(Palette::from_rgb_triples(&mono_colormap(header))),
+        ),
+        PcxLayout::Cga1x2 => (
+            PcxPixelFormat::Pal8,
+            indices_1bpp_2planes(header, &planar),
+            Some(Palette::from_rgb_triples(&cga_palette_from_header(
+                &header.ega_palette,
+            ))),
+        ),
+        PcxLayout::Cga2x1 => (
+            PcxPixelFormat::Pal8,
+            indices_2bpp_1plane(header, &planar),
+            Some(Palette::from_rgb_triples(&cga_palette_from_header(
+                &header.ega_palette,
+            ))),
+        ),
+        PcxLayout::EgaRgb1x3 => (
+            PcxPixelFormat::Pal8,
+            indices_1bpp_3planes(header, &planar),
+            Some(Palette::from_rgb_triples(&RGB_PRIMARIES_PALETTE)),
+        ),
+        PcxLayout::Indexed1x4 => (
+            PcxPixelFormat::Pal8,
+            indices_1bpp_4planes(header, &planar),
+            Some(Palette::from_rgb_triples(&ega_palette_or_default(
+                &header.ega_palette,
+            ))),
+        ),
+        PcxLayout::Indexed4 => (
+            PcxPixelFormat::Pal8,
+            indices_4bpp_1plane(header, &planar),
+            Some(Palette::from_rgb_triples(&ega_palette_or_default(
+                &header.ega_palette,
+            ))),
+        ),
+        PcxLayout::Indexed8 => {
+            let tail = v
+                .vga_palette
+                .expect("Indexed8 layout implies a VGA tail block");
+            (
+                PcxPixelFormat::Pal8,
+                bytes_8bpp_1plane(header, &planar),
+                Some(Palette::from_rgb(tail)),
+            )
+        }
+        // `palette_info == 2` (spec §3) forces the grayscale
+        // interpretation regardless of whether a tail palette is
+        // present. Some scanner / FAX-era tools emit a grayscale PCX
+        // with `palette_info=2` and no VGA tail; some emit the flag AND
+        // a redundant tail palette. We honour the flag in both cases,
+        // and a tail-less 8 bpp file with no flag is read the same way
+        // (the pixel byte is the grey level).
+        PcxLayout::Gray8 => (
+            PcxPixelFormat::Gray8,
+            bytes_8bpp_1plane(header, &planar),
+            None,
+        ),
+        PcxLayout::Rgb24 => (
+            PcxPixelFormat::Rgb24,
+            rgb_8bpp_3planes(header, &planar),
+            None,
+        ),
+    };
+    let (dpi, window_origin, screen_size) = surface_header_metadata(header);
+    let stride = width as usize * format.bytes_per_pixel();
+    let mut img = PcxImage::unchecked(width, height, format, vec![Plane::new(stride, data)]);
+    img.palette = palette;
+    img.dpi = dpi;
+    img.window_origin = window_origin;
+    img.screen_size = screen_size;
+    img.layout = Some(layout);
+    Ok(img)
+}
+
+/// The pre-contract flatten: one PCX stream decoded with the default
+/// options then [`PcxImage::into_legacy_layout`] (packed `Rgba`). A
+/// DCX bundle is rejected, as it always was here.
+pub(crate) fn decode_legacy(input: &[u8]) -> Result<PcxImage> {
+    Ok(decode_page(input, &DecodeOptions::default())?.into_legacy_layout())
+}
+
+/// Decode a complete PCX file into a packed-`Rgba` [`PcxImage`] — the
+/// pre-contract flatten. [`crate::decode`] returns the native layout
+/// instead (and also opens a DCX bundle's first page);
+/// `decode(..)?.to_rgba8()` is the same pixel buffer.
+#[deprecated(note = "use oxideav_pcx::decode (IMAGE_CRATE_API)")]
+pub fn parse_pcx(input: &[u8]) -> Result<PcxImage> {
+    decode_legacy(input)
+}
+
+/// Flatten a 4-colour CGA PCX (either `(2, 1)` packed or `(1, 2)`
+/// planar) to packed `Rgba` through the full C / P / I decomposition of
+/// header byte 19. [`crate::decode`] resolves CGA palettes the same way
+/// for every caller, so this is now [`parse_pcx`] restricted to the two
+/// CGA geometries (any other geometry is [`Error::Unsupported`], as
+/// before).
+#[deprecated(note = "use oxideav_pcx::decode (IMAGE_CRATE_API)")]
+pub fn parse_pcx_cga_cpi(input: &[u8]) -> Result<PcxImage> {
+    let v = validate_header(input, false)?;
+    if !matches!(v.layout, Some(PcxLayout::Cga2x1 | PcxLayout::Cga1x2)) {
+        return Err(Error::unsupported(format!(
+            "PCX: parse_pcx_cga_cpi expects a CGA layout ((2, 1) packed or (1, 2) planar), found {} bpp × {} planes",
+            v.header.bits_per_pixel, v.header.n_planes
+        )));
+    }
+    decode_legacy(input)
+}
+
+// ---------------------------------------------------------------------------
+// Per-geometry unpack into indices / samples (padding stripped)
+// ---------------------------------------------------------------------------
+
+/// Monochrome colormap rule (EGFF canonical mode matrix: `1 bpp × 1
+/// plane` is the 2-colour paletted case of the header colormap): a
+/// non-zero colormap's first two triples ARE the bit-0 / bit-1 colours
+/// (a foreign writer may legitimately store, say, white-on-blue); a
+/// zero-filled colormap — what PCX 3.0+ writers commonly emit — falls
+/// back to the classic convention bit 1 = white, bit 0 = black (spec
+/// §4.1 monochrome example, pinned by the docs' Issue #227 erratum).
+pub(crate) fn mono_colormap(header: &PcxHeader) -> [[u8; 3]; 2] {
+    if header.ega_palette.iter().any(|&b| b != 0) {
+        let p = &header.ega_palette;
+        [[p[0], p[1], p[2]], [p[3], p[4], p[5]]]
+    } else {
+        [[0x00; 3], [0xFF; 3]]
+    }
+}
+
+fn indices_1bpp_1plane(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
+    let w = header.width() as usize;
+    let h = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+    let mut out = Vec::with_capacity(w * h);
+    for row in planar.chunks_exact(bpl) {
+        for x in 0..w {
+            out.push((row[x >> 3] >> (7 - (x & 7))) & 1);
+        }
+    }
+    out
+}
+
+fn indices_1bpp_2planes(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
+    // Plane 0 then plane 1 within the row; the bit at the same
+    // x-position in each plane stacks into the 2-bit index
+    // (`p0 | p1 << 1`), matching the 4-plane EGA ordering (plane k
+    // contributes bit k).
+    let w = header.width() as usize;
+    let h = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+    let mut out = Vec::with_capacity(w * h);
+    for row in planar.chunks_exact(bpl * 2) {
+        let (p0, p1) = row.split_at(bpl);
+        for x in 0..w {
+            let byte = x >> 3;
+            let shift = 7 - (x & 7);
+            out.push(((p0[byte] >> shift) & 1) | (((p1[byte] >> shift) & 1) << 1));
+        }
+    }
+    out
+}
+
+fn indices_1bpp_3planes(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
+    // 8-colour EGA RGB: one bit-plane per primary, plane order R, G, B
+    // (spec §4 bit-plane example). Index `r | g << 1 | b << 2` into
+    // [`RGB_PRIMARIES_PALETTE`].
+    let w = header.width() as usize;
+    let h = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+    let mut out = Vec::with_capacity(w * h);
+    for row in planar.chunks_exact(bpl * 3) {
+        let (rp, rest) = row.split_at(bpl);
+        let (gp, bp) = rest.split_at(bpl);
+        for x in 0..w {
+            let byte = x >> 3;
+            let shift = 7 - (x & 7);
+            out.push(
+                ((rp[byte] >> shift) & 1)
+                    | (((gp[byte] >> shift) & 1) << 1)
+                    | (((bp[byte] >> shift) & 1) << 2),
+            );
+        }
+    }
+    out
+}
+
+fn indices_1bpp_4planes(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
+    // Plane order is bit 0 → bit 3 (B, G, R, I in classical EGA
+    // hardware terms). Each plane contributes one bit of the 4-bit
+    // palette index.
+    let w = header.width() as usize;
+    let h = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+    let mut out = Vec::with_capacity(w * h);
+    for row in planar.chunks_exact(bpl * 4) {
+        let (p0, rest) = row.split_at(bpl);
+        let (p1, rest) = rest.split_at(bpl);
+        let (p2, p3) = rest.split_at(bpl);
+        for x in 0..w {
+            let byte = x >> 3;
+            let shift = 7 - (x & 7);
+            out.push(
+                ((p0[byte] >> shift) & 1)
+                    | (((p1[byte] >> shift) & 1) << 1)
+                    | (((p2[byte] >> shift) & 1) << 2)
+                    | (((p3[byte] >> shift) & 1) << 3),
+            );
+        }
+    }
+    out
+}
+
+fn indices_2bpp_1plane(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
+    // 2 bpp packed: 4 pixels per byte, MSB first (top two bits = pixel 0).
+    let w = header.width() as usize;
+    let h = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+    let mut out = Vec::with_capacity(w * h);
+    for row in planar.chunks_exact(bpl) {
+        for x in 0..w {
+            let shift = 6 - 2 * (x & 3);
+            out.push((row[x >> 2] >> shift) & 0b11);
+        }
+    }
+    out
+}
+
+fn indices_4bpp_1plane(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
+    // 4 bpp packed: 2 pixels per byte, high nibble first.
+    let w = header.width() as usize;
+    let h = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+    let mut out = Vec::with_capacity(w * h);
+    for row in planar.chunks_exact(bpl) {
+        for x in 0..w {
+            let byte = row[x >> 1];
+            out.push(if x & 1 == 0 {
+                (byte >> 4) & 0x0F
+            } else {
+                byte & 0x0F
+            });
+        }
+    }
+    out
+}
+
+fn bytes_8bpp_1plane(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
+    // Strip per-row padding: spec §1 rounds `bytes_per_line` up to an
+    // even number, so the on-disk scanline can carry one trailing byte
+    // beyond the visible width.
+    let w = header.width() as usize;
+    let h = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+    let mut out = Vec::with_capacity(w * h);
+    for row in planar.chunks_exact(bpl) {
+        out.extend_from_slice(&row[..w]);
+    }
+    out
+}
+
+fn rgb_8bpp_3planes(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
+    let w = header.width() as usize;
+    let h = header.height() as usize;
+    let bpl = header.bytes_per_line as usize;
+    let mut out = vec![0u8; w * h * 3];
+    let src_rows = planar.chunks_exact(bpl * 3);
+    let dst_rows = out.chunks_exact_mut(w * 3);
+    for (row, dst_row) in src_rows.zip(dst_rows) {
+        // Pre-slice the R/G/B plane sub-rows once and bound each plane
+        // slice to exactly `w` bytes so the zip-of-three iterators
+        // advance with no bounds checks against anything but the
+        // destination chunks.
+        let (rp, rest) = row.split_at(bpl);
+        let (gp, bp) = rest.split_at(bpl);
+        let r_iter = rp[..w].iter();
+        let g_iter = gp[..w].iter();
+        let b_iter = bp[..w].iter();
+        for (((&r, &g), &b), dst) in r_iter
+            .zip(g_iter)
+            .zip(b_iter)
+            .zip(dst_row.chunks_exact_mut(3))
+        {
+            dst[0] = r;
+            dst[1] = g;
+            dst[2] = b;
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Typed paletted accessors (depth layer)
+// ---------------------------------------------------------------------------
+
+fn expect_geometry(v: &Validated<'_>, want: (u8, u8), name: &str) -> Result<()> {
+    let got = (v.header.bits_per_pixel, v.header.n_planes);
+    if got != want {
+        return Err(Error::unsupported(format!(
+            "PCX: {name} expects {} bpp × {} planes, found {} bpp × {} planes",
+            want.0, want.1, got.0, got.1
+        )));
+    }
+    Ok(())
+}
+
+fn ega16_from_header(raw: &[u8; 48]) -> [[u8; 3]; 16] {
+    let mut out = [[0u8; 3]; 16];
+    for (i, e) in out.iter_mut().enumerate() {
+        *e = [raw[i * 3], raw[i * 3 + 1], raw[i * 3 + 2]];
+    }
+    out
+}
+
 /// Decode an 8 bpp × 1 plane PCX into a typed paletted view (indices +
 /// resolved 256-entry palette).
 ///
-/// The standard [`parse_pcx`] entry point always flattens the on-disk
-/// image to packed `Rgba`, which is convenient for display pipelines
-/// but discards the palette indices the file actually carries. This
-/// typed accessor preserves them: the returned [`PcxIndexed8`] surfaces
-/// the `width × height` index buffer (one byte per pixel, top-down)
-/// alongside the resolved 256-entry RGB palette and a
-/// [`PcxPaletteSource`] tag that records which spec §3 branch produced
-/// it. Useful for round-tripping a paletted PCX through
-/// [`crate::encode_pcx_8bpp_indexed`] without re-quantising the
-/// pixels.
+/// The returned [`PcxIndexed8`] surfaces the `width × height` index
+/// buffer (one byte per pixel, top-down, padding stripped) alongside the
+/// resolved 256-entry RGB palette and a [`PcxPaletteSource`] tag that
+/// records which spec §3 branch produced it: `palette_info = 2` forces
+/// the grayscale ramp (even if a VGA tail block is also present),
+/// otherwise the tail block is honoured, otherwise the deterministic
+/// `0..=255` ramp is the fallback. Where [`crate::decode`] returns
+/// `Gray8` for the two ramp cases, this view keeps the index-plus-ramp
+/// shape.
 ///
 /// Rejects any (depth, planes) combination other than `(8, 1)` with
-/// [`Error::unsupported`]: 24-bit PCX and the various EGA/CGA paletted
-/// modes have different palette geometries and are best served by
-/// dedicated typed accessors (the 24-bit `(8, 3)` planar path has its
-/// own RGB shape; the 1/2/4 bpp paths share a sub-byte unpacking step
-/// that doesn't fit a one-byte-per-pixel index buffer).
+/// [`Error::Unsupported`].
 pub fn parse_pcx_indexed_8bpp(input: &[u8]) -> Result<PcxIndexed8> {
-    let (header, scanlines, vga_palette) = decode_planar_scanlines(input)?;
-    if (header.bits_per_pixel, header.n_planes) != (8, 1) {
-        return Err(Error::unsupported(format!(
-            "PCX: parse_pcx_indexed_8bpp expects 8 bpp × 1 plane, found {} bpp × {} planes",
-            header.bits_per_pixel, header.n_planes
-        )));
-    }
-    let width = header.width() as usize;
-    let height = header.height() as usize;
-    let bpl = header.bytes_per_line as usize;
-    // Strip per-row padding: spec §1 rounds `bytes_per_line` up to an
-    // even number, so the on-disk scanline can carry one trailing byte
-    // beyond the visible width that the writer set to a don't-care
-    // value. The typed view surfaces only the visible pixels so the
-    // caller's index buffer matches `width × height` exactly.
-    let mut indices = Vec::with_capacity(width * height);
-    for row in scanlines.chunks_exact(bpl) {
-        indices.extend_from_slice(&row[..width]);
-    }
-    debug_assert_eq!(indices.len(), width * height);
-
-    // Resolve the palette: `palette_info = 2` forces the grayscale
-    // interpretation per spec §3 (even if a VGA tail block is also
-    // present); otherwise honour the tail block; otherwise fall back to
-    // the deterministic `0..=255` ramp so the field is never left
-    // implementation-defined.
+    let (v, scanlines) = planar_default(input)?;
+    expect_geometry(&v, (8, 1), "parse_pcx_indexed_8bpp")?;
+    let header = &v.header;
+    let indices = bytes_8bpp_1plane(header, &scanlines);
     let (palette, palette_source) = if header.palette_info == 2 {
         (grayscale_palette_256(), PcxPaletteSource::GrayscaleFlag)
-    } else if let Some(p) = vga_palette {
+    } else if let Some(p) = v.vga_palette {
         let mut out = [[0u8; 3]; 256];
         for (i, e) in out.iter_mut().enumerate() {
             *e = [p[i * 3], p[i * 3 + 1], p[i * 3 + 2]];
@@ -407,7 +734,6 @@ pub fn parse_pcx_indexed_8bpp(input: &[u8]) -> Result<PcxIndexed8> {
     } else {
         (grayscale_palette_256(), PcxPaletteSource::GrayscaleFallback)
     };
-
     Ok(PcxIndexed8 {
         width: header.width(),
         height: header.height(),
@@ -420,80 +746,27 @@ pub fn parse_pcx_indexed_8bpp(input: &[u8]) -> Result<PcxIndexed8> {
 /// Decode a 4 bpp × 1 plane PCX into a typed paletted view (16-colour
 /// nibble indices + resolved 16-entry palette).
 ///
-/// The standard [`parse_pcx`] entry point always flattens the on-disk
-/// image to packed `Rgba`, which is convenient for display pipelines
-/// but discards the palette indices the file actually carries. This
-/// typed accessor preserves them for the 16-colour packed-bits mode
-/// listed in EGFF table entry "4 bpp / 1 plane / 16 colours / EGA and
-/// VGA": the returned [`PcxIndexed4`] surfaces one byte per pixel (low
-/// nibble = palette index `0..=15`, top-down, padding stripped)
-/// alongside the resolved 16-entry RGB palette and a
-/// [`Pcx4bppPaletteSource`] tag recording whether the header carried a
-/// non-zero `ega_palette` field or the spec table §3.1 hardware default
-/// was substituted.
-///
-/// Useful for round-tripping a 16-colour PCX through
-/// [`crate::encode_pcx_4bpp_packed`] without re-quantising the pixels,
-/// or for applying palette-swap operations on the indices directly.
+/// The returned [`PcxIndexed4`] surfaces one byte per pixel (low nibble
+/// = palette index `0..=15`, top-down, padding stripped) alongside the
+/// resolved 16-entry RGB palette and a [`Pcx4bppPaletteSource`] tag
+/// recording whether the header carried a non-zero `ega_palette` field
+/// or the spec table §3.1 hardware default was substituted.
 ///
 /// Rejects any (depth, planes) combination other than `(4, 1)` with
-/// [`Error::unsupported`]: the 8 bpp paletted path has its own typed
-/// accessor [`parse_pcx_indexed_8bpp`]; the 1 bpp × 4 planes path
-/// shares the 16-colour palette geometry but the on-disk plane shape
-/// is different and is not covered by this accessor.
+/// [`Error::Unsupported`].
 pub fn parse_pcx_indexed_4bpp(input: &[u8]) -> Result<PcxIndexed4> {
-    let (header, scanlines, _vga_palette) = decode_planar_scanlines(input)?;
-    if (header.bits_per_pixel, header.n_planes) != (4, 1) {
-        return Err(Error::unsupported(format!(
-            "PCX: parse_pcx_indexed_4bpp expects 4 bpp × 1 plane, found {} bpp × {} planes",
-            header.bits_per_pixel, header.n_planes
-        )));
-    }
-    let width = header.width() as usize;
-    let height = header.height() as usize;
-    let bpl = header.bytes_per_line as usize;
-
-    // Unpack each scanline: 4 bpp packs two pixels per byte (high
-    // nibble = even-x pixel, low nibble = odd-x pixel) per the spec
-    // §4.1 packed-bits layout. The on-disk row may carry trailing
-    // padding bytes beyond the visible width (spec §1 rounds
-    // `bytes_per_line` up to an even number); the typed view surfaces
-    // only the visible pixels so the caller's index buffer matches
-    // `width × height` exactly.
-    let mut indices = Vec::with_capacity(width * height);
-    for row in scanlines.chunks_exact(bpl) {
-        for x in 0..width {
-            let byte = row[x >> 1];
-            let nib = if x & 1 == 0 {
-                (byte >> 4) & 0x0F
-            } else {
-                byte & 0x0F
-            };
-            indices.push(nib);
-        }
-    }
-    debug_assert_eq!(indices.len(), width * height);
-
-    // Resolve the 16-entry palette: if the header `ega_palette` field
-    // carries at least one non-zero byte, surface those 48 bytes as 16
-    // RGB triplets. Otherwise fall back to the spec table §3.1
-    // hardware default — matching the symmetric branch
-    // [`ega_palette_or_default`] takes inside the canonical RGBA
-    // flattener so the typed view never diverges.
+    let (v, scanlines) = planar_default(input)?;
+    expect_geometry(&v, (4, 1), "parse_pcx_indexed_4bpp")?;
+    let header = &v.header;
+    let indices = indices_4bpp_1plane(header, &scanlines);
     let (palette, palette_source) = if header.ega_palette.iter().any(|&b| b != 0) {
-        let mut out = [[0u8; 3]; 16];
-        for (i, e) in out.iter_mut().enumerate() {
-            *e = [
-                header.ega_palette[i * 3],
-                header.ega_palette[i * 3 + 1],
-                header.ega_palette[i * 3 + 2],
-            ];
-        }
-        (out, Pcx4bppPaletteSource::Ega16InHeader)
+        (
+            ega16_from_header(&header.ega_palette),
+            Pcx4bppPaletteSource::Ega16InHeader,
+        )
     } else {
         (EGA_DEFAULT_PALETTE, Pcx4bppPaletteSource::Ega16Default)
     };
-
     Ok(PcxIndexed4 {
         width: header.width(),
         height: header.height(),
@@ -612,91 +885,35 @@ pub fn parse_pcx_indexed_4bpp_ega_hw(input: &[u8]) -> Result<PcxIndexed4> {
 }
 
 /// Decode a 1 bpp × 4 planes PCX into a typed paletted view (16-colour
-/// nibble indices + resolved 16-entry palette).
+/// indices + resolved 16-entry palette).
 ///
-/// The standard [`parse_pcx`] entry point always flattens the on-disk
-/// image to packed `Rgba`, which is convenient for display pipelines
-/// but discards the per-plane bits the file actually carries. This
-/// typed accessor preserves the resolved 4-bit palette index per pixel
-/// for the 16-colour EGA bit-plane mode described in spec §4.1: the
-/// returned [`PcxIndexed1x4`] surfaces one byte per pixel (low nibble
-/// = palette index `0..=15`, top-down, padding stripped) alongside the
-/// resolved 16-entry RGB palette and a
-/// [`Pcx1bpp4PlanesPaletteSource`] tag recording whether the header
-/// carried a non-zero `ega_palette` field or the spec table §3.1
-/// hardware default was substituted.
-///
-/// Useful for round-tripping a 16-colour EGA PCX through
-/// [`crate::encode_pcx_1bpp_4planes_ega`] without re-quantising the
-/// pixels, or for applying palette-swap operations on the indices
-/// directly. The surfaced nibble values share the [`PcxIndexed4`]
-/// convention so a caller can hand either view to a 16-colour pipeline
-/// without branching on the on-disk depth.
+/// Spec §4.1's 16-colour EGA bit-plane mode: each scanline carries four
+/// 1-bit planes laid out one after another; the four bits at the same
+/// x-position stack into the 4-bit palette index (`plane0 | plane1 << 1
+/// | plane2 << 2 | plane3 << 3`). The returned [`PcxIndexed1x4`]
+/// surfaces one byte per pixel (low nibble, top-down, padding stripped)
+/// alongside the resolved 16-entry RGB palette and a
+/// [`Pcx1bpp4PlanesPaletteSource`] tag. The nibble values share the
+/// [`PcxIndexed4`] convention.
 ///
 /// Rejects any (depth, planes) combination other than `(1, 4)` with
-/// [`Error::unsupported`]: the 4 bpp × 1 plane path has its own typed
-/// accessor [`parse_pcx_indexed_4bpp`]; the 8 bpp paletted path has
-/// [`parse_pcx_indexed_8bpp`]. Both share the 16-colour palette
-/// geometry but the on-disk plane shape differs.
+/// [`Error::Unsupported`].
 pub fn parse_pcx_indexed_1bpp_4planes(input: &[u8]) -> Result<PcxIndexed1x4> {
-    let (header, scanlines, _vga_palette) = decode_planar_scanlines(input)?;
-    if (header.bits_per_pixel, header.n_planes) != (1, 4) {
-        return Err(Error::unsupported(format!(
-            "PCX: parse_pcx_indexed_1bpp_4planes expects 1 bpp × 4 planes, found {} bpp × {} planes",
-            header.bits_per_pixel, header.n_planes
-        )));
-    }
-    let width = header.width() as usize;
-    let height = header.height() as usize;
-    let bpl = header.bytes_per_line as usize;
-
-    // For each scanline read four `bpl`-byte plane slices in order
-    // (plane 0, plane 1, plane 2, plane 3). Per spec §4.1 the bit at
-    // x-position `(x>>3, 7 - (x&7))` of each plane contributes one bit
-    // to the 4-bit palette index; the stack order matches the
-    // canonical RGBA flattener `unpack_1bpp_4planes` so the typed view
-    // never diverges from the byte stream `parse_pcx` produces. The
-    // on-disk row may carry trailing padding bits beyond the visible
-    // width (spec §1 rounds `bytes_per_line` up to an even number); the
-    // typed view surfaces only the visible pixels.
-    let mut indices = Vec::with_capacity(width * height);
-    for row in scanlines.chunks_exact(bpl * 4) {
-        let (p0, rest) = row.split_at(bpl);
-        let (p1, rest) = rest.split_at(bpl);
-        let (p2, p3) = rest.split_at(bpl);
-        for x in 0..width {
-            let byte = x >> 3;
-            let shift = 7 - (x & 7);
-            let idx = ((p0[byte] >> shift) & 1)
-                | (((p1[byte] >> shift) & 1) << 1)
-                | (((p2[byte] >> shift) & 1) << 2)
-                | (((p3[byte] >> shift) & 1) << 3);
-            indices.push(idx);
-        }
-    }
-    debug_assert_eq!(indices.len(), width * height);
-
-    // Resolve the 16-entry palette using the same `Ega16InHeader` /
-    // `Ega16Default` decision the 4 bpp × 1 plane accessor uses; the
-    // two modes share the spec §3 palette geometry even though the
-    // on-disk plane shape is different.
+    let (v, scanlines) = planar_default(input)?;
+    expect_geometry(&v, (1, 4), "parse_pcx_indexed_1bpp_4planes")?;
+    let header = &v.header;
+    let indices = indices_1bpp_4planes(header, &scanlines);
     let (palette, palette_source) = if header.ega_palette.iter().any(|&b| b != 0) {
-        let mut out = [[0u8; 3]; 16];
-        for (i, e) in out.iter_mut().enumerate() {
-            *e = [
-                header.ega_palette[i * 3],
-                header.ega_palette[i * 3 + 1],
-                header.ega_palette[i * 3 + 2],
-            ];
-        }
-        (out, Pcx1bpp4PlanesPaletteSource::Ega16InHeader)
+        (
+            ega16_from_header(&header.ega_palette),
+            Pcx1bpp4PlanesPaletteSource::Ega16InHeader,
+        )
     } else {
         (
             EGA_DEFAULT_PALETTE,
             Pcx1bpp4PlanesPaletteSource::Ega16Default,
         )
     };
-
     Ok(PcxIndexed1x4 {
         width: header.width(),
         height: header.height(),
@@ -710,384 +927,106 @@ pub fn parse_pcx_indexed_1bpp_4planes(input: &[u8]) -> Result<PcxIndexed1x4> {
 /// (4-colour indices + resolved 4-entry RGB palette + the CGA palette
 /// family the decoder landed on).
 ///
-/// The standard [`parse_pcx`] entry point always flattens the on-disk
-/// image to packed `Rgba` by walking the palette per pixel and dropping
-/// the resolved indices. This typed accessor preserves them for the
-/// 4-colour CGA mode described in spec §4.1 (single plane of 2 bpp
-/// packed-bits data, 4 pixels/byte, palette selected from `ega_palette`
-/// bytes 16 / 19 per CGA hardware semantics).
-///
-/// The returned [`PcxIndexed2x1Cga`] surfaces one byte per pixel (low
-/// two bits = palette index `0..=3`, top-down, padding stripped)
-/// alongside the resolved 4-entry RGB palette, the resolved
-/// `background_index` (`0..=15`) used for palette entry 0, and a
-/// [`Pcx2bppCgaPaletteSource`] tag recording which CGA palette family
-/// the decoder landed on. The
-/// [`Pcx2bppCgaPaletteSource::palette_selector`] helper reconstructs
-/// the byte 19 selector pattern so a round-trip caller can hand it
-/// straight to [`crate::encode_pcx_2bpp_cga`] without re-deriving the
-/// bit positions.
-///
-/// Useful for round-tripping a 4-colour CGA PCX through
-/// [`crate::encode_pcx_2bpp_cga`] without re-quantising the indices, or
-/// for applying palette-swap operations on the indices directly.
+/// Spec §4.1 describes the 4-colour CGA mode as a single plane of 2 bpp
+/// packed-bits data (4 pixels/byte, the top two bits = pixel 0). The
+/// 4-entry palette is selected per the manual's "CGA Color Map": header
+/// byte 16's high nibble = the EGA index of palette entry 0 (the
+/// "background"), header byte 19's upper three bits = C / P / I. The
+/// returned [`PcxIndexed2x1Cga`] carries the indices (low two bits,
+/// top-down, padding stripped), the palette, the `background_index`
+/// and a [`Pcx2bppCgaPaletteSource`] tag whose
+/// [`palette_selector`](Pcx2bppCgaPaletteSource::palette_selector)
+/// reconstructs byte 19 for a re-encode.
 ///
 /// Rejects any (depth, planes) combination other than `(2, 1)` with
-/// [`Error::unsupported`]: the 16-colour packed-bits path has its own
-/// typed accessor [`parse_pcx_indexed_4bpp`]; the 8 bpp paletted path
-/// has [`parse_pcx_indexed_8bpp`]; the EGA bit-plane path has
-/// [`parse_pcx_indexed_1bpp_4planes`].
+/// [`Error::Unsupported`].
 pub fn parse_pcx_indexed_2bpp_cga(input: &[u8]) -> Result<PcxIndexed2x1Cga> {
-    let (header, scanlines, _vga_palette) = decode_planar_scanlines(input)?;
-    if (header.bits_per_pixel, header.n_planes) != (2, 1) {
-        return Err(Error::unsupported(format!(
-            "PCX: parse_pcx_indexed_2bpp_cga expects 2 bpp × 1 plane, found {} bpp × {} planes",
-            header.bits_per_pixel, header.n_planes
-        )));
-    }
-    let width = header.width() as usize;
-    let height = header.height() as usize;
-    let bpl = header.bytes_per_line as usize;
-
-    // Unpack each scanline: 2 bpp packs four pixels per byte (top two
-    // bits = pixel 0, then 2/3, 4/5, 6/7) per the spec §4.1 packed-bits
-    // layout. The on-disk row may carry trailing padding bytes beyond
-    // the visible width (spec §1 rounds `bytes_per_line` up to an even
-    // number); the typed view surfaces only the visible pixels so the
-    // caller's index buffer matches `width × height` exactly.
-    let mut indices = Vec::with_capacity(width * height);
-    for row in scanlines.chunks_exact(bpl) {
-        for x in 0..width {
-            let byte = row[x >> 2];
-            let shift = 6 - 2 * (x & 3);
-            indices.push((byte >> shift) & 0b11);
-        }
-    }
-    debug_assert_eq!(indices.len(), width * height);
-
-    // Resolve the 4-entry palette: same dispatch as the canonical
-    // flattener [`unpack_2bpp_1plane_cga`], per the manual's "CGA Color
-    // Map" — colormap byte 0 (header byte 16) high nibble = EGA index
-    // for palette entry 0 (the "background" colour); colormap byte 3
-    // (header byte 19) upper three bits = C / P / I.
-    let palette = cga_palette_from_header(&header.ega_palette);
-    let background_index = (header.ega_palette[0] >> 4) & 0x0F;
-    let palette_source = cga_legacy_source(header.ega_palette[3]);
-
+    let (v, scanlines) = planar_default(input)?;
+    expect_geometry(&v, (2, 1), "parse_pcx_indexed_2bpp_cga")?;
+    let header = &v.header;
     Ok(PcxIndexed2x1Cga {
         width: header.width(),
         height: header.height(),
-        indices,
-        palette,
-        background_index,
-        palette_source,
+        indices: indices_2bpp_1plane(header, &scanlines),
+        palette: cga_palette_from_header(&header.ega_palette),
+        background_index: (header.ega_palette[0] >> 4) & 0x0F,
+        palette_source: cga_legacy_source(header.ega_palette[3]),
     })
 }
 
 /// Decode a 1 bpp × 2 planes CGA PCX into a typed paletted view
 /// (indices + resolved 4-entry palette).
 ///
-/// This is the plane-oriented sibling of [`parse_pcx_indexed_2bpp_cga`]:
-/// the EGFF canonical PCX mode matrix lists 4-colour CGA as
-/// `BitsPerPixel = 1, NumBitPlanes = 2`, the bit-plane layout that
-/// matches CGA hardware's two display planes, distinct from the
-/// `2 bpp × 1 plane` packed-bits layout the other accessor reads. Each
-/// on-disk scanline carries plane 0 then plane 1 one after another; the
-/// bit at the same x-position in each plane stacks into the 2-bit
-/// palette index (`p0 | p1 << 1`), the same bit ordering the 4-plane
-/// EGA path uses (plane k contributes bit k).
-///
-/// The 4-entry palette resolution is identical to
-/// [`parse_pcx_indexed_2bpp_cga`] — header byte 16 high nibble =
-/// background EGA index for palette entry 0, header byte 19 upper three
-/// bits = C / P / I — so the returned [`PcxIndexed1x2Cga`]
-/// reuses the [`Pcx2bppCgaPaletteSource`] tag and surfaces the same
-/// `background_index`. The [`Pcx2bppCgaPaletteSource::palette_selector`]
-/// helper reconstructs the byte 19 selector pattern so a round-trip
-/// caller can hand the view straight back to
-/// [`crate::encode_pcx_1bpp_2planes_cga`].
+/// The plane-oriented sibling of [`parse_pcx_indexed_2bpp_cga`]: the
+/// EGFF canonical PCX mode matrix lists 4-colour CGA as `BitsPerPixel =
+/// 1, NumBitPlanes = 2`. Each on-disk scanline carries plane 0 then
+/// plane 1; the bit at the same x-position in each plane stacks into the
+/// 2-bit palette index (`p0 | p1 << 1`). Palette resolution is identical
+/// to the packed accessor, so the returned [`PcxIndexed1x2Cga`] reuses
+/// the [`Pcx2bppCgaPaletteSource`] tag and surfaces the same
+/// `background_index`.
 ///
 /// Rejects any (depth, planes) combination other than `(1, 2)` with
-/// [`Error::unsupported`]: the packed `2 bpp × 1 plane` CGA layout has
-/// its own typed accessor [`parse_pcx_indexed_2bpp_cga`].
+/// [`Error::Unsupported`].
 pub fn parse_pcx_indexed_1bpp_2planes_cga(input: &[u8]) -> Result<PcxIndexed1x2Cga> {
-    let (header, scanlines, _vga_palette) = decode_planar_scanlines(input)?;
-    if (header.bits_per_pixel, header.n_planes) != (1, 2) {
-        return Err(Error::unsupported(format!(
-            "PCX: parse_pcx_indexed_1bpp_2planes_cga expects 1 bpp × 2 planes, found {} bpp × {} planes",
-            header.bits_per_pixel, header.n_planes
-        )));
-    }
-    let width = header.width() as usize;
-    let height = header.height() as usize;
-    let bpl = header.bytes_per_line as usize;
-
-    // Unpack each scanline: plane 0 followed by plane 1 within the row.
-    // The bit at the same x-position in each plane stacks into the 2-bit
-    // palette index (`p0 | p1 << 1`). On-disk rows may carry trailing
-    // padding bytes beyond the visible width (spec §1 rounds
-    // `bytes_per_line` up to an even number); the typed view surfaces
-    // only the visible pixels.
-    let mut indices = Vec::with_capacity(width * height);
-    for row in scanlines.chunks_exact(bpl * 2) {
-        let (p0, p1) = row.split_at(bpl);
-        for x in 0..width {
-            let byte = x >> 3;
-            let shift = 7 - (x & 7);
-            let idx = ((p0[byte] >> shift) & 1) | (((p1[byte] >> shift) & 1) << 1);
-            indices.push(idx);
-        }
-    }
-    debug_assert_eq!(indices.len(), width * height);
-
-    // Resolve the 4-entry palette: identical dispatch to the packed
-    // `2 bpp × 1 plane` accessor (see `cga_palette_from_header`).
-    let palette = cga_palette_from_header(&header.ega_palette);
-    let background_index = (header.ega_palette[0] >> 4) & 0x0F;
-    let palette_source = cga_legacy_source(header.ega_palette[3]);
-
+    let (v, scanlines) = planar_default(input)?;
+    expect_geometry(&v, (1, 2), "parse_pcx_indexed_1bpp_2planes_cga")?;
+    let header = &v.header;
     Ok(PcxIndexed1x2Cga {
         width: header.width(),
         height: header.height(),
-        indices,
-        palette,
-        background_index,
-        palette_source,
+        indices: indices_1bpp_2planes(header, &scanlines),
+        palette: cga_palette_from_header(&header.ega_palette),
+        background_index: (header.ega_palette[0] >> 4) & 0x0F,
+        palette_source: cga_legacy_source(header.ega_palette[3]),
     })
 }
 
 /// Decode a 2 bpp × 1 plane CGA PCX into a typed paletted view that
-/// honours all three C / P / I bits of header byte 19 per the verbatim
-/// ZSoft manual ("CGA Color Map").
-///
-/// This is the spec-faithful sibling of [`parse_pcx_indexed_2bpp_cga`].
-/// The older accessor reads only header byte 19 bits 7 / 6 (a
-/// `(palette-select, intensity)` two-bit model), so it cannot represent
-/// the manual's `color burst = monochrome` mode (bit 7 set) nor the
-/// intensity bit the manual places at position 5. This accessor decodes
-/// the full [`Pcx2bppCgaCpi`] triple — `C` (bit 7, color burst), `P`
-/// (bit 6, palette family), `I` (bit 5, intensity) — and resolves the
-/// matching palette, including the four-level composite-grey ramp the
-/// monochrome mode produces.
-///
-/// The returned [`PcxIndexed2x1CgaCpi`] surfaces one byte per pixel (low
-/// two bits = palette index `0..=3`, top-down, padding stripped)
-/// alongside the resolved 4-entry RGB palette, the `background_index`
-/// (`0..=15`) read from header byte 16's high nibble, and the decoded
-/// [`Pcx2bppCgaCpi`] bits. [`Pcx2bppCgaCpi::to_byte19`] reconstructs the
-/// header byte so a round-trip caller can hand the view straight back to
-/// [`crate::encode_pcx_2bpp_cga_cpi`].
+/// surfaces all three C / P / I bits of header byte 19 per the verbatim
+/// ZSoft manual ("CGA Color Map") as a [`Pcx2bppCgaCpi`] — `C` (bit 7,
+/// color burst), `P` (bit 6, palette family), `I` (bit 5, intensity) —
+/// alongside the resolved palette (including the four-level
+/// composite-grey ramp the monochrome mode produces), the indices and
+/// the `background_index`. [`Pcx2bppCgaCpi::to_byte19`] reconstructs
+/// the header byte for a re-encode.
 ///
 /// Rejects any (depth, planes) combination other than `(2, 1)` with
-/// [`Error::unsupported`].
+/// [`Error::Unsupported`].
 pub fn parse_pcx_indexed_2bpp_cga_cpi(input: &[u8]) -> Result<PcxIndexed2x1CgaCpi> {
-    let (header, scanlines, _vga_palette) = decode_planar_scanlines(input)?;
-    if (header.bits_per_pixel, header.n_planes) != (2, 1) {
-        return Err(Error::unsupported(format!(
-            "PCX: parse_pcx_indexed_2bpp_cga_cpi expects 2 bpp × 1 plane, found {} bpp × {} planes",
-            header.bits_per_pixel, header.n_planes
-        )));
-    }
-    let width = header.width() as usize;
-    let height = header.height() as usize;
-    let bpl = header.bytes_per_line as usize;
-
-    // Unpack each scanline: 2 bpp packs four pixels per byte (top two
-    // bits = pixel 0) per the spec §4.1 packed-bits layout. Trailing
-    // padding beyond the visible width (spec §1 rounds `bytes_per_line`
-    // up to even) is stripped so the index buffer matches `width ×
-    // height` exactly.
-    let mut indices = Vec::with_capacity(width * height);
-    for row in scanlines.chunks_exact(bpl) {
-        for x in 0..width {
-            let byte = row[x >> 2];
-            let shift = 6 - 2 * (x & 3);
-            indices.push((byte >> shift) & 0b11);
-        }
-    }
-    debug_assert_eq!(indices.len(), width * height);
-
+    let (v, scanlines) = planar_default(input)?;
+    expect_geometry(&v, (2, 1), "parse_pcx_indexed_2bpp_cga_cpi")?;
+    let header = &v.header;
     let cpi = Pcx2bppCgaCpi::from_byte19(header.ega_palette[3]);
-    let palette = cga_palette_from_cpi(&header.ega_palette, cpi);
-    let background_index = (header.ega_palette[0] >> 4) & 0x0F;
-
     Ok(PcxIndexed2x1CgaCpi {
         width: header.width(),
         height: header.height(),
-        indices,
-        palette,
-        background_index,
+        indices: indices_2bpp_1plane(header, &scanlines),
+        palette: cga_palette_from_cpi(&header.ega_palette, cpi),
+        background_index: (header.ega_palette[0] >> 4) & 0x0F,
         cpi,
-    })
-}
-
-/// Flatten a 4-colour CGA PCX to packed `Rgba`, resolving the palette
-/// via the verbatim ZSoft manual's full C / P / I decomposition of header
-/// byte 19 ("CGA Color Map", Header Byte #19) — the spec-faithful flatten
-/// sibling of [`parse_pcx_indexed_2bpp_cga_cpi`].
-///
-/// The standard [`parse_pcx`] entry point flattens the two CGA layouts
-/// (`2 bpp × 1 plane` packed and `1 bpp × 2 planes`) through the legacy
-/// `(palette-select, intensity)` two-bit model of byte 19 (bits 7 / 6),
-/// which cannot represent the manual's `color burst = monochrome` mode
-/// (`C = 1`, bit 7) and assigns the intensity bit to position 6 rather
-/// than the position 5 the manual specifies. This accessor honours all
-/// three bits per the spec — `C` (bit 7, color burst: 0 = chroma palette,
-/// 1 = composite-grey monochrome), `P` (bit 6, palette family: 0 =
-/// yellow, 1 = white), `I` (bit 5, intensity: 0 = dim, 1 = bright) — so a
-/// real-world monochrome-CGA capture flattens to the four-level
-/// composite-grey ramp instead of being mis-coloured as a chroma palette.
-///
-/// Palette entry 0 is the header byte 16 high-nibble background colour in
-/// both the colour and monochrome cases (the manual's "background color
-/// is determined in the upper four bits" rule). Both on-disk CGA layouts
-/// resolve identical colours from identical header bytes, so a `(2, 1)`
-/// and a `(1, 2)` file carrying the same indices flatten to the same
-/// pixels.
-///
-/// The returned [`PcxImage`] surfaces the same `Rgba` buffer shape and
-/// the same authoring-metadata fields (`dpi` / `window_origin` /
-/// `screen_size`) as [`parse_pcx`]. Rejects any (depth, planes)
-/// combination other than `(2, 1)` or `(1, 2)` with [`Error::unsupported`]
-/// — every non-CGA mode is already spec-faithful through [`parse_pcx`],
-/// which honours their header palettes directly.
-pub fn parse_pcx_cga_cpi(input: &[u8]) -> Result<PcxImage> {
-    let (header, pixels_planar, _vga_palette) = decode_planar_scanlines(input)?;
-    let cpi = Pcx2bppCgaCpi::from_byte19(header.ega_palette[3]);
-    let cga = cga_palette_from_cpi(&header.ega_palette, cpi);
-    let palette: [[u8; 4]; 4] = [
-        [cga[0][0], cga[0][1], cga[0][2], 0xFF],
-        [cga[1][0], cga[1][1], cga[1][2], 0xFF],
-        [cga[2][0], cga[2][1], cga[2][2], 0xFF],
-        [cga[3][0], cga[3][1], cga[3][2], 0xFF],
-    ];
-
-    let w = header.width() as usize;
-    let h = header.height() as usize;
-    let bpl = header.bytes_per_line as usize;
-    let mut data = vec![0u8; w * h * 4];
-
-    match (header.bits_per_pixel, header.n_planes) {
-        (2, 1) => {
-            // Packed: 4 pixels per byte, MSB first (spec §4.1).
-            let src_rows = pixels_planar.chunks_exact(bpl);
-            let dst_rows = data.chunks_exact_mut(w * 4);
-            for (row, dst_row) in src_rows.zip(dst_rows) {
-                for (x, dst) in dst_row.chunks_exact_mut(4).enumerate() {
-                    let shift = 6 - 2 * (x & 3);
-                    let idx = ((row[x >> 2] >> shift) & 0b11) as usize;
-                    dst.copy_from_slice(&palette[idx]);
-                }
-            }
-        }
-        (1, 2) => {
-            // Plane-oriented: plane 0 then plane 1 within the row; the bit
-            // at each x-position stacks into the 2-bit index
-            // (`p0 | p1 << 1`).
-            let src_rows = pixels_planar.chunks_exact(bpl * 2);
-            let dst_rows = data.chunks_exact_mut(w * 4);
-            for (row, dst_row) in src_rows.zip(dst_rows) {
-                let (p0, p1) = row.split_at(bpl);
-                for (x, dst) in dst_row.chunks_exact_mut(4).enumerate() {
-                    let byte = x >> 3;
-                    let shift = 7 - (x & 7);
-                    let idx =
-                        (((p0[byte] >> shift) & 1) | (((p1[byte] >> shift) & 1) << 1)) as usize;
-                    dst.copy_from_slice(&palette[idx]);
-                }
-            }
-        }
-        (bpp, n) => {
-            return Err(Error::unsupported(format!(
-                "PCX: parse_pcx_cga_cpi expects a CGA layout ((2, 1) packed or (1, 2) planar), found {bpp} bpp × {n} planes"
-            )))
-        }
-    }
-
-    let (dpi, window_origin, screen_size) = surface_header_metadata(&header);
-    Ok(PcxImage {
-        width: header.width(),
-        height: header.height(),
-        pixel_format: PcxPixelFormat::Rgba,
-        data,
-        pts: None,
-        dpi,
-        window_origin,
-        screen_size,
     })
 }
 
 /// Decode a 1 bpp × 3 planes PCX into a typed paletted view (8-colour
 /// EGA RGB indices + the fixed 8-entry on/off-primary palette).
 ///
-/// The standard [`parse_pcx`] entry point always flattens the on-disk
-/// image to packed `Rgba` by toggling each channel per plane bit and
-/// dropping the resolved colour index. This typed accessor preserves it
-/// for the 8-colour EGA RGB mode described in spec §4 (each scanline
-/// carries three 1-bit planes laid out one after another within the row,
-/// plane order R, G, B — the same order
-/// [`crate::encode_pcx_1bpp_3planes_ega_rgb`] writes). The three bits at
-/// the same x-position stack into a 3-bit index (`r | g << 1 | b << 2`).
-///
-/// The returned [`PcxIndexed1x3`] surfaces one byte per pixel (low three
-/// bits = colour index `0..=7`, top-down, padding stripped) alongside
-/// the fixed 8-entry RGB palette and a [`Pcx1bpp3PlanesPaletteSource`]
-/// tag. Unlike the other paletted accessors, this mode carries no
-/// on-disk palette — the eight colours are the on/off primaries
-/// enumerated by the plane bits themselves, so the source tag has a
-/// single [`Pcx1bpp3PlanesPaletteSource::FixedPrimaries`] arm.
-///
-/// Useful for round-tripping an 8-colour EGA RGB PCX through
-/// [`crate::encode_pcx_1bpp_3planes_ega_rgb`] without re-thresholding,
-/// or for applying colour-swap operations on the indices directly.
+/// Spec §4's 8-colour EGA RGB mode: each scanline carries three 1-bit
+/// planes (plane order R, G, B); the three bits at the same x-position
+/// stack into a 3-bit index (`r | g << 1 | b << 2`) into the fixed
+/// primaries. No on-disk palette is consulted, so the
+/// [`Pcx1bpp3PlanesPaletteSource`] tag has a single arm.
 ///
 /// Rejects any (depth, planes) combination other than `(1, 3)` with
-/// [`Error::unsupported`]: the 16-colour bit-plane path has its own
-/// typed accessor [`parse_pcx_indexed_1bpp_4planes`]; the 8 bpp paletted
-/// path has [`parse_pcx_indexed_8bpp`]; the 4 bpp path has
-/// [`parse_pcx_indexed_4bpp`]; the CGA path has
-/// [`parse_pcx_indexed_2bpp_cga`].
+/// [`Error::Unsupported`].
 pub fn parse_pcx_indexed_1bpp_3planes(input: &[u8]) -> Result<PcxIndexed1x3> {
-    let (header, scanlines, _vga_palette) = decode_planar_scanlines(input)?;
-    if (header.bits_per_pixel, header.n_planes) != (1, 3) {
-        return Err(Error::unsupported(format!(
-            "PCX: parse_pcx_indexed_1bpp_3planes expects 1 bpp × 3 planes, found {} bpp × {} planes",
-            header.bits_per_pixel, header.n_planes
-        )));
-    }
-    let width = header.width() as usize;
-    let height = header.height() as usize;
-    let bpl = header.bytes_per_line as usize;
-
-    // For each scanline read three `bpl`-byte plane slices in order
-    // (plane 0 = R, plane 1 = G, plane 2 = B). Per spec §4 the bit at
-    // x-position `(x>>3, 7 - (x&7))` of each plane contributes one bit to
-    // the 3-bit colour index in the order `r | g << 1 | b << 2`; the
-    // stack order matches the canonical RGBA flattener
-    // `unpack_1bpp_3planes` so the typed view never diverges from the
-    // byte stream `parse_pcx` produces. The on-disk row may carry
-    // trailing padding bits beyond the visible width (spec §1 rounds
-    // `bytes_per_line` up to an even number); the typed view surfaces
-    // only the visible pixels.
-    let mut indices = Vec::with_capacity(width * height);
-    for row in scanlines.chunks_exact(bpl * 3) {
-        let (rp, rest) = row.split_at(bpl);
-        let (gp, bp) = rest.split_at(bpl);
-        for x in 0..width {
-            let byte = x >> 3;
-            let shift = 7 - (x & 7);
-            let idx = ((rp[byte] >> shift) & 1)
-                | (((gp[byte] >> shift) & 1) << 1)
-                | (((bp[byte] >> shift) & 1) << 2);
-            indices.push(idx);
-        }
-    }
-    debug_assert_eq!(indices.len(), width * height);
-
+    let (v, scanlines) = planar_default(input)?;
+    expect_geometry(&v, (1, 3), "parse_pcx_indexed_1bpp_3planes")?;
+    let header = &v.header;
     Ok(PcxIndexed1x3 {
         width: header.width(),
         height: header.height(),
-        indices,
+        indices: indices_1bpp_3planes(header, &scanlines),
         palette: RGB_PRIMARIES_PALETTE,
         palette_source: Pcx1bpp3PlanesPaletteSource::FixedPrimaries,
     })
@@ -1097,57 +1036,29 @@ pub fn parse_pcx_indexed_1bpp_3planes(input: &[u8]) -> Result<PcxIndexed1x3> {
 /// (one `u16` per pixel).
 ///
 /// This is the one `(bits_per_pixel, n_planes)` slot the EGFF canonical
-/// PCX video-mode matrix
-/// (`docs/image/pcx/pcx-egff-fileformat-info.html`, "PCX Image Data
-/// Format") does not list as a hardware video mode. It is nonetheless
-/// *structurally* reachable: the cross-reference summary's colour-count
-/// formula `MaxNumberOfColors = (1 << (BitsPerPixel * NumBitPlanes))`
-/// evaluates to `1 << (4 * 4) = 65536` for this mode, and the on-disk
-/// scanline layout is the same plane-oriented form every multi-plane PCX
-/// uses (spec §"Image File (.PCX) Format": "each line of the image is
-/// stored by color plane"). Each scanline carries plane 0, plane 1,
-/// plane 2, plane 3 one after another; per spec §"Decoding .PCX Files"
-/// `BytesPerLine` marks where each plane ends within the scanline.
+/// PCX video-mode matrix does not list as a hardware video mode, but
+/// the format is *structurally* reachable: the cross-reference's
+/// colour-count formula `MaxNumberOfColors = (1 << (BitsPerPixel *
+/// NumBitPlanes))` evaluates to `65536`, and the on-disk scanline
+/// layout is the standard plane-oriented form. Each plane holds 4 bits
+/// per pixel (2 pixels/byte, high nibble first); the nibble at the same
+/// x-position across the four planes stacks into a 16-bit composite
+/// index (`p0 | p1 << 4 | p2 << 8 | p3 << 12`).
 ///
-/// Each plane holds `BitsPerPixel = 4` bits per pixel (2 pixels/byte,
-/// high nibble first — the same packing the `4 bpp × 1 plane` path uses).
-/// The nibble at the same x-position across the four planes stacks into a
-/// 16-bit composite index (`p0 | p1 << 4 | p2 << 8 | p3 << 12`), the
-/// natural generalisation of the [`parse_pcx_indexed_1bpp_4planes`]
-/// plane-`k`-supplies-chunk-`k` ordering from 1-bit to 4-bit chunks.
-///
-/// No palette is surfaced — the ZSoft rev-5 manual and the EGFF
-/// cross-reference define palette geometries only for the ≤ 256-colour
-/// modes, so there is no documented mapping from a 65536-value composite
-/// index to RGB. The returned [`PcxIndexed4x4`] therefore carries the raw
-/// composite indices only (one `u16` per pixel, top-down, per-row padding
-/// stripped) and leaves interpretation to the caller. This is also why
-/// [`parse_pcx`] rejects `(4, 4)` with [`Error::unsupported`] rather than
-/// inventing a colour mapping the spec does not define.
+/// No palette is surfaced — the spec defines palette geometries only for
+/// the ≤ 256-colour modes — so [`crate::decode`] rejects `(4, 4)` with
+/// [`Error::Unsupported`] rather than inventing a colour mapping; this
+/// accessor hands the raw composite indices to the caller.
 ///
 /// Rejects any `(depth, planes)` combination other than `(4, 4)` with
-/// [`Error::unsupported`].
+/// [`Error::Unsupported`].
 pub fn parse_pcx_indexed_4bpp_4planes(input: &[u8]) -> Result<PcxIndexed4x4> {
-    let (header, scanlines, _vga_palette) = decode_planar_scanlines(input)?;
-    if (header.bits_per_pixel, header.n_planes) != (4, 4) {
-        return Err(Error::unsupported(format!(
-            "PCX: parse_pcx_indexed_4bpp_4planes expects 4 bpp × 4 planes, found {} bpp × {} planes",
-            header.bits_per_pixel, header.n_planes
-        )));
-    }
+    let (v, scanlines) = planar_default(input)?;
+    expect_geometry(&v, (4, 4), "parse_pcx_indexed_4bpp_4planes")?;
+    let header = &v.header;
     let width = header.width() as usize;
     let height = header.height() as usize;
     let bpl = header.bytes_per_line as usize;
-
-    // For each scanline read four `bpl`-byte plane slices in order
-    // (plane 0..plane 3). Each plane carries 4 bits per pixel, 2 pixels
-    // per byte with the high nibble first (matching the `4 bpp × 1 plane`
-    // packed layout). The nibble at the same x-position in each plane
-    // contributes one 4-bit chunk of the 16-bit composite index in the
-    // order `p0 | p1 << 4 | p2 << 8 | p3 << 12`. The on-disk row may
-    // carry trailing padding pixels beyond the visible width (spec §1
-    // rounds `bytes_per_line` up to an even number); the typed view
-    // surfaces only the visible pixels.
     let mut indices = Vec::with_capacity(width * height);
     for row in scanlines.chunks_exact(bpl * 4) {
         let (p0, rest) = row.split_at(bpl);
@@ -1159,12 +1070,9 @@ pub fn parse_pcx_indexed_4bpp_4planes(input: &[u8]) -> Result<PcxIndexed4x4> {
                 let b = p[byte];
                 (if x & 1 == 0 { b >> 4 } else { b & 0x0F }) as u16
             };
-            let idx = nib(p0) | (nib(p1) << 4) | (nib(p2) << 8) | (nib(p3) << 12);
-            indices.push(idx);
+            indices.push(nib(p0) | (nib(p1) << 4) | (nib(p2) << 8) | (nib(p3) << 12));
         }
     }
-    debug_assert_eq!(indices.len(), width * height);
-
     Ok(PcxIndexed4x4 {
         width: header.width(),
         height: header.height(),
@@ -1175,10 +1083,8 @@ pub fn parse_pcx_indexed_4bpp_4planes(input: &[u8]) -> Result<PcxIndexed4x4> {
 /// The fixed 8-entry RGB palette of on/off primaries the 1 bpp × 3
 /// planes 8-colour EGA RGB mode resolves to (spec §4 bit-plane example).
 /// Entry `i` has channel `c` set to `0xFF` iff the matching plane bit is
-/// set: `r = i & 1`, `g = i & 2`, `b = i & 4`. Matches the per-pixel
-/// `0x00` / `0xFF` toggling in [`unpack_1bpp_3planes`] so the typed view
-/// flattens to byte-identical RGBA.
-const RGB_PRIMARIES_PALETTE: [[u8; 3]; 8] = [
+/// set: `r = i & 1`, `g = i & 2`, `b = i & 4`.
+pub(crate) const RGB_PRIMARIES_PALETTE: [[u8; 3]; 8] = [
     [0x00, 0x00, 0x00], // 0: black
     [0xFF, 0x00, 0x00], // 1: red
     [0x00, 0xFF, 0x00], // 2: green
@@ -1194,430 +1100,6 @@ fn grayscale_palette_256() -> [[u8; 3]; 256] {
     for (i, e) in out.iter_mut().enumerate() {
         let v = i as u8;
         *e = [v, v, v];
-    }
-    out
-}
-
-/// Return shape of [`decode_planar_scanlines`]: the parsed header, the
-/// fully-RLE-decoded planar pixel buffer (`n_planes × bytes_per_line ×
-/// height` bytes), and the resolved optional VGA tail palette slice.
-type PlanarDecode<'a> = (PcxHeader, Vec<u8>, Option<&'a [u8]>);
-
-/// Shared header-validation + RLE-decode step that produces the planar
-/// scanline buffer (`n_planes × bytes_per_line × height` bytes) plus
-/// the resolved VGA palette slice, if any. Centralising the validation
-/// keeps [`parse_pcx`] and the typed accessors (e.g.
-/// [`parse_pcx_indexed_8bpp`]) in lockstep on every clean-room guard
-/// established in earlier rounds: manufacturer byte, version table,
-/// encoding byte, dimension underflow, `bytes_per_line < min_bpl`
-/// mis-framing, `scanline × height` overflow, and the
-/// decompression-bomb cap.
-fn decode_planar_scanlines(input: &[u8]) -> Result<PlanarDecode<'_>> {
-    let header = parse_header(input).ok_or_else(|| Error::invalid("PCX: header truncated"))?;
-    if header.manufacturer != PCX_MANUFACTURER {
-        return Err(Error::invalid(format!(
-            "PCX: bad manufacturer byte 0x{:02X} (expected 0x0A)",
-            header.manufacturer
-        )));
-    }
-    if !matches!(header.version, 0 | 2 | 3 | 4 | 5) {
-        return Err(Error::invalid(format!(
-            "PCX: unknown version byte {} (expected 0/2/3/4/5)",
-            header.version
-        )));
-    }
-    if header.encoding != PCX_ENCODING_RLE {
-        return Err(Error::unsupported(format!(
-            "PCX: encoding byte {} not supported (only 1 = RLE is defined)",
-            header.encoding
-        )));
-    }
-    let width = header.width();
-    let height = header.height();
-    if width == 0 || height == 0 {
-        return Err(Error::invalid("PCX: zero dimension"));
-    }
-    if header.x_max < header.x_min || header.y_max < header.y_min {
-        return Err(Error::invalid("PCX: x_max < x_min or y_max < y_min"));
-    }
-    if header.bytes_per_line == 0 {
-        return Err(Error::invalid("PCX: bytes_per_line == 0"));
-    }
-    if header.n_planes == 0 {
-        return Err(Error::invalid("PCX: n_planes == 0"));
-    }
-    let min_bpl: u32 = match header.bits_per_pixel {
-        1 => width.div_ceil(8),
-        2 => width.div_ceil(4),
-        4 => width.div_ceil(2),
-        8 => width,
-        bpp => {
-            return Err(Error::unsupported(format!(
-                "PCX: bits_per_pixel={bpp} not in the {{1,2,4,8}} set the spec defines"
-            )))
-        }
-    };
-    if (header.bytes_per_line as u32) < min_bpl {
-        return Err(Error::invalid(format!(
-            "PCX: bytes_per_line={} too small for width={} at {} bpp (need ≥ {})",
-            header.bytes_per_line, width, header.bits_per_pixel, min_bpl
-        )));
-    }
-
-    let scanline = header.scanline_bytes();
-    let total_planar = scanline
-        .checked_mul(height as usize)
-        .ok_or_else(|| Error::invalid("PCX: scanline × height overflows usize"))?;
-    let cursor = PCX_HEADER_SIZE;
-    // The appended 768-byte VGA palette (marker `0x0C` 769 bytes from EOF)
-    // belongs to the 256-colour Extended VGA mode *only* — spec §"VGA
-    // 256-color palette" introduces it as the carrier for "more than 16
-    // colors", and spec §"24-bit .PCX files" states 24-bit (8 bpp ×
-    // 3-plane) images "do **not** contain a palette". Every sub-256-colour
-    // mode (mono / CGA / EGA / 16-colour) carries its palette in the header
-    // `Colormap` field, never as a tail block. So the tail-palette probe is
-    // confined to `(8 bpp, 1 plane)`. The cross-reference summary
-    // (`docs/image/pcx/pcx-egff-fileformat-info.html`) flags exactly why
-    // this matters: "24-bit PCX images are always marked as v3.0, yet never
-    // have an attached color palette" and the `0x0C` marker byte "might be
-    // 0Ch by coincidence" — a 24-bit (or CGA/EGA) stream whose RLE data
-    // happens to end with that pattern would otherwise have 769 bytes of
-    // real pixel data mis-claimed as a palette and stripped from the RLE
-    // region, corrupting the decode.
-    let vga_palette = if (header.bits_per_pixel, header.n_planes) == (8, 1) {
-        find_vga_palette(input)
-    } else {
-        None
-    };
-    let rle_end = if vga_palette.is_some() {
-        input.len() - PCX_VGA_PALETTE_BLOCK_BYTES
-    } else {
-        input.len()
-    };
-    if rle_end < cursor {
-        return Err(Error::invalid("PCX: pixel data section is empty"));
-    }
-    let available = rle_end - cursor;
-    let max_plausible_output = available.saturating_mul(63);
-    if total_planar > max_plausible_output {
-        return Err(Error::invalid(format!(
-            "PCX: claimed pixel data ({total_planar} bytes) exceeds what {available} RLE bytes can decode"
-        )));
-    }
-    // Decode the whole image as a single continuous RLE stream of
-    // `total_planar = scanline × height` bytes, exactly as the manual's
-    // own decode fragment does (`pcx-pcgpe.txt` lines 316-326: the
-    // `for (l = 0; l < lsize; )` loop runs over `BytesPerLine * Nplanes *
-    // (1 + Ymax - Ymin)` with no per-scanline RLE reset). The prose
-    // "there should always be a decoding break at the end of each scan
-    // line" (spec §"Decoding .PCX Files") is an *encoder* convention —
-    // a "should", not a decode-time requirement — and the manual's C
-    // reader honours it by consuming the stream straight through. A
-    // file written by an encoder that lets a run packet straddle the
-    // row boundary therefore decodes identically here, instead of being
-    // rejected mid-row. The flat `total_planar` buffer is re-split into
-    // per-row `chunks_exact(bytes_per_line)` slices by the plane-unpack
-    // paths downstream, so a continuous decode yields a byte-identical
-    // buffer to the old per-scanline loop for any spec-conformant file
-    // (where runs never cross the boundary anyway). `scanline` is still
-    // the row stride the unpack paths use; `total_planar` is its image
-    // total.
-    let mut pixels_planar = Vec::with_capacity(total_planar);
-    rle::decode(&input[cursor..rle_end], &mut pixels_planar, total_planar)?;
-    Ok((header, pixels_planar, vga_palette))
-}
-
-/// Benchmark probe: run only the header-validation + RLE-decode phase
-/// of [`parse_pcx`] and return the length of the resulting planar
-/// scanline buffer (`n_planes × bytes_per_line × height` bytes).
-///
-/// This exists so the Criterion suite can time the RLE-unpack phase in
-/// isolation from the per-plane assembly phase, making the BENCHMARKS.md
-/// hotspot ranking a measured split rather than an inference. It runs
-/// the exact same `decode_planar_scanlines` the production decoder
-/// calls — no parallel code path — so the timing is faithful. Returning
-/// only the byte count (not the buffer or the private `PcxHeader`) keeps
-/// the crate's public type surface unchanged. Not part of the stable
-/// API; hidden from docs and intended for benches only.
-#[doc(hidden)]
-pub fn __bench_decode_planar_len(input: &[u8]) -> Result<usize> {
-    let (_header, pixels_planar, _vga) = decode_planar_scanlines(input)?;
-    Ok(pixels_planar.len())
-}
-
-// ---------------------------------------------------------------------------
-// Plane-unpack paths
-// ---------------------------------------------------------------------------
-
-// Plane-unpack hot paths share a row-walking idiom: split the
-// destination buffer into `w*4`-byte row slices via
-// `chunks_exact_mut`, then walk each row's pixels as 4-byte
-// destination chunks. Splitting the destination this way gives the
-// optimiser enough provenance information to drop the per-pixel
-// bounds checks against `out` and to lay the four-byte RGBA stores
-// out as a single aligned 32-bit move — both visible in the r209
-// bench numbers (24-bit 1920×1080 1.50 → 6.55 GiB/s, 8-bit grayscale
-// 512×512 1.82 → 7.18 GiB/s). Output bytes are bit-identical to the
-// pre-r209 per-index implementation.
-
-fn unpack_1bpp_1plane(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
-    let w = header.width() as usize;
-    let h = header.height() as usize;
-    let bpl = header.bytes_per_line as usize;
-    // The EGFF canonical mode matrix treats `1 bpp × 1 plane` as the
-    // 2-colour paletted case of the header colormap, so when the file
-    // carries a non-zero colormap the two leading triples ARE the
-    // bit-0 / bit-1 colours (a foreign writer may legitimately store,
-    // say, white-on-blue). A zero-filled colormap — what PCX 3.0+
-    // writers commonly emit and what this crate's own mono writer
-    // wrote before r401 — falls back to the classic convention:
-    // bit 1 = white, bit 0 = black (spec §4.1 monochrome example).
-    let (c0, c1): ([u8; 3], [u8; 3]) = if header.ega_palette.iter().any(|&b| b != 0) {
-        let p = &header.ega_palette;
-        ([p[0], p[1], p[2]], [p[3], p[4], p[5]])
-    } else {
-        ([0x00; 3], [0xFF; 3])
-    };
-    let palette: [[u8; 4]; 2] = [[c0[0], c0[1], c0[2], 0xFF], [c1[0], c1[1], c1[2], 0xFF]];
-    let mut out = vec![0u8; w * h * 4];
-    let src_rows = planar.chunks_exact(bpl);
-    let dst_rows = out.chunks_exact_mut(w * 4);
-    for (row, dst_row) in src_rows.zip(dst_rows) {
-        for (x, dst) in dst_row.chunks_exact_mut(4).enumerate() {
-            let bit = (row[x >> 3] >> (7 - (x & 7))) & 1;
-            dst.copy_from_slice(&palette[bit as usize]);
-        }
-    }
-    out
-}
-
-fn unpack_1bpp_3planes(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
-    // 8-colour EGA RGB: one bit-plane per primary, plane order R, G, B
-    // (spec §4 bit-plane example, lines 46-58 of the rev-5 technical
-    // reference). Each plane bit toggles the channel between 0x00 and
-    // 0xFF. No external palette is consulted; the eight colours are
-    // the on/off primaries enumerated by the plane bits themselves.
-    let w = header.width() as usize;
-    let h = header.height() as usize;
-    let bpl = header.bytes_per_line as usize;
-    let mut out = vec![0u8; w * h * 4];
-    let src_rows = planar.chunks_exact(bpl * 3);
-    let dst_rows = out.chunks_exact_mut(w * 4);
-    for (row, dst_row) in src_rows.zip(dst_rows) {
-        let (rp, rest) = row.split_at(bpl);
-        let (gp, bp) = rest.split_at(bpl);
-        for (x, dst) in dst_row.chunks_exact_mut(4).enumerate() {
-            let byte = x >> 3;
-            let shift = 7 - (x & 7);
-            let r_bit = (rp[byte] >> shift) & 1;
-            let g_bit = (gp[byte] >> shift) & 1;
-            let b_bit = (bp[byte] >> shift) & 1;
-            dst[0] = if r_bit != 0 { 0xFF } else { 0x00 };
-            dst[1] = if g_bit != 0 { 0xFF } else { 0x00 };
-            dst[2] = if b_bit != 0 { 0xFF } else { 0x00 };
-            dst[3] = 0xFF;
-        }
-    }
-    out
-}
-
-fn unpack_1bpp_4planes(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
-    let w = header.width() as usize;
-    let h = header.height() as usize;
-    let bpl = header.bytes_per_line as usize;
-    let palette = ega_palette_or_default(&header.ega_palette);
-    let mut out = vec![0u8; w * h * 4];
-    let src_rows = planar.chunks_exact(bpl * 4);
-    let dst_rows = out.chunks_exact_mut(w * 4);
-    for (row, dst_row) in src_rows.zip(dst_rows) {
-        // Split each row into its four bit-plane sub-slices once per
-        // row so the per-pixel loop's bit extraction works against
-        // local slice references rather than recomputing
-        // `plane * bpl` for every pixel.
-        let (p0, rest) = row.split_at(bpl);
-        let (p1, rest) = rest.split_at(bpl);
-        let (p2, p3) = rest.split_at(bpl);
-        for (x, dst) in dst_row.chunks_exact_mut(4).enumerate() {
-            let byte = x >> 3;
-            let shift = 7 - (x & 7);
-            // Plane order is bit 0 → bit 3 (B, G, R, I in classical
-            // EGA hardware terms). Each plane contributes one bit of
-            // the 4-bit palette index.
-            let idx = (((p0[byte] >> shift) & 1)
-                | (((p1[byte] >> shift) & 1) << 1)
-                | (((p2[byte] >> shift) & 1) << 2)
-                | (((p3[byte] >> shift) & 1) << 3)) as usize;
-            let p = palette[idx];
-            dst[0] = p[0];
-            dst[1] = p[1];
-            dst[2] = p[2];
-            dst[3] = 0xFF;
-        }
-    }
-    out
-}
-
-fn unpack_8bpp_1plane(
-    header: &PcxHeader,
-    planar: &[u8],
-    vga_palette: Option<&[u8]>,
-) -> Result<Vec<u8>> {
-    let w = header.width() as usize;
-    let h = header.height() as usize;
-    let bpl = header.bytes_per_line as usize;
-    // Build a 256-entry RGBA palette: VGA tail block if present,
-    // grayscale ramp otherwise. Storing it as `[u8; 4]` with a
-    // baked-in `0xFF` alpha lets the per-pixel loop emit one 4-byte
-    // store via `copy_from_slice` instead of three scalar bytes plus
-    // a separate alpha byte.
-    let palette: [[u8; 4]; 256] = if let Some(p) = vga_palette {
-        let mut out = [[0u8; 4]; 256];
-        for (i, e) in out.iter_mut().enumerate() {
-            *e = [p[i * 3], p[i * 3 + 1], p[i * 3 + 2], 0xFF];
-        }
-        out
-    } else {
-        let mut out = [[0u8; 4]; 256];
-        for (i, e) in out.iter_mut().enumerate() {
-            let v = i as u8;
-            *e = [v, v, v, 0xFF];
-        }
-        out
-    };
-    let mut out = vec![0u8; w * h * 4];
-    let src_rows = planar.chunks_exact(bpl);
-    let dst_rows = out.chunks_exact_mut(w * 4);
-    for (row, dst_row) in src_rows.zip(dst_rows) {
-        for (dst, &b) in dst_row.chunks_exact_mut(4).zip(row.iter().take(w)) {
-            dst.copy_from_slice(&palette[b as usize]);
-        }
-    }
-    Ok(out)
-}
-
-fn unpack_8bpp_3planes(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
-    let w = header.width() as usize;
-    let h = header.height() as usize;
-    let bpl = header.bytes_per_line as usize;
-    let mut out = vec![0u8; w * h * 4];
-    let src_rows = planar.chunks_exact(bpl * 3);
-    let dst_rows = out.chunks_exact_mut(w * 4);
-    for (row, dst_row) in src_rows.zip(dst_rows) {
-        // Pre-slice the R/G/B plane sub-rows once and bound each
-        // plane slice to exactly `w` bytes so the zip-of-three
-        // iterators below can advance with no bounds checks against
-        // anything but the destination chunks. Triple-zip keeps the
-        // four output stores adjacent in the generated assembly and
-        // avoids the per-pixel `[x]` index that the prior pattern
-        // forced.
-        let (rp, rest) = row.split_at(bpl);
-        let (gp, bp) = rest.split_at(bpl);
-        let r_iter = rp[..w].iter();
-        let g_iter = gp[..w].iter();
-        let b_iter = bp[..w].iter();
-        let dst_iter = dst_row.chunks_exact_mut(4);
-        for (((&r, &g), &b), dst) in r_iter.zip(g_iter).zip(b_iter).zip(dst_iter) {
-            dst[0] = r;
-            dst[1] = g;
-            dst[2] = b;
-            dst[3] = 0xFF;
-        }
-    }
-    out
-}
-
-fn unpack_1bpp_2planes_cga(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
-    // 4-colour CGA stored as TWO 1-bit planes (the EGFF canonical mode
-    // matrix lists CGA as `BitsPerPixel = 1, NumBitPlanes = 2`, the
-    // plane-oriented sibling of the `2 bpp × 1 plane` packed-bits CGA
-    // layout). Each on-disk scanline carries plane 0 then plane 1, one
-    // after another within the row. The bit at the same x-position in
-    // each plane stacks into the 2-bit palette index
-    // (`p0 | p1 << 1`), matching the bit ordering the 4-plane EGA path
-    // uses (plane k contributes bit k of the index). The 4-entry CGA
-    // palette is resolved from the same header bytes 16/19 the packed
-    // `2 bpp × 1 plane` path uses (see `cga_palette_from_header`).
-    let w = header.width() as usize;
-    let h = header.height() as usize;
-    let bpl = header.bytes_per_line as usize;
-    let cga = cga_palette_from_header(&header.ega_palette);
-    let palette: [[u8; 4]; 4] = [
-        [cga[0][0], cga[0][1], cga[0][2], 0xFF],
-        [cga[1][0], cga[1][1], cga[1][2], 0xFF],
-        [cga[2][0], cga[2][1], cga[2][2], 0xFF],
-        [cga[3][0], cga[3][1], cga[3][2], 0xFF],
-    ];
-    let mut out = vec![0u8; w * h * 4];
-    let src_rows = planar.chunks_exact(bpl * 2);
-    let dst_rows = out.chunks_exact_mut(w * 4);
-    for (row, dst_row) in src_rows.zip(dst_rows) {
-        let (p0, p1) = row.split_at(bpl);
-        for (x, dst) in dst_row.chunks_exact_mut(4).enumerate() {
-            let byte = x >> 3;
-            let shift = 7 - (x & 7);
-            let idx = (((p0[byte] >> shift) & 1) | (((p1[byte] >> shift) & 1) << 1)) as usize;
-            dst.copy_from_slice(&palette[idx]);
-        }
-    }
-    out
-}
-
-fn unpack_2bpp_1plane_cga(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
-    // 2 bpp packed: 4 pixels per byte, MSB first. CGA 4-colour palette
-    // is selected per the manual's "CGA Color Map": header byte 16
-    // (colormap byte 0) high nibble = background colour (palette index
-    // 0), header byte 19 (colormap byte 3) upper three bits = C / P / I.
-    // Background defaults to black (0).
-    let w = header.width() as usize;
-    let h = header.height() as usize;
-    let bpl = header.bytes_per_line as usize;
-    // Pre-bake alpha into a 4-entry RGBA palette for one-store
-    // per-pixel writes, same pattern as the 8 bpp paths.
-    let cga = cga_palette_from_header(&header.ega_palette);
-    let palette: [[u8; 4]; 4] = [
-        [cga[0][0], cga[0][1], cga[0][2], 0xFF],
-        [cga[1][0], cga[1][1], cga[1][2], 0xFF],
-        [cga[2][0], cga[2][1], cga[2][2], 0xFF],
-        [cga[3][0], cga[3][1], cga[3][2], 0xFF],
-    ];
-    let mut out = vec![0u8; w * h * 4];
-    let src_rows = planar.chunks_exact(bpl);
-    let dst_rows = out.chunks_exact_mut(w * 4);
-    for (row, dst_row) in src_rows.zip(dst_rows) {
-        for (x, dst) in dst_row.chunks_exact_mut(4).enumerate() {
-            // Top two bits = pixel 0, then 2/3, etc.
-            let shift = 6 - 2 * (x & 3);
-            let idx = ((row[x >> 2] >> shift) & 0b11) as usize;
-            dst.copy_from_slice(&palette[idx]);
-        }
-    }
-    out
-}
-
-fn unpack_4bpp_1plane(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
-    // 4 bpp packed: 2 pixels per byte, high nibble first.
-    let w = header.width() as usize;
-    let h = header.height() as usize;
-    let bpl = header.bytes_per_line as usize;
-    // Pre-bake alpha into a 16-entry RGBA palette.
-    let ega = ega_palette_or_default(&header.ega_palette);
-    let mut palette = [[0u8; 4]; 16];
-    for (i, e) in palette.iter_mut().enumerate() {
-        *e = [ega[i][0], ega[i][1], ega[i][2], 0xFF];
-    }
-    let mut out = vec![0u8; w * h * 4];
-    let src_rows = planar.chunks_exact(bpl);
-    let dst_rows = out.chunks_exact_mut(w * 4);
-    for (row, dst_row) in src_rows.zip(dst_rows) {
-        for (x, dst) in dst_row.chunks_exact_mut(4).enumerate() {
-            let byte = row[x >> 1];
-            let nib = if x & 1 == 0 {
-                (byte >> 4) & 0x0F
-            } else {
-                byte & 0x0F
-            };
-            dst.copy_from_slice(&palette[nib as usize]);
-        }
     }
     out
 }
@@ -1656,7 +1138,7 @@ const CGA_PALETTE_1_HIGH: [[u8; 3]; 4] = [
 
 /// Standard 16-entry EGA hardware palette (the one returned by
 /// `ega_palette_or_default` when the header field is all zeros).
-const EGA_DEFAULT_PALETTE: [[u8; 3]; 16] = [
+pub(crate) const EGA_DEFAULT_PALETTE: [[u8; 3]; 16] = [
     [0x00, 0x00, 0x00],
     [0x00, 0x00, 0xAA],
     [0x00, 0xAA, 0x00],
@@ -1802,7 +1284,7 @@ pub(crate) fn cga_palette_from_cpi(
 /// header field. If the field is all zeros (which PCX 3.0+ files may
 /// emit even for EGA data), fall back to the standard EGA hardware
 /// palette listed in spec table §3.1.
-fn ega_palette_or_default(raw: &[u8; 48]) -> [[u8; 3]; 16] {
+pub(crate) fn ega_palette_or_default(raw: &[u8; 48]) -> [[u8; 3]; 16] {
     if raw.iter().all(|&b| b == 0) {
         // Standard EGA 16-colour palette per spec table §3.1
         // (in the same BGR-IRGB index order used above for plane bits).

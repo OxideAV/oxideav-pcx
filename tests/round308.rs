@@ -25,6 +25,11 @@
 //! coincidental `0x0C` marker 769 bytes from EOF — inside the real pixel
 //! region — so a probe that stripped it would truncate the RLE stream.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::types::{PCX_HEADER_SIZE, PCX_VGA_PALETTE_BLOCK_BYTES};
 use oxideav_pcx::{encode_pcx_24bpp, parse_pcx};
 
@@ -118,7 +123,8 @@ fn coincidental_marker_does_not_strip_24bit_pixels() {
     assert_eq!(img.width, w as u32);
     assert_eq!(img.height, h as u32);
     assert_eq!(
-        img.data, expected,
+        img.data(),
+        expected,
         "every 24-bit pixel must survive a coincidental 0x0C at len-769"
     );
 }
@@ -141,7 +147,7 @@ fn genuine_24bit_roundtrip_unaffected() {
     assert_eq!(img.height, h as u32);
     for (i, chunk) in rgb.chunks_exact(3).enumerate() {
         assert_eq!(
-            &img.data[i * 4..i * 4 + 4],
+            &img.data()[i * 4..i * 4 + 4],
             &[chunk[0], chunk[1], chunk[2], 0xFF],
             "pixel {i} must survive 24-bit round-trip"
         );
@@ -170,7 +176,7 @@ fn eight_bpp_one_plane_tail_palette_still_honoured() {
         let g = palette[idx as usize * 3 + 1];
         let b = palette[idx as usize * 3 + 2];
         assert_eq!(
-            &img.data[i * 4..i * 4 + 4],
+            &img.data()[i * 4..i * 4 + 4],
             &[r, g, b, 0xFF],
             "8 bpp × 1 plane tail palette must still be honoured (pixel {i})"
         );

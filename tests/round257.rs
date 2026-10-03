@@ -43,6 +43,11 @@
 //!    [`oxideav_pcx::parse_pcx`]: a malformed file rejected by one is
 //!    rejected by the other with a matching error class.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::{
     encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono, encode_pcx_24bpp, encode_pcx_2bpp_cga,
     encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, parse_pcx, parse_pcx_indexed_2bpp_cga,
@@ -132,7 +137,7 @@ fn typed_view_agrees_with_canonical_flattener() {
             let pcx = encode_pcx_2bpp_cga(w, h, &indices, selector, bg).expect("encode");
             let img = parse_pcx(&pcx).expect("parse_pcx");
             let view = parse_pcx_indexed_2bpp_cga(&pcx).expect("parse_pcx_indexed_2bpp_cga");
-            assert_indices_flatten_to_rgba(&view, &img.data);
+            assert_indices_flatten_to_rgba(&view, img.data());
         }
     }
 }

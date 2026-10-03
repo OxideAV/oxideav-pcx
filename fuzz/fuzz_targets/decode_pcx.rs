@@ -14,17 +14,19 @@
 //!
 //! Every public decode entry point is fuzzed off the same input bytes
 //! because they are independent public surfaces with distinct offset /
-//! allocation
-//! maths:
+//! allocation maths:
 //!
-//!   * [`parse_pcx`] — a single stand-alone PCX file: 128-byte header
+//!   * `probe` / `info` / `header` / `decode` / `decode_with` /
+//!     `decode_rgb8` / `decode_rgba8` — the IMAGE_CRATE_API vocabulary
+//!     over a single stand-alone PCX file: 128-byte header
 //!     (bits_per_pixel / n_planes / window / bytes_per_line all
 //!     attacker-controlled) + RLE planar pixel data + optional trailing
-//!     VGA palette block located by scanning back from EOF.
-//!   * [`parse_dcx`] — the multi-page wrapper: 4-byte magic + u32 LE
-//!     offset table that slices the bundle into per-page PCX streams,
-//!     each handed to `parse_pcx`. The offset arithmetic (range
-//!     computation, monotonicity, bounds) is its own surface.
+//!     VGA palette block located by scanning back from EOF. A decode
+//!     that succeeds is re-encoded and must decode back pixel-exact.
+//!   * `decode_all` — the DCX multi-page wrapper: 4-byte magic + u32 LE
+//!     offset table that slices the bundle into per-page PCX streams.
+//!     The offset arithmetic (range computation, monotonicity, bounds)
+//!     is its own surface.
 //!   * [`parse_pcx_indexed_8bpp`] — the typed paletted accessor for
 //!     8 bpp × 1 plane PCX. Shares the validation + RLE surface with
 //!     `parse_pcx` and additionally strips per-row padding into a
@@ -64,12 +66,10 @@
 //!     header bytes 16 / 19 and unpacks a distinct 2-bit index geometry;
 //!     fuzzed so the depth/planes reject path, the per-row padding strip,
 //!     and the CGA-selector dispatch are all driven by the input bytes.
-//!   * [`parse_pcx_indexed_2bpp_cga_cpi`] / [`parse_pcx_cga_cpi`] — the
-//!     spec-faithful C/P/I CGA accessors (indexed + flatten). They decode
-//!     all three significant bits of header byte 19, including the
-//!     color-burst-monochrome composite-grey ramp branch the two-bit
-//!     accessor cannot reach; `parse_pcx_cga_cpi` additionally covers
-//!     both `(2, 1)` and `(1, 2)` layouts behind one entry point.
+//!   * [`parse_pcx_indexed_2bpp_cga_cpi`] — the spec-faithful C/P/I CGA
+//!     accessor. It decodes all three significant bits of header byte
+//!     19, including the color-burst-monochrome composite-grey ramp
+//!     branch the two-bit accessor cannot reach.
 //!   * [`parse_pcx_indexed_1bpp_3planes`] — the 8-colour EGA RGB
 //!     bit-plane accessor (`(1, 3)`): no header palette, the three
 //!     stacked plane bits form a 3-bit fixed-primary colour index per
@@ -88,15 +88,42 @@
 
 use libfuzzer_sys::fuzz_target;
 use oxideav_pcx::{
-    parse_dcx, parse_pcx, parse_pcx_cga_cpi, parse_pcx_indexed_1bpp_2planes_cga,
-    parse_pcx_indexed_1bpp_3planes, parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga,
-    parse_pcx_indexed_2bpp_cga_cpi, parse_pcx_indexed_4bpp, parse_pcx_indexed_4bpp_4planes,
-    parse_pcx_indexed_4bpp_ega_hw, parse_pcx_indexed_8bpp,
+    decode, decode_all, decode_rgb8, decode_rgba8, decode_with, header, info,
+    parse_pcx_indexed_1bpp_2planes_cga, parse_pcx_indexed_1bpp_3planes,
+    parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_2bpp_cga_cpi,
+    parse_pcx_indexed_4bpp, parse_pcx_indexed_4bpp_4planes, parse_pcx_indexed_4bpp_ega_hw,
+    parse_pcx_indexed_8bpp, probe, DecodeOptions, EncodeOptions,
 };
 
 fuzz_target!(|data: &[u8]| {
-    let _ = parse_pcx(data);
-    let _ = parse_dcx(data);
+    // The contract vocabulary (IMAGE_CRATE_API): probe is total, info
+    // never touches pixels, decode / decode_with / the raw paths and
+    // decode_all return a Result, and a successful decode re-encodes
+    // and decodes back to the same image (lossless round trip pinned
+    // under fuzz as well as in the suite).
+    let _ = probe(data);
+    let _ = info(data);
+    let _ = header(data);
+    if let Ok(img) = decode(data) {
+        let rgba = img.to_rgba8();
+        assert_eq!(rgba.len(), img.width as usize * img.height as usize * 4);
+        assert_eq!(decode_rgba8(data).unwrap().data, rgba);
+        assert_eq!(decode_rgb8(data).unwrap().data, img.to_rgb8());
+        if let Ok(bytes) = oxideav_pcx::encode(&img, &EncodeOptions::default()) {
+            let back = decode(&bytes).expect("encode output must decode");
+            assert_eq!(back.to_rgba8(), rgba, "encode(decode(x)) must be pixel-exact");
+            assert_eq!(back.format, img.format);
+        }
+    }
+    let _ = decode_with(data, &DecodeOptions::default().with_strict(true));
+    let _ = decode_with(
+        data,
+        &DecodeOptions::default()
+            .with_max_pixels(1u64 << 16)
+            .with_max_bytes(1u64 << 20),
+    );
+    let _ = decode_all(data);
+    // The typed depth accessors share the validation surface.
     let _ = parse_pcx_indexed_8bpp(data);
     let _ = parse_pcx_indexed_4bpp(data);
     let _ = parse_pcx_indexed_4bpp_ega_hw(data);
@@ -104,7 +131,6 @@ fuzz_target!(|data: &[u8]| {
     let _ = parse_pcx_indexed_2bpp_cga(data);
     let _ = parse_pcx_indexed_1bpp_2planes_cga(data);
     let _ = parse_pcx_indexed_2bpp_cga_cpi(data);
-    let _ = parse_pcx_cga_cpi(data);
     let _ = parse_pcx_indexed_1bpp_3planes(data);
     let _ = parse_pcx_indexed_4bpp_4planes(data);
 });

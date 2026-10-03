@@ -34,6 +34,11 @@
 //! Run with:
 //!     cargo bench -p oxideav-pcx --bench roundtrip
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
 use oxideav_pcx::{

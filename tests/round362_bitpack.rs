@@ -28,6 +28,11 @@
 //! Payloads are an in-file xorshift so the suite is deterministic and
 //! dependency-free (clean-room: no external crate).
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::{
     encode_pcx_1bpp_2planes_cga, encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega,
     encode_pcx_1bpp_mono, parse_pcx, parse_pcx_indexed_1bpp_2planes_cga,
@@ -83,7 +88,7 @@ fn mono_roundtrips_every_width_residue() {
             assert_eq!(img.height, h as u32);
             // parse_pcx flattens 1bpp mono to 0x00 / 0xFF grayscale RGBA.
             for (i, &p) in pixels.iter().enumerate() {
-                let r = img.data[i * 4];
+                let r = img.data()[i * 4];
                 let want = if p != 0 { 0xFF } else { 0x00 };
                 assert_eq!(r, want, "mono w={w} h={h} pixel {i}");
             }
@@ -143,7 +148,7 @@ fn ega_rgb_3planes_roundtrips_every_width_residue() {
             for i in 0..n {
                 for c in 0..3 {
                     assert_eq!(
-                        img.data[i * 4 + c],
+                        img.data()[i * 4 + c],
                         rgb[i * 3 + c],
                         "ega-rgb w={w} h={h} pixel {i} ch {c}"
                     );

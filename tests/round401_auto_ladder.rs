@@ -10,9 +10,14 @@
 //! the ladder is a pure encode-time size optimisation and never
 //! quantises.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::{
     encode_pcx_24bpp, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed, encode_pcx_image_auto,
-    encode_pcx_rgb_auto, parse_pcx, PcxAutoMode, PcxImage, PcxPixelFormat,
+    encode_pcx_rgb_auto, parse_pcx, PcxAutoMode, PcxImage,
 };
 
 /// Deterministic generator so every run exercises the same pixels.
@@ -30,7 +35,7 @@ fn xorshift32(state: &mut u32) -> u32 {
 fn decode_to_rgb(bytes: &[u8]) -> (u16, u16, Vec<u8>) {
     let img = parse_pcx(bytes).expect("decode");
     let mut rgb = Vec::with_capacity(img.width as usize * img.height as usize * 3);
-    for px in img.data.chunks_exact(4) {
+    for px in img.data().chunks_exact(4) {
         rgb.extend_from_slice(&px[..3]);
     }
     (img.width as u16, img.height as u16, rgb)
@@ -167,16 +172,11 @@ fn image_auto_threads_dpi_through_gray8() {
         let g = (i % 251) as u8;
         rgb.extend_from_slice(&[g, g, g]);
     }
-    let image = PcxImage {
-        width: w as u32,
-        height: h as u32,
-        pixel_format: PcxPixelFormat::Rgb24,
-        data: rgb.clone(),
-        pts: None,
-        dpi: Some((300, 300)),
-        window_origin: None,
-        screen_size: None,
-    };
+    let image = PcxImage::from_rgb8(w as u32, h as u32, rgb.clone())
+        .unwrap()
+        .with_dpi(Some((300, 300)))
+        .with_window_origin(None)
+        .with_screen_size(None);
     let (bytes, mode) = encode_pcx_image_auto(&image).unwrap();
     assert_eq!(mode, PcxAutoMode::Gray8);
     let decoded = parse_pcx(&bytes).unwrap();
@@ -251,16 +251,11 @@ fn image_auto_threads_dpi_through_mono1() {
         let v = if (i / 5) % 2 == 0 { 0x00 } else { 0xFF };
         rgb.extend_from_slice(&[v, v, v]);
     }
-    let image = PcxImage {
-        width: w as u32,
-        height: h as u32,
-        pixel_format: PcxPixelFormat::Rgb24,
-        data: rgb.clone(),
-        pts: None,
-        dpi: Some((600, 300)),
-        window_origin: None,
-        screen_size: None,
-    };
+    let image = PcxImage::from_rgb8(w as u32, h as u32, rgb.clone())
+        .unwrap()
+        .with_dpi(Some((600, 300)))
+        .with_window_origin(None)
+        .with_screen_size(None);
     let (bytes, mode) = encode_pcx_image_auto(&image).unwrap();
     assert_eq!(mode, PcxAutoMode::Mono1);
     let decoded = parse_pcx(&bytes).unwrap();
@@ -364,16 +359,11 @@ fn image_auto_threads_dpi_through_ega_rgb_1x3() {
     for _ in 0..(w as usize * h as usize) {
         rgb.extend_from_slice(&prim[(xorshift32(&mut st) % 8) as usize]);
     }
-    let image = PcxImage {
-        width: w as u32,
-        height: h as u32,
-        pixel_format: PcxPixelFormat::Rgb24,
-        data: rgb.clone(),
-        pts: None,
-        dpi: Some((150, 150)),
-        window_origin: None,
-        screen_size: None,
-    };
+    let image = PcxImage::from_rgb8(w as u32, h as u32, rgb.clone())
+        .unwrap()
+        .with_dpi(Some((150, 150)))
+        .with_window_origin(None)
+        .with_screen_size(None);
     let (bytes, mode) = encode_pcx_image_auto(&image).unwrap();
     assert_eq!(mode, PcxAutoMode::EgaRgb1x3);
     let decoded = parse_pcx(&bytes).unwrap();
@@ -503,16 +493,11 @@ fn image_auto_threads_dpi_through_indexed4_and_indexed1x4() {
         stripes.extend_from_slice(&stripe_pal[[0usize, 1, 0, 2][i % 4]]);
     }
     for (data, want_planes) in [(noise, 1u8), (stripes, 4u8)] {
-        let image = PcxImage {
-            width: w as u32,
-            height: h as u32,
-            pixel_format: PcxPixelFormat::Rgb24,
-            data: data.clone(),
-            pts: None,
-            dpi: Some((300, 600)),
-            window_origin: None,
-            screen_size: None,
-        };
+        let image = PcxImage::from_rgb8(w as u32, h as u32, data.clone())
+            .unwrap()
+            .with_dpi(Some((300, 600)))
+            .with_window_origin(None)
+            .with_screen_size(None);
         let (bytes, mode) = encode_pcx_image_auto(&image).unwrap();
         assert!(
             matches!(
@@ -750,16 +735,11 @@ fn image_auto_threads_dpi_through_cga() {
     for _ in 0..(w as usize * h as usize) {
         rgb.extend_from_slice(&pal[(xorshift32(&mut st) % 4) as usize]);
     }
-    let image = PcxImage {
-        width: w as u32,
-        height: h as u32,
-        pixel_format: PcxPixelFormat::Rgb24,
-        data: rgb.clone(),
-        pts: None,
-        dpi: Some((96, 96)),
-        window_origin: None,
-        screen_size: None,
-    };
+    let image = PcxImage::from_rgb8(w as u32, h as u32, rgb.clone())
+        .unwrap()
+        .with_dpi(Some((96, 96)))
+        .with_window_origin(None)
+        .with_screen_size(None);
     let (bytes, mode) = encode_pcx_image_auto(&image).unwrap();
     assert!(matches!(
         mode,
@@ -809,7 +789,7 @@ fn foreign_cga_header_bytes_16_and_19_are_honoured() {
     ];
     for (i, want) in expected.iter().enumerate() {
         assert_eq!(
-            &img.data[i * 4..i * 4 + 3],
+            &img.data()[i * 4..i * 4 + 3],
             want,
             "pixel {i}: palette must come from header bytes 16/19"
         );
@@ -825,11 +805,11 @@ fn foreign_cga_header_bytes_16_and_19_are_honoured() {
     wrong[35] = 0x60;
     let img2 = parse_pcx(&wrong).unwrap();
     assert_eq!(
-        &img2.data[0..3],
+        &img2.data()[0..3],
         &[0x00, 0x00, 0x00],
         "colormap bytes 16/19 (header 32/35) must be inert for CGA"
     );
-    assert_eq!(&img2.data[4..7], &[0x00, 0xAA, 0x00], "index 1 = green");
+    assert_eq!(&img2.data()[4..7], &[0x00, 0xAA, 0x00], "index 1 = green");
 }
 
 #[test]
@@ -1125,20 +1105,20 @@ fn mono_decoder_honours_a_foreign_two_entry_colormap() {
     // r401 writers store black/white in entries 0/1 — assert that first.
     assert_eq!(&bytes[16..22], &[0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF]);
     let img = parse_pcx(&bytes).unwrap();
-    assert_eq!(&img.data[0..3], &[0xFF, 0xFF, 0xFF], "bit 1 → entry 1");
-    assert_eq!(&img.data[4..7], &[0x00, 0x00, 0x00], "bit 0 → entry 0");
+    assert_eq!(&img.data()[0..3], &[0xFF, 0xFF, 0xFF], "bit 1 → entry 1");
+    assert_eq!(&img.data()[4..7], &[0x00, 0x00, 0x00], "bit 0 → entry 0");
     // Foreign palette: white-on-blue.
     bytes[16..19].copy_from_slice(&[0x00, 0x00, 0xAA]); // entry 0 = blue
     bytes[19..22].copy_from_slice(&[0xFF, 0xFF, 0xFF]); // entry 1 = white
     let img = parse_pcx(&bytes).unwrap();
-    assert_eq!(&img.data[0..3], &[0xFF, 0xFF, 0xFF], "bit 1 → white");
-    assert_eq!(&img.data[4..7], &[0x00, 0x00, 0xAA], "bit 0 → blue");
+    assert_eq!(&img.data()[0..3], &[0xFF, 0xFF, 0xFF], "bit 1 → white");
+    assert_eq!(&img.data()[4..7], &[0x00, 0x00, 0xAA], "bit 0 → blue");
     // Zero-filled colormap (the pre-r401 output and the common PCX 3.0+
     // form): classic convention.
     for b in bytes[16..64].iter_mut() {
         *b = 0;
     }
     let img = parse_pcx(&bytes).unwrap();
-    assert_eq!(&img.data[0..3], &[0xFF, 0xFF, 0xFF], "bit 1 = white");
-    assert_eq!(&img.data[4..7], &[0x00, 0x00, 0x00], "bit 0 = black");
+    assert_eq!(&img.data()[0..3], &[0xFF, 0xFF, 0xFF], "bit 1 = white");
+    assert_eq!(&img.data()[4..7], &[0x00, 0x00, 0x00], "bit 0 = black");
 }

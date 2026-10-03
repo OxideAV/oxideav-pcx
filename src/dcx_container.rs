@@ -31,7 +31,7 @@ use oxideav_core::{
 };
 
 use crate::dcx::{parse_offset_table, DCX_MAGIC, DCX_MAX_PAGES};
-use crate::types::parse_header;
+use crate::types::read_header;
 
 /// Register the DCX container demuxer + muxer + extension + probe.
 ///
@@ -96,12 +96,12 @@ pub fn open_demuxer(
     // height). DCX doesn't constrain pages to share dimensions, but the
     // stream surface only carries one set of CodecParameters and the
     // pipeline can re-read per-frame dims at decode time.
-    let first_header = parse_header(&pages[0])
-        .ok_or_else(|| Error::invalid("DCX demuxer: first page has truncated PCX header"))?;
+    let first = crate::info(&pages[0])
+        .map_err(|e| Error::invalid(format!("DCX demuxer: first page: {e}")))?;
     let mut params = CodecParameters::video(CodecId::new(crate::CODEC_ID_STR));
-    params.width = Some(first_header.width());
-    params.height = Some(first_header.height());
-    params.pixel_format = Some(PixelFormat::Rgba);
+    params.width = Some(first.width);
+    params.height = Some(first.height);
+    params.pixel_format = Some(PixelFormat::from(first.format));
     let stream = StreamInfo {
         index: 0,
         params,
@@ -194,7 +194,7 @@ impl Muxer for DcxMuxer {
         // The packet body must already be a valid PCX 5.0 file. Sanity-
         // check the header so a bad upstream packet doesn't pollute the
         // bundle; the demuxer side rejects bad pages too.
-        if parse_header(&packet.data).is_none() {
+        if read_header(&packet.data).is_none() {
             return Err(Error::invalid(
                 "DCX muxer: packet body too short for a PCX header",
             ));

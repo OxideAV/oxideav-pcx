@@ -1,6 +1,11 @@
 //! Round 82 — `palette_info=2` grayscale flag, non-zero window origin
 //! writer, and the `bytes_per_line` sanity guard.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::types::PCX_HEADER_SIZE;
 use oxideav_pcx::{
     encode_pcx_24bpp, encode_pcx_24bpp_window, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed,
@@ -36,10 +41,10 @@ fn grayscale_writer_self_roundtrip() {
     let img = parse_pcx(&bytes).unwrap();
     assert_eq!(img.width, 16);
     assert_eq!(img.height, 8);
-    assert_eq!(img.pixel_format, PcxPixelFormat::Rgba);
+    assert_eq!(img.format, PcxPixelFormat::Rgba);
     for (i, &p) in pixels.iter().enumerate() {
         assert_eq!(
-            &img.data[i * 4..i * 4 + 4],
+            &img.data()[i * 4..i * 4 + 4],
             &[p, p, p, 0xFF],
             "pixel {i} should decode as ({p},{p},{p},255)"
         );
@@ -68,7 +73,7 @@ fn grayscale_flag_overrides_tail_palette_on_decode() {
     // palette is ignored because of the flag.
     for (x, &i) in indices.iter().enumerate() {
         assert_eq!(
-            &img.data[x * 4..x * 4 + 4],
+            &img.data()[x * 4..x * 4 + 4],
             &[i, i, i, 0xFF],
             "x={x} idx={i} should ignore tail palette and decode as grayscale"
         );
@@ -96,7 +101,7 @@ fn grayscale_writer_odd_width_pads_scanline() {
     let img = parse_pcx(&bytes).unwrap();
     assert_eq!(img.width, 5);
     for (x, &p) in pixels.iter().enumerate() {
-        assert_eq!(&img.data[x * 4..x * 4 + 4], &[p, p, p, 0xFF]);
+        assert_eq!(&img.data()[x * 4..x * 4 + 4], &[p, p, p, 0xFF]);
     }
 }
 
@@ -129,7 +134,7 @@ fn windowed_writer_sets_header_origin() {
     assert_eq!(img.width, 8);
     assert_eq!(img.height, 4);
     for i in 0..(8 * 4) {
-        assert_eq!(&img.data[i * 4..i * 4 + 4], &[200, 100, 50, 0xFF]);
+        assert_eq!(&img.data()[i * 4..i * 4 + 4], &[200, 100, 50, 0xFF]);
     }
 }
 
@@ -209,6 +214,6 @@ fn accepts_bytes_per_line_padded_up() {
     // Decoder reads only the first `width` pixels of the scanline.
     for x in 0..5usize {
         let v = (x + 1) as u8;
-        assert_eq!(&img.data[x * 4..x * 4 + 4], &[v, v, v, 0xFF]);
+        assert_eq!(&img.data()[x * 4..x * 4 + 4], &[v, v, v, 0xFF]);
     }
 }

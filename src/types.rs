@@ -105,6 +105,33 @@ impl PcxHeader {
     pub fn height(&self) -> u32 {
         (self.y_max as u32 + 1).saturating_sub(self.y_min as u32)
     }
+    /// The on-disk geometry the `(bits_per_pixel, n_planes)` pair plus
+    /// `palette_info` / the VGA tail describe, or `None` for a pair the
+    /// spec's mode table does not list (the `4 bpp × 4 planes`
+    /// composite slot included — it carries no palette geometry).
+    /// `has_vga_tail` is whether the file ends in the 769-byte VGA
+    /// block; it only matters for `8 bpp × 1 plane`.
+    pub fn layout(&self, has_vga_tail: bool) -> Option<crate::image::PcxLayout> {
+        use crate::image::PcxLayout as L;
+        Some(match (self.bits_per_pixel, self.n_planes) {
+            (1, 1) => L::Mono1,
+            (1, 2) => L::Cga1x2,
+            (1, 3) => L::EgaRgb1x3,
+            (1, 4) => L::Indexed1x4,
+            (2, 1) => L::Cga2x1,
+            (4, 1) => L::Indexed4,
+            (8, 1) => {
+                if self.palette_info == 2 || !has_vga_tail {
+                    L::Gray8
+                } else {
+                    L::Indexed8
+                }
+            }
+            (8, 3) => L::Rgb24,
+            _ => return None,
+        })
+    }
+
     /// On-disk total bytes for one full scanline:
     /// `n_planes × bytes_per_line`. Independent of pixel-width
     /// (the field is rounded up to the device word size at write time).
@@ -113,10 +140,17 @@ impl PcxHeader {
     }
 }
 
-/// Parse the 128-byte PCX header. Returns `None` if the input is
-/// shorter than 128 bytes — the caller turns that into a useful error
-/// message.
+/// The pre-contract name of the raw header read: the 128 bytes split
+/// into fields with no validation, `None` when the input is shorter
+/// than 128 bytes. [`crate::header`] is the validated accessor.
+#[deprecated(note = "use oxideav_pcx::header (IMAGE_CRATE_API)")]
 pub fn parse_header(input: &[u8]) -> Option<PcxHeader> {
+    read_header(input)
+}
+
+/// Split the 128-byte PCX header into fields. Returns `None` if the
+/// input is shorter than 128 bytes; no field is validated.
+pub(crate) fn read_header(input: &[u8]) -> Option<PcxHeader> {
     if input.len() < PCX_HEADER_SIZE {
         return None;
     }

@@ -1,115 +1,1158 @@
-//! Standalone image container returned by `oxideav-pcx`'s framework-free
-//! decode API and accepted by the standalone encode API.
+//! The standalone image types: the shapes every `oxideav-<format>`
+//! image crate shares (`IMAGE_CRATE_API`), specialised for PCX.
+//!
+//! * [`PcxImage`] — the native-layout image [`crate::decode`] returns
+//!   and [`crate::encode`] consumes: dimensions, a [`PixelFormat`] tag,
+//!   one packed [`Plane`], [`ColorInfo`], [`Metadata`], an optional
+//!   [`Palette`] (every sub-24-bit PCX geometry is paletted) plus the
+//!   PCX header extras — authoring DPI, window origin, PB IV screen
+//!   size and the on-disk [`PcxLayout`] the pixels came from.
+//! * [`RgbImage`] / [`RgbaImage`] — the tightly packed 8-bit raw paths
+//!   ([`crate::decode_rgb8`] / [`crate::decode_rgba8`],
+//!   [`PcxImage::to_rgb8`] / [`PcxImage::to_rgba8`]).
+//! * [`ImageInfo`] — what [`crate::info`] reads from the 128-byte header
+//!   (and the VGA tail marker) without touching a pixel.
+//! * [`Frame`] — one page of a DCX bundle for [`crate::decode_all`].
 //!
 //! Defined here (rather than reusing `oxideav_core::VideoFrame`) so the
-//! crate can be built with the default `registry` feature off — i.e.
-//! without depending on `oxideav-core` at all. When the `registry`
-//! feature is on the [`crate::registry`] module provides the matching
-//! [`PcxPixelFormat`] ↔ `oxideav_core::PixelFormat` mapping so the
-//! trait-side `Decoder` / `Encoder` impls keep working unchanged.
+//! crate builds with the default `registry` feature off — i.e. without
+//! depending on `oxideav-core` at all. With `registry` on,
+//! `crate::registry` adds the `From<PcxImage> for VideoFrame`
+//! conversion and its inverse so the framework `Decoder` / `Encoder`
+//! are thin adapters over the same functions.
+//!
+//! The typed paletted views ([`PcxIndexed8`], [`PcxIndexed4`], …) that
+//! the depth accessors `parse_pcx_indexed_*` return live here too; they
+//! are the format-specific floor below the contract and keep their
+//! names.
 
-/// Pixel layout used by [`PcxImage`].
+use std::time::Duration;
+
+use crate::error::{PcxError, Result};
+
+/// Pixel layouts the standalone `oxideav-pcx` API can produce / consume.
 ///
-/// The decoder always normalises monochrome (1 bpp × 1 plane) and
-/// EGA-palette (1 bpp × 4 planes) and 8-bpp-indexed (8 bpp × 1 plane)
-/// inputs to packed [`PcxPixelFormat::Rgba`], with palette lookup +
-/// 1-bit expansion done at decode time. 24-bit (8 bpp × 3 planes)
-/// inputs decode to packed [`PcxPixelFormat::Rgba`] with α = 0xFF.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Variant names mirror `oxideav_core::PixelFormat` exactly, so the
+/// `crate::registry` conversion layer is a 1:1 match-and-rebuild
+/// rather than a re-pack. Every PCX layout is packed (one plane).
+///
+/// What [`crate::decode`] produces per spec geometry
+/// (`bits_per_pixel × n_planes`):
+///
+/// | Geometry | Native layout | Palette |
+/// |---|---|---|
+/// | 1 × 1 (monochrome) | [`Pal8`](Self::Pal8) | 2 entries: header colormap triples 0 / 1, or black / white when the colormap is zero-filled |
+/// | 1 × 2, 2 × 1 (CGA) | [`Pal8`](Self::Pal8) | 4 entries resolved from the header's CGA colour map (background nibble + C / P / I selector) |
+/// | 1 × 3 (EGA RGB) | [`Pal8`](Self::Pal8) | 8 fixed on/off primaries, index `r \| g << 1 \| b << 2` |
+/// | 1 × 4, 4 × 1 (16-colour) | [`Pal8`](Self::Pal8) | 16 entries: header colormap, or the EGA hardware default when zero-filled |
+/// | 8 × 1 with a VGA tail (`palette_info ≠ 2`) | [`Pal8`](Self::Pal8) | 256 entries from the tail block |
+/// | 8 × 1 with `palette_info = 2`, or no tail | [`Gray8`](Self::Gray8) | — (the pixel byte is the grey level) |
+/// | 8 × 3 (24-bit) | [`Rgb24`](Self::Rgb24) | — |
+///
+/// [`Rgba`](Self::Rgba) is an **input** layout only (PCX has no alpha
+/// mechanism): [`crate::encode`] rejects it with
+/// [`PcxError::Unsupported`] unless
+/// [`EncodeOptions::drop_alpha`](crate::EncodeOptions::drop_alpha) is
+/// set, and [`crate::encode_rgba8`] documents that it drops alpha.
+/// The deprecated `parse_pcx` flatten reader returns it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum PcxPixelFormat {
-    /// 8-bit packed RGBA, 4 bytes per pixel.
+    /// 8-bit RGBA, 4 bytes per pixel. Input only; never decoded.
     Rgba,
-    /// 8-bit packed RGB, 3 bytes per pixel (encode input only).
+    /// 8-bit RGB, 3 bytes per pixel (24-bit files).
     Rgb24,
-    /// 8-bit single-channel indexed (encode input only — pairs with
-    /// the 256-colour palette passed to [`crate::encode_pcx_8bpp_indexed`]).
-    Indexed8,
+    /// 8-bit single-channel grayscale, 1 byte per pixel (8 bpp × 1
+    /// plane files flagged `palette_info = 2`, or with no VGA tail).
+    Gray8,
+    /// 8-bit palette index, 1 byte per pixel. The colour table lives on
+    /// [`PcxImage::palette`]; every sub-24-bit geometry decodes to it.
+    Pal8,
 }
 
-/// One decoded PCX frame, framework-free shape.
-///
-/// `pts` is `None` for the standalone [`crate::parse_pcx`] entry point.
-/// The registry-backed `Decoder` impl still passes `pts` through from
-/// the surrounding `Packet`.
-#[derive(Debug, Clone)]
-pub struct PcxImage {
-    /// Picture width in pixels.
-    pub width: u32,
-    /// Picture height in pixels.
-    pub height: u32,
-    /// Pixel layout the `data` carries. Decode always produces
-    /// [`PcxPixelFormat::Rgba`].
-    pub pixel_format: PcxPixelFormat,
-    /// Row-major pixel bytes, `width × bytes_per_pixel(pixel_format) ×
-    /// height` long. Top-left origin.
-    pub data: Vec<u8>,
-    /// Optional presentation timestamp. Always `None` from the
-    /// standalone decode path.
-    pub pts: Option<i64>,
-    /// Source authoring resolution as `(h_dpi, v_dpi)` if the header
-    /// carried non-zero values for both fields. Spec §3 records this as
-    /// "the resolutions at which the image was created (printer or
-    /// scanner); e.g. a scan might store 300, 300."
-    ///
-    /// The decoder reports `Some((h, v))` whenever both header fields
-    /// are non-zero, and `None` otherwise (a 0 in either field per the
-    /// rev-5 manual means "unset" — many drawing-program writers leave
-    /// the field at zero rather than the 72×72 convention some scanner
-    /// software emits). The standalone re-encode helpers
-    /// [`crate::encode_pcx_24bpp_dpi`] /
-    /// [`crate::encode_pcx_8bpp_indexed_dpi`] /
-    /// [`crate::encode_pcx_8bpp_grayscale_dpi`] /
-    /// [`crate::encode_pcx_1bpp_mono_dpi`] consume the same tuple so a
-    /// caller can round-trip the scanner DPI through decode + re-encode
-    /// without losing the metadata.
-    pub dpi: Option<(u16, u16)>,
-    /// Header `(x_min, y_min)` window origin from spec §3. PCX 3.0+
-    /// supports a non-zero origin to record the source crop region the
-    /// pixel buffer came from (per spec §3 the visible width / height
-    /// are `x_max - x_min + 1` and `y_max - y_min + 1`).
-    ///
-    /// The decoder reports `Some((x, y))` whenever either component is
-    /// non-zero, and `None` when the header carries `(0, 0)` — the
-    /// overwhelmingly common case for screen-authored PCX files. The
-    /// re-encode wrapper [`crate::encode_pcx_24bpp_image`] threads a
-    /// `Some(...)` value through [`crate::encode_pcx_24bpp_window`] so
-    /// a windowed PCX round-trips its crop origin end-to-end instead of
-    /// having it silently zeroed.
-    pub window_origin: Option<(u16, u16)>,
-    /// Header `(h_screen_size, v_screen_size)` words from spec §3
-    /// (offsets 70 / 72). The rev-5 manual records these as "Horizontal
-    /// screen size in pixels (new field found only in PB IV / IV Plus)"
-    /// and "Vertical screen size in pixels (new field found only in PB
-    /// IV / IV Plus)" — a hint about the display resolution at the time
-    /// the image was authored, distinct from the printer/scanner DPI in
-    /// `h_dpi` / `v_dpi`.
-    ///
-    /// The decoder reports `Some((h, v))` whenever both components are
-    /// non-zero, and `None` otherwise (an in-the-wild zero in either
-    /// component means the field was left at the default by an older
-    /// PCX writer that pre-dates PB IV — many of which keep the bytes
-    /// at the historical zero fill). The re-encode wrapper
-    /// [`crate::encode_pcx_24bpp_image`] threads a `Some(...)` value
-    /// into the header so a tagged PCX round-trips its authoring screen
-    /// size end-to-end instead of having it silently zeroed.
-    pub screen_size: Option<(u16, u16)>,
-}
+/// The contract name for [`PcxPixelFormat`].
+pub type PixelFormat = PcxPixelFormat;
 
-impl PcxImage {
-    /// Bytes-per-pixel implied by `pixel_format`.
-    pub fn bytes_per_pixel(&self) -> usize {
-        match self.pixel_format {
-            PcxPixelFormat::Rgba => 4,
-            PcxPixelFormat::Rgb24 => 3,
-            PcxPixelFormat::Indexed8 => 1,
+impl PcxPixelFormat {
+    /// Bytes per pixel for the layout.
+    pub fn bytes_per_pixel(self) -> usize {
+        match self {
+            Self::Rgba => 4,
+            Self::Rgb24 => 3,
+            Self::Gray8 | Self::Pal8 => 1,
         }
     }
 
-    /// Bytes per row.
-    pub fn stride(&self) -> usize {
-        self.width as usize * self.bytes_per_pixel()
+    /// `true` when the layout carries an alpha channel of its own
+    /// (`Rgba`).
+    pub fn has_alpha(self) -> bool {
+        matches!(self, Self::Rgba)
     }
 }
+
+/// The on-disk geometry of a PCX file — the `(bits_per_pixel,
+/// n_planes)` pair plus the palette carrier the spec defines for it.
+///
+/// [`crate::decode`] records the geometry it read on
+/// [`PcxImage::layout`] and [`ImageInfo::layout`]; [`crate::encode`]
+/// writes the geometry [`EncodeOptions::layout`](crate::EncodeOptions::layout)
+/// forces, else the image's own `layout`, else the natural geometry for
+/// the image's [`PixelFormat`] and palette (see
+/// [`PcxLayout::natural_for`]). Every variant is lossless for the
+/// inputs it accepts; [`crate::encode`] returns
+/// [`PcxError::Unsupported`] when an image does not fit the requested
+/// geometry rather than quantising.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PcxLayout {
+    /// 1 bpp × 1 plane monochrome: two colours in header colormap
+    /// entries 0 / 1 (spec §4.1 convention black / white when the
+    /// palette is `[black, white]`), one bit per pixel.
+    Mono1,
+    /// 2 bpp × 1 plane 4-colour CGA, packed four pixels per byte; the
+    /// palette is a CGA hardware family selected by header byte 19
+    /// (C / P / I) with the background colour in header byte 16.
+    Cga2x1,
+    /// 1 bpp × 2 planes 4-colour CGA, plane-oriented (EGFF canonical
+    /// CGA mode); same header palette selector as [`Self::Cga2x1`].
+    Cga1x2,
+    /// 1 bpp × 3 planes 8-colour EGA RGB: one bit-plane per primary,
+    /// no stored palette (the eight on/off primaries are intrinsic).
+    EgaRgb1x3,
+    /// 4 bpp × 1 plane 16-colour packed nibbles with the palette in the
+    /// 48-byte header colormap.
+    Indexed4,
+    /// 1 bpp × 4 planes 16-colour EGA bit-planes with the palette in
+    /// the 48-byte header colormap.
+    Indexed1x4,
+    /// 8 bpp × 1 plane 256-colour indices with the 768-byte VGA tail
+    /// palette (marker `0x0C`).
+    Indexed8,
+    /// 8 bpp × 1 plane grayscale: `palette_info = 2`, no tail; the
+    /// pixel byte is the grey level.
+    Gray8,
+    /// 8 bpp × 3 planes 24-bit RGB, no palette.
+    Rgb24,
+}
+
+impl PcxLayout {
+    /// `(bits_per_pixel, n_planes)` the geometry writes into the header.
+    pub fn depth_planes(self) -> (u8, u8) {
+        match self {
+            Self::Mono1 => (1, 1),
+            Self::Cga2x1 => (2, 1),
+            Self::Cga1x2 => (1, 2),
+            Self::EgaRgb1x3 => (1, 3),
+            Self::Indexed4 => (4, 1),
+            Self::Indexed1x4 => (1, 4),
+            Self::Indexed8 | Self::Gray8 => (8, 1),
+            Self::Rgb24 => (8, 3),
+        }
+    }
+
+    /// The native [`PixelFormat`] [`crate::decode`] returns for files
+    /// in this geometry.
+    pub fn pixel_format(self) -> PixelFormat {
+        match self {
+            Self::Rgb24 => PixelFormat::Rgb24,
+            Self::Gray8 => PixelFormat::Gray8,
+            _ => PixelFormat::Pal8,
+        }
+    }
+
+    /// Number of palette entries a decoded image of this geometry
+    /// carries (`0` for the palette-free layouts).
+    pub fn palette_len(self) -> usize {
+        match self {
+            Self::Mono1 => 2,
+            Self::Cga2x1 | Self::Cga1x2 => 4,
+            Self::EgaRgb1x3 => 8,
+            Self::Indexed4 | Self::Indexed1x4 => 16,
+            Self::Indexed8 => 256,
+            Self::Gray8 | Self::Rgb24 => 0,
+        }
+    }
+
+    /// The geometry [`crate::encode`] picks for an image that carries
+    /// no [`PcxImage::layout`] and whose options force none:
+    ///
+    /// * `Rgb24` → [`Self::Rgb24`]; `Gray8` → [`Self::Gray8`];
+    ///   `Rgba` → [`Self::Rgb24`] (alpha dropped only when the options
+    ///   allow it).
+    /// * `Pal8` by its palette: exactly `[black, white]` →
+    ///   [`Self::Mono1`]; ≤ 4 entries all found in one CGA hardware
+    ///   palette → [`Self::Cga2x1`]; exactly the eight on/off primaries
+    ///   in index order → [`Self::EgaRgb1x3`]; ≤ 16 entries with at
+    ///   least one non-zero byte → [`Self::Indexed4`]; otherwise →
+    ///   [`Self::Indexed8`] (an all-zero 16-entry colormap would read
+    ///   back as the EGA hardware default, so all-black tables take the
+    ///   VGA tail, which has no such sentinel).
+    ///
+    /// A decoded image re-encodes in these geometries with the same
+    /// palette length it was decoded with, so `decode(encode(img)) ==
+    /// img` holds for everything [`crate::decode`] produces.
+    pub fn natural_for(format: PixelFormat, palette: Option<&Palette>) -> Self {
+        match format {
+            PixelFormat::Rgb24 | PixelFormat::Rgba => Self::Rgb24,
+            PixelFormat::Gray8 => Self::Gray8,
+            PixelFormat::Pal8 => {
+                let Some(p) = palette else {
+                    return Self::Indexed8;
+                };
+                let rgb: Vec<[u8; 3]> = p.entries.iter().map(|e| [e[0], e[1], e[2]]).collect();
+                if rgb.len() == 2 && rgb[0] == [0, 0, 0] && rgb[1] == [0xFF, 0xFF, 0xFF] {
+                    return Self::Mono1;
+                }
+                if rgb.len() <= 4 && crate::encoder::cga_match(&rgb).is_some() {
+                    return Self::Cga2x1;
+                }
+                if rgb.len() == 8 && rgb == crate::decoder::RGB_PRIMARIES_PALETTE {
+                    return Self::EgaRgb1x3;
+                }
+                if rgb.len() <= 16 && rgb.iter().flatten().any(|&b| b != 0) {
+                    return Self::Indexed4;
+                }
+                Self::Indexed8
+            }
+        }
+    }
+}
+
+/// One pixel plane: `stride` bytes per row, `data` holding at least
+/// `stride × height` bytes (rows may carry padding past the visible
+/// width). PCX layouts are packed, so a [`PcxImage`] has exactly one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Plane {
+    /// Bytes per row.
+    pub stride: usize,
+    /// Row-major bytes, `stride × height` long.
+    pub data: Vec<u8>,
+}
+
+impl Plane {
+    /// Wrap a plane buffer with its row stride.
+    pub fn new(stride: usize, data: Vec<u8>) -> Self {
+        Self { stride, data }
+    }
+}
+
+/// Nominal sample range (H.273 `VideoFullRangeFlag`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum ColorRange {
+    /// No range was signalled.
+    #[default]
+    Unspecified,
+    /// Limited (video / studio) range: `VideoFullRangeFlag == 0`.
+    Limited,
+    /// Full (PC) range: `VideoFullRangeFlag == 1`.
+    Full,
+}
+
+/// Colour signalling of an image: the sample range plus the H.273
+/// `ColourPrimaries` / `TransferCharacteristics` /
+/// `MatrixCoefficients` code points (`2` = unspecified).
+///
+/// PCX has no colour-space signalling of any kind (no ICC, no
+/// primaries, no gamma — the header carries only device palettes and
+/// authoring DPI), so [`crate::decode`] always fills
+/// [`ColorInfo::pcx_default`]: full-range RGB (`matrix` 0) with
+/// unspecified primaries and transfer. This is the crate's documented
+/// convention, not a value read from the file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct ColorInfo {
+    /// Sample range.
+    pub range: ColorRange,
+    /// H.273 `ColourPrimaries` code point (`1` = BT.709 / sRGB, `2` =
+    /// unspecified).
+    pub primaries: u8,
+    /// H.273 `TransferCharacteristics` code point (`13` = sRGB, `2` =
+    /// unspecified).
+    pub transfer: u8,
+    /// H.273 `MatrixCoefficients` code point (`0` = identity / RGB).
+    pub matrix: u8,
+}
+
+impl ColorInfo {
+    /// H.273 "unspecified" code point.
+    pub const UNSPECIFIED: u8 = 2;
+    /// H.273 `MatrixCoefficients` identity (RGB / GBR) code point.
+    pub const MATRIX_IDENTITY: u8 = 0;
+    /// H.273 `ColourPrimaries` BT.709 / sRGB code point.
+    pub const PRIMARIES_BT709: u8 = 1;
+    /// H.273 `TransferCharacteristics` IEC 61966-2-1 sRGB code point.
+    pub const TRANSFER_SRGB: u8 = 13;
+
+    /// Build a description from its four parts.
+    pub const fn new(range: ColorRange, primaries: u8, transfer: u8, matrix: u8) -> Self {
+        Self {
+            range,
+            primaries,
+            transfer,
+            matrix,
+        }
+    }
+
+    /// Every field unspecified.
+    pub const fn unspecified() -> Self {
+        Self::new(
+            ColorRange::Unspecified,
+            Self::UNSPECIFIED,
+            Self::UNSPECIFIED,
+            Self::UNSPECIFIED,
+        )
+    }
+
+    /// PCX's documented default (the format signals no colour space):
+    /// full-range RGB (`matrix` 0) with unspecified primaries and
+    /// transfer.
+    pub const fn pcx_default() -> Self {
+        Self::new(
+            ColorRange::Full,
+            Self::UNSPECIFIED,
+            Self::UNSPECIFIED,
+            Self::MATRIX_IDENTITY,
+        )
+    }
+
+    /// sRGB (IEC 61966-2-1): BT.709 primaries, sRGB transfer, identity
+    /// matrix, full range.
+    pub const fn srgb() -> Self {
+        Self::new(
+            ColorRange::Full,
+            Self::PRIMARIES_BT709,
+            Self::TRANSFER_SRGB,
+            Self::MATRIX_IDENTITY,
+        )
+    }
+
+    /// Set the range.
+    pub fn with_range(mut self, range: ColorRange) -> Self {
+        self.range = range;
+        self
+    }
+
+    /// Set the primaries code point.
+    pub fn with_primaries(mut self, primaries: u8) -> Self {
+        self.primaries = primaries;
+        self
+    }
+
+    /// Set the transfer code point.
+    pub fn with_transfer(mut self, transfer: u8) -> Self {
+        self.transfer = transfer;
+        self
+    }
+
+    /// Set the matrix code point.
+    pub fn with_matrix(mut self, matrix: u8) -> Self {
+        self.matrix = matrix;
+        self
+    }
+
+    /// `true` when both primaries and transfer are specified (`!= 2`).
+    pub fn is_specified(&self) -> bool {
+        self.primaries != Self::UNSPECIFIED && self.transfer != Self::UNSPECIFIED
+    }
+}
+
+impl Default for ColorInfo {
+    /// [`ColorInfo::pcx_default`].
+    fn default() -> Self {
+        Self::pcx_default()
+    }
+}
+
+/// The metadata blobs every image crate surfaces: an ICC profile, an
+/// Exif payload, an XMP packet and a file gamma. PCX has no carrier
+/// for any of them: all four are always `None` from [`crate::decode`]
+/// and ignored by [`crate::encode`]. The header's own annotations
+/// (authoring DPI, window origin, screen size) are typed extras on
+/// [`PcxImage`] instead.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct Metadata {
+    /// ICC profile bytes. PCX has no carrier; always `None` on decode.
+    pub icc: Option<Vec<u8>>,
+    /// Exif payload. PCX has no carrier; always `None` on decode.
+    pub exif: Option<Vec<u8>>,
+    /// XMP packet. PCX has no carrier; always `None` on decode.
+    pub xmp: Option<Vec<u8>>,
+    /// Encoding gamma. PCX has no carrier; always `None` on decode.
+    pub gamma: Option<f32>,
+}
+
+impl Metadata {
+    /// Empty metadata.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set (or clear) the ICC profile.
+    pub fn with_icc(mut self, icc: impl Into<Option<Vec<u8>>>) -> Self {
+        self.icc = icc.into();
+        self
+    }
+
+    /// Set (or clear) the Exif payload.
+    pub fn with_exif(mut self, exif: impl Into<Option<Vec<u8>>>) -> Self {
+        self.exif = exif.into();
+        self
+    }
+
+    /// Set (or clear) the XMP packet.
+    pub fn with_xmp(mut self, xmp: impl Into<Option<Vec<u8>>>) -> Self {
+        self.xmp = xmp.into();
+        self
+    }
+
+    /// Set (or clear) the file gamma.
+    pub fn with_gamma(mut self, gamma: impl Into<Option<f32>>) -> Self {
+        self.gamma = gamma.into();
+        self
+    }
+
+    /// `true` when no field is set.
+    pub fn is_empty(&self) -> bool {
+        self.icc.is_none() && self.exif.is_none() && self.xmp.is_none() && self.gamma.is_none()
+    }
+}
+
+/// Colour table of an indexed ([`Pal8`](PcxPixelFormat::Pal8)) image:
+/// RGBA entries, index `i` at `entries[i]`. PCX stores no alpha, so
+/// every decoded entry is opaque (`255`), and [`crate::encode`] rejects
+/// a non-opaque entry unless
+/// [`EncodeOptions::drop_alpha`](crate::EncodeOptions::drop_alpha) is
+/// set. The length is the geometry's (2 / 4 / 8 / 16 / 256, see
+/// [`PcxLayout::palette_len`]); a shorter caller palette is zero-padded
+/// on disk and reads back at the geometry's length.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Palette {
+    /// `[r, g, b, a]` per entry, at most 256 entries for an 8-bit index.
+    pub entries: Vec<[u8; 4]>,
+}
+
+impl Palette {
+    /// Wrap a list of RGBA entries.
+    pub fn new(entries: Vec<[u8; 4]>) -> Self {
+        Self { entries }
+    }
+
+    /// Build from packed RGB triples (every entry opaque). A trailing
+    /// partial triple is dropped.
+    pub fn from_rgb(rgb: &[u8]) -> Self {
+        let entries = rgb
+            .chunks_exact(3)
+            .map(|e| [e[0], e[1], e[2], 255])
+            .collect();
+        Self { entries }
+    }
+
+    /// Build from an array of RGB triples (every entry opaque).
+    pub fn from_rgb_triples(rgb: &[[u8; 3]]) -> Self {
+        Self {
+            entries: rgb.iter().map(|e| [e[0], e[1], e[2], 255]).collect(),
+        }
+    }
+
+    /// Number of entries.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// `true` when the palette has no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Entry `index`, if present.
+    pub fn get(&self, index: u8) -> Option<[u8; 4]> {
+        self.entries.get(usize::from(index)).copied()
+    }
+
+    /// Packed RGB triples (alpha dropped).
+    pub fn to_rgb(&self) -> Vec<u8> {
+        self.entries
+            .iter()
+            .flat_map(|e| [e[0], e[1], e[2]])
+            .collect()
+    }
+
+    /// `true` when any entry is not fully opaque.
+    pub fn has_alpha(&self) -> bool {
+        self.entries.iter().any(|e| e[3] != 255)
+    }
+}
+
+/// Decoded PCX image in its native layout, as returned by
+/// [`crate::decode`] and consumed by [`crate::encode`].
+///
+/// `planes` holds exactly one packed plane (every PCX layout is
+/// packed) with the row stride equal to `width × bytes_per_pixel` and
+/// the spec §1 even-`bytes_per_line` padding stripped; `color` is
+/// [`ColorInfo::pcx_default`]; `metadata` is empty (PCX has no
+/// carrier); `palette` is `Some` for [`Pal8`](PcxPixelFormat::Pal8).
+/// The header extras `dpi`, `window_origin`, `screen_size` and
+/// `layout` are filled from the file and written back by
+/// [`crate::encode`] unless the [`EncodeOptions`](crate::EncodeOptions)
+/// override them.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct PcxImage {
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
+    /// Native pixel layout.
+    pub format: PixelFormat,
+    /// Pixel planes — exactly one for PCX.
+    pub planes: Vec<Plane>,
+    /// Colour signalling (range + H.273 code points).
+    pub color: ColorInfo,
+    /// ICC / Exif / XMP / gamma — always empty for PCX.
+    pub metadata: Metadata,
+    /// Colour table for `Pal8`.
+    pub palette: Option<Palette>,
+    /// Source authoring resolution as `(h_dpi, v_dpi)` if the header
+    /// carried non-zero values for both fields. Spec §3 records this as
+    /// "the resolutions at which the image was created (printer or
+    /// scanner); e.g. a scan might store 300, 300." A 0 in either field
+    /// means "unset" and surfaces as `None`.
+    pub dpi: Option<(u16, u16)>,
+    /// Header `(x_min, y_min)` window origin from spec §3 — the source
+    /// crop region the pixel buffer came from. `Some` whenever either
+    /// component is non-zero, `None` for the conventional zero origin.
+    /// Header metadata only: it never shifts the pixel buffer.
+    pub window_origin: Option<(u16, u16)>,
+    /// Header `(h_screen_size, v_screen_size)` words (spec §3 offsets
+    /// 70 / 72, "new field found only in PB IV / IV Plus"): the display
+    /// resolution the image was authored on. `Some` iff both are
+    /// non-zero.
+    pub screen_size: Option<(u16, u16)>,
+    /// The on-disk geometry this image was decoded from, which
+    /// [`crate::encode`] writes it back in unless
+    /// [`EncodeOptions::layout`](crate::EncodeOptions::layout) forces
+    /// another. `None` for a caller-assembled image (the natural
+    /// geometry is used, see [`PcxLayout::natural_for`]).
+    pub layout: Option<PcxLayout>,
+}
+
+impl PcxImage {
+    /// Assemble an image from its geometry, layout and planes (one for
+    /// PCX). Colour is [`ColorInfo::pcx_default`], metadata empty, no
+    /// palette, no header extras; the `with_*` builders fill those in.
+    ///
+    /// The plane geometry is validated so an invalid image cannot be
+    /// built here: exactly one plane, a stride of at least `width ×
+    /// bytes_per_pixel`, and at least `stride × height` bytes of data
+    /// ([`PcxError::InvalidData`] otherwise). A `Pal8` image also
+    /// needs a palette; add it with [`PcxImage::with_palette`] or build
+    /// the image with [`PcxImage::new_indexed`].
+    pub fn new(width: u32, height: u32, format: PixelFormat, planes: Vec<Plane>) -> Result<Self> {
+        let img = Self::unchecked(width, height, format, planes);
+        img.validate_planes()?;
+        Ok(img)
+    }
+
+    /// [`PcxImage::new`] for an indexed image: `Pal8` indices (stride
+    /// `width`) plus their palette, validated together (geometry,
+    /// palette non-empty and ≤ 256 entries, every index inside it).
+    pub fn new_indexed(
+        width: u32,
+        height: u32,
+        indices: Vec<u8>,
+        palette: Palette,
+    ) -> Result<Self> {
+        let img = Self::unchecked(
+            width,
+            height,
+            PixelFormat::Pal8,
+            vec![Plane::new(width as usize, indices)],
+        )
+        .with_palette(palette);
+        img.validate()?;
+        Ok(img)
+    }
+
+    /// [`PcxImage::new`] without the geometry check (the colour and
+    /// metadata defaults are the same).
+    pub(crate) fn unchecked(
+        width: u32,
+        height: u32,
+        format: PixelFormat,
+        planes: Vec<Plane>,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            format,
+            planes,
+            color: ColorInfo::pcx_default(),
+            metadata: Metadata::default(),
+            palette: None,
+            dpi: None,
+            window_origin: None,
+            screen_size: None,
+            layout: None,
+        }
+    }
+
+    /// A packed image over `data` with the layout's tight stride
+    /// (`width × bytes_per_pixel`), validated like [`PcxImage::new`].
+    /// A `Pal8` image built this way still needs
+    /// [`PcxImage::with_palette`].
+    pub fn packed(width: u32, height: u32, format: PixelFormat, data: Vec<u8>) -> Result<Self> {
+        let stride = (width as usize)
+            .checked_mul(format.bytes_per_pixel())
+            .ok_or_else(|| PcxError::invalid("PCX: row size overflows"))?;
+        Self::new(width, height, format, vec![Plane::new(stride, data)])
+    }
+
+    /// A packed `Rgb24` image over `data` (`3 × width × height` bytes,
+    /// row-major, stride `3 × width`); [`PcxError::InvalidData`] when
+    /// the buffer is shorter than that.
+    pub fn from_rgb8(width: u32, height: u32, data: Vec<u8>) -> Result<Self> {
+        Self::packed(width, height, PixelFormat::Rgb24, data)
+    }
+
+    /// A packed `Rgba` image over `data` (`4 × width × height` bytes).
+    /// PCX cannot store alpha: see [`PcxPixelFormat::Rgba`] for what
+    /// [`crate::encode`] does with it.
+    pub fn from_rgba8(width: u32, height: u32, data: Vec<u8>) -> Result<Self> {
+        Self::packed(width, height, PixelFormat::Rgba, data)
+    }
+
+    /// A packed `Gray8` image over `data` (`width × height` bytes).
+    pub fn from_gray8(width: u32, height: u32, data: Vec<u8>) -> Result<Self> {
+        Self::packed(width, height, PixelFormat::Gray8, data)
+    }
+
+    /// Set the colour description.
+    pub fn with_color(mut self, color: ColorInfo) -> Self {
+        self.color = color;
+        self
+    }
+
+    /// Set the metadata.
+    pub fn with_metadata(mut self, metadata: Metadata) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
+    /// Set (or clear) the palette.
+    pub fn with_palette(mut self, palette: impl Into<Option<Palette>>) -> Self {
+        self.palette = palette.into();
+        self
+    }
+
+    /// Set (or clear) the authoring DPI extra.
+    pub fn with_dpi(mut self, dpi: impl Into<Option<(u16, u16)>>) -> Self {
+        self.dpi = dpi.into();
+        self
+    }
+
+    /// Set (or clear) the window-origin extra.
+    pub fn with_window_origin(mut self, origin: impl Into<Option<(u16, u16)>>) -> Self {
+        self.window_origin = origin.into();
+        self
+    }
+
+    /// Set (or clear) the screen-size extra.
+    pub fn with_screen_size(mut self, screen_size: impl Into<Option<(u16, u16)>>) -> Self {
+        self.screen_size = screen_size.into();
+        self
+    }
+
+    /// Set (or clear) the on-disk geometry hint.
+    pub fn with_layout(mut self, layout: impl Into<Option<PcxLayout>>) -> Self {
+        self.layout = layout.into();
+        self
+    }
+
+    /// Image width in pixels.
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Image height in pixels.
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Native pixel layout.
+    pub fn format(&self) -> PixelFormat {
+        self.format
+    }
+
+    /// Bytes-per-pixel implied by `format`.
+    pub fn bytes_per_pixel(&self) -> usize {
+        self.format.bytes_per_pixel()
+    }
+
+    /// Bytes per row of the (single) plane; `0` when there is none.
+    pub fn stride(&self) -> usize {
+        self.planes.first().map(|p| p.stride).unwrap_or(0)
+    }
+
+    /// The single packed plane's bytes. Always `Some` for an image this
+    /// crate decoded (every PCX layout is packed); `None` only for a
+    /// caller-assembled image with no plane.
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        self.planes.first().map(|p| p.data.as_slice())
+    }
+
+    /// The pixel bytes (the single plane), or an empty slice when there
+    /// is no plane. Rows are `stride()` bytes apart.
+    pub fn data(&self) -> &[u8] {
+        self.as_bytes().unwrap_or(&[])
+    }
+
+    /// Mutable view of the pixel bytes (see [`PcxImage::data`]).
+    pub fn data_mut(&mut self) -> &mut [u8] {
+        match self.planes.first_mut() {
+            Some(p) => p.data.as_mut_slice(),
+            None => &mut [],
+        }
+    }
+
+    /// Consume the image, returning its pixel bytes: the plane for the
+    /// packed layouts (every PCX layout).
+    pub fn into_raw(self) -> Vec<u8> {
+        let mut planes = self.planes.into_iter();
+        let mut out = planes.next().map(|p| p.data).unwrap_or_default();
+        for p in planes {
+            out.extend_from_slice(&p.data);
+        }
+        out
+    }
+
+    /// `true` when the image carries transparency: an `Rgba` layout, or
+    /// a palette with a non-opaque entry. Never for a decoded PCX.
+    pub fn has_alpha(&self) -> bool {
+        self.format.has_alpha() || self.palette.as_ref().is_some_and(Palette::has_alpha)
+    }
+
+    /// Check the plane geometry: exactly one plane, stride at least
+    /// `width × bytes_per_pixel`, data at least `stride × (height - 1)
+    /// + row` bytes.
+    pub(crate) fn validate_planes(&self) -> Result<()> {
+        if self.planes.len() != 1 {
+            return Err(PcxError::invalid(format!(
+                "PCX: expected exactly one packed plane, got {}",
+                self.planes.len()
+            )));
+        }
+        let plane = &self.planes[0];
+        let row = (self.width as usize)
+            .checked_mul(self.bytes_per_pixel())
+            .ok_or_else(|| PcxError::invalid("PCX: row size overflows"))?;
+        if plane.stride < row {
+            return Err(PcxError::invalid(format!(
+                "PCX: stride {} shorter than a {}-pixel row of {} bytes",
+                plane.stride, self.width, row
+            )));
+        }
+        let need = if self.height == 0 {
+            0
+        } else {
+            plane
+                .stride
+                .checked_mul(self.height as usize - 1)
+                .and_then(|n| n.checked_add(row))
+                .ok_or_else(|| PcxError::invalid("PCX: plane size overflows"))?
+        };
+        if plane.data.len() < need {
+            return Err(PcxError::invalid(format!(
+                "PCX: plane holds {} bytes, {}x{} at stride {} needs {}",
+                plane.data.len(),
+                self.width,
+                self.height,
+                plane.stride,
+                need
+            )));
+        }
+        Ok(())
+    }
+
+    /// Check the image is self-consistent: the plane geometry
+    /// ([`PcxImage::new`]'s rule), plus for `Pal8` that a non-empty
+    /// palette of at most 256 entries is attached and covers every
+    /// index used.
+    pub fn validate(&self) -> Result<()> {
+        self.validate_planes()?;
+        if self.format == PixelFormat::Pal8 {
+            let pal = self
+                .palette
+                .as_ref()
+                .ok_or_else(|| PcxError::invalid("PCX: Pal8 image without a palette"))?;
+            if pal.is_empty() {
+                return Err(PcxError::invalid("PCX: Pal8 image with an empty palette"));
+            }
+            if pal.len() > 256 {
+                return Err(PcxError::invalid(format!(
+                    "PCX: palette has {} entries; an 8-bit index addresses at most 256",
+                    pal.len()
+                )));
+            }
+            let n = pal.len();
+            let w = self.width as usize;
+            let stride = self.stride();
+            let data = self.data();
+            for y in 0..self.height as usize {
+                let row = &data[y * stride..y * stride + w];
+                if let Some(&bad) = row.iter().find(|&&i| usize::from(i) >= n) {
+                    return Err(PcxError::invalid(format!(
+                        "PCX: palette index {bad} out of range (palette has {n} entries)"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Tightly packed RGBA, 4 bytes per pixel, row-major: `Rgba`
+    /// copied, `Rgb24` widened with alpha `255`, `Gray8` replicated to
+    /// R = G = B with alpha `255`, `Pal8` expanded through the palette
+    /// (an index the palette does not cover, or a missing palette,
+    /// yields transparent black). Exact for every layout this crate
+    /// decodes — byte-identical to the pre-contract flatten reader; a
+    /// caller-assembled image with a short buffer is padded with black
+    /// (see [`PcxImage::try_to_rgba8`] to detect that instead).
+    pub fn to_rgba8(&self) -> Vec<u8> {
+        self.convert(true)
+    }
+
+    /// Tightly packed RGB, 3 bytes per pixel, row-major: alpha dropped
+    /// (`Rgba` / palette alpha), otherwise as [`PcxImage::to_rgba8`].
+    pub fn to_rgb8(&self) -> Vec<u8> {
+        self.convert(false)
+    }
+
+    /// [`PcxImage::to_rgba8`] reporting a bad plane geometry / missing
+    /// palette / out-of-range index instead of substituting black.
+    pub fn try_to_rgba8(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        Ok(self.convert(true))
+    }
+
+    /// [`PcxImage::to_rgb8`] reporting a bad plane geometry / missing
+    /// palette / out-of-range index instead of substituting black.
+    pub fn try_to_rgb8(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        Ok(self.convert(false))
+    }
+
+    fn convert(&self, alpha: bool) -> Vec<u8> {
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let out_bpp = if alpha { 4 } else { 3 };
+        let mut out = vec![0u8; w * h * out_bpp];
+        if alpha {
+            out.iter_mut().skip(3).step_by(4).for_each(|a| *a = 255);
+        }
+        if w == 0 || h == 0 {
+            return out;
+        }
+        let bpp = self.bytes_per_pixel();
+        let stride = self.stride();
+        let src = self.data();
+        let row_bytes = w * bpp;
+
+        // Palette lookup table: 256 RGBA cells; entries the palette
+        // does not cover are transparent black.
+        let lut: [[u8; 4]; 256] = match (&self.palette, self.format) {
+            (Some(p), PixelFormat::Pal8) => {
+                let mut lut = [[0u8; 4]; 256];
+                for (slot, e) in lut.iter_mut().zip(p.entries.iter()) {
+                    *slot = *e;
+                }
+                lut
+            }
+            _ => [[0u8; 4]; 256],
+        };
+
+        for y in 0..h {
+            let Some(row) = src.get(y * stride..y * stride + row_bytes) else {
+                break;
+            };
+            let dst = &mut out[y * w * out_bpp..(y + 1) * w * out_bpp];
+            match self.format {
+                PixelFormat::Rgba => {
+                    for (s, d) in row.chunks_exact(4).zip(dst.chunks_exact_mut(out_bpp)) {
+                        d.copy_from_slice(&s[..out_bpp]);
+                    }
+                }
+                PixelFormat::Rgb24 => {
+                    for (s, d) in row.chunks_exact(3).zip(dst.chunks_exact_mut(out_bpp)) {
+                        d[..3].copy_from_slice(s);
+                    }
+                }
+                PixelFormat::Gray8 => {
+                    for (&g, d) in row.iter().zip(dst.chunks_exact_mut(out_bpp)) {
+                        d[0] = g;
+                        d[1] = g;
+                        d[2] = g;
+                    }
+                }
+                PixelFormat::Pal8 => {
+                    for (&i, d) in row.iter().zip(dst.chunks_exact_mut(out_bpp)) {
+                        d.copy_from_slice(&lut[usize::from(i)][..out_bpp]);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The pre-contract decode layout: packed `Rgba` via
+    /// [`PcxImage::to_rgba8`], whatever the native layout. This is what
+    /// the deprecated `parse_pcx` returns, byte for byte what earlier
+    /// releases produced. The header extras are carried over; the
+    /// palette is dropped (it has been applied) and `layout` is kept so
+    /// a re-encode can still target the source geometry.
+    pub fn into_legacy_layout(self) -> Self {
+        if self.format == PixelFormat::Rgba {
+            return self;
+        }
+        let rgba = self.to_rgba8();
+        let mut out = Self::unchecked(
+            self.width,
+            self.height,
+            PixelFormat::Rgba,
+            vec![Plane::new(self.width as usize * 4, rgba)],
+        );
+        out.color = self.color;
+        out.metadata = self.metadata;
+        out.dpi = self.dpi;
+        out.window_origin = self.window_origin;
+        out.screen_size = self.screen_size;
+        out.layout = self.layout;
+        out
+    }
+
+    /// Re-index an image to [`Pal8`](PcxPixelFormat::Pal8): the unique
+    /// RGB colours become the palette in first-seen raster order
+    /// (`Gray8` sources are widened first; alpha is dropped from
+    /// `Rgba`; a `Pal8` source is returned unchanged). Returns
+    /// [`PcxError::Unsupported`] when the image has more than 256
+    /// distinct colours. This is the conversion the compact encode
+    /// ladder uses; [`crate::encode`] never performs it implicitly.
+    pub fn to_indexed(&self) -> Result<Self> {
+        if self.format == PixelFormat::Pal8 {
+            return Ok(self.clone());
+        }
+        let rgb = self.to_rgb8();
+        let (indices, palette) = crate::encoder::first_seen_indexed(&rgb).ok_or_else(|| {
+            PcxError::unsupported(
+                "PCX indexed encoder: input has > 256 unique colours \
+                 (encode it as 24-bit instead)",
+            )
+        })?;
+        let mut out = Self::unchecked(
+            self.width,
+            self.height,
+            PixelFormat::Pal8,
+            vec![Plane::new(self.width as usize, indices)],
+        )
+        .with_palette(Palette::from_rgb_triples(&palette));
+        out.color = self.color;
+        out.metadata = self.metadata.clone();
+        out.dpi = self.dpi;
+        out.window_origin = self.window_origin;
+        out.screen_size = self.screen_size;
+        Ok(out)
+    }
+}
+
+/// Tightly packed 8-bit RGB (3 bytes per pixel, row-major), the
+/// [`crate::decode_rgb8`] result. Same definition in every image
+/// crate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RgbImage {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// `3 × width × height` bytes.
+    pub data: Vec<u8>,
+}
+
+impl RgbImage {
+    /// Wrap a packed RGB buffer.
+    pub fn new(width: u32, height: u32, data: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            data,
+        }
+    }
+
+    /// The pixel bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Consume into the pixel bytes.
+    pub fn into_raw(self) -> Vec<u8> {
+        self.data
+    }
+
+    /// Bytes per row (`3 × width`).
+    pub fn stride(&self) -> usize {
+        self.width as usize * 3
+    }
+}
+
+/// Tightly packed 8-bit RGBA (4 bytes per pixel, row-major), the
+/// [`crate::decode_rgba8`] result. Same definition in every image
+/// crate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RgbaImage {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// `4 × width × height` bytes.
+    pub data: Vec<u8>,
+}
+
+impl RgbaImage {
+    /// Wrap a packed RGBA buffer.
+    pub fn new(width: u32, height: u32, data: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            data,
+        }
+    }
+
+    /// The pixel bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Consume into the pixel bytes.
+    pub fn into_raw(self) -> Vec<u8> {
+        self.data
+    }
+
+    /// Bytes per row (`4 × width`).
+    pub fn stride(&self) -> usize {
+        self.width as usize * 4
+    }
+}
+
+/// What [`crate::info`] reads from the 128-byte header (and the VGA
+/// tail marker, for 8 bpp × 1 plane files), without decoding a pixel.
+/// For a DCX bundle the fields describe the first page and `frames` is
+/// the page count.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct ImageInfo {
+    /// Width in pixels (`x_max - x_min + 1`).
+    pub width: u32,
+    /// Height in pixels (`y_max - y_min + 1`).
+    pub height: u32,
+    /// The native layout [`crate::decode`] would return.
+    pub format: PixelFormat,
+    /// Number of images: `1` for a PCX file, the page count for a DCX
+    /// bundle.
+    pub frames: u32,
+    /// PCX has no alpha mechanism; always `false`.
+    pub has_alpha: bool,
+    /// Colour signalling; always [`ColorInfo::pcx_default`].
+    pub color: ColorInfo,
+    /// PCX has no ICC carrier; always `false`.
+    pub has_icc: bool,
+    /// PCX has no Exif carrier; always `false`.
+    pub has_exif: bool,
+    /// PCX has no XMP carrier; always `false`.
+    pub has_xmp: bool,
+    /// The on-disk geometry.
+    pub layout: PcxLayout,
+    /// Header version byte (0 / 2 / 3 / 4 / 5).
+    pub version: u8,
+    /// Header `bits_per_pixel` (per plane).
+    pub bits_per_pixel: u8,
+    /// Header `n_planes`.
+    pub n_planes: u8,
+    /// Header `bytes_per_line` (per plane, spec says even).
+    pub bytes_per_line: u16,
+    /// Header `palette_info` (1 = colour / BW, 2 = grayscale).
+    pub palette_info: u16,
+    /// `true` when an 8 bpp × 1 plane file carries the 769-byte VGA
+    /// tail block.
+    pub has_vga_palette: bool,
+    /// Authoring DPI, `Some` iff both header words are non-zero.
+    pub dpi: Option<(u16, u16)>,
+    /// Window origin, `Some` iff either header word is non-zero.
+    pub window_origin: Option<(u16, u16)>,
+    /// PB IV screen size, `Some` iff both header words are non-zero.
+    pub screen_size: Option<(u16, u16)>,
+}
+
+impl ImageInfo {
+    /// A still image in `layout` with the given geometry; every other
+    /// field at its "absent" value.
+    pub fn new(width: u32, height: u32, layout: PcxLayout) -> Self {
+        let (bits_per_pixel, n_planes) = layout.depth_planes();
+        Self {
+            width,
+            height,
+            format: layout.pixel_format(),
+            frames: 1,
+            has_alpha: false,
+            color: ColorInfo::pcx_default(),
+            has_icc: false,
+            has_exif: false,
+            has_xmp: false,
+            layout,
+            version: 5,
+            bits_per_pixel,
+            n_planes,
+            bytes_per_line: 0,
+            palette_info: if layout == PcxLayout::Gray8 { 2 } else { 1 },
+            has_vga_palette: layout == PcxLayout::Indexed8,
+            dpi: None,
+            window_origin: None,
+            screen_size: None,
+        }
+    }
+}
+
+/// One image of a multi-image file, as returned by [`crate::decode_all`]:
+/// a PCX file yields one frame, a DCX bundle one per page.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct Frame {
+    /// The page, native layout.
+    pub image: PcxImage,
+    /// Display delay; always `None` (DCX pages are documents, not an
+    /// animation).
+    pub delay: Option<Duration>,
+    /// Zero-based page index inside the bundle (`0` for a plain PCX).
+    pub index: u32,
+}
+
+impl Frame {
+    /// Wrap a page.
+    pub fn new(image: PcxImage, index: u32) -> Self {
+        Self {
+            image,
+            delay: None,
+            index,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Typed paletted views (depth accessors below the contract)
+// ---------------------------------------------------------------------------
 
 /// Origin of the 256-entry palette resolved by
 /// [`crate::parse_pcx_indexed_8bpp`] for an 8 bpp × 1 plane PCX.

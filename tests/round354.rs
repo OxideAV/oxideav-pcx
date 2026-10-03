@@ -38,6 +38,11 @@
 //! no fixture files); the pixel payloads come from a tiny deterministic
 //! LCG so the expectations are reproducible.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::{
     parse_pcx, parse_pcx_indexed_1bpp_2planes_cga, parse_pcx_indexed_1bpp_3planes,
     parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_4bpp,
@@ -262,7 +267,7 @@ fn overpadded_8bpp_indexed_strips_padding() {
             let img = parse_pcx(&pcx).expect("packed decode");
             assert_eq!(img.width, w as u32);
             assert_eq!(img.height, h as u32);
-            for (p, &i) in img.data.chunks_exact(4).zip(idx.iter()) {
+            for (p, &i) in img.data().chunks_exact(4).zip(idx.iter()) {
                 let c = &pal[i as usize * 3..i as usize * 3 + 3];
                 assert_eq!([p[0], p[1], p[2], p[3]], [c[0], c[1], c[2], 0xFF]);
             }
@@ -297,7 +302,7 @@ fn overpadded_24bpp_strips_padding() {
             let img = parse_pcx(&pcx).expect("24bpp decode");
             assert_eq!(img.width, w as u32);
             assert_eq!(img.height, h as u32);
-            for (p, px) in img.data.chunks_exact(4).zip(rgb.iter()) {
+            for (p, px) in img.data().chunks_exact(4).zip(rgb.iter()) {
                 assert_eq!(
                     [p[0], p[1], p[2], p[3]],
                     [px[0], px[1], px[2], 0xFF],
@@ -413,7 +418,7 @@ fn overpadded_1bpp_mono_strips_padding() {
             let pcx = build_pcx(5, 1, w, h, 1, bpl, 1, &[0u8; 48], &rows, None);
             let img = parse_pcx(&pcx).expect("mono decode");
             assert_eq!((img.width, img.height), (w as u32, h as u32));
-            for (p, &b) in img.data.chunks_exact(4).zip(bit.iter()) {
+            for (p, &b) in img.data().chunks_exact(4).zip(bit.iter()) {
                 let v = if b != 0 { 0xFF } else { 0x00 };
                 assert_eq!(
                     [p[0], p[1], p[2], p[3]],
@@ -613,7 +618,8 @@ fn overpadded_24bpp_equals_minimal_stride() {
             let padded = build_pcx(5, 8, w, h, 3, bpl, 1, &[0u8; 48], &rows, None);
             let img = parse_pcx(&padded).expect("padded decode");
             assert_eq!(
-                img.data, ref_img.data,
+                img.data(),
+                ref_img.data(),
                 "24bpp padded != minimal (w={w} h={h} surplus={surplus})"
             );
         }

@@ -34,6 +34,11 @@
 //! with the packed `2 bpp × 1 plane` path, so the same physical colours
 //! come out either way.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::types::PCX_HEADER_SIZE;
 use oxideav_pcx::{
     encode_pcx_1bpp_2planes_cga, encode_pcx_1bpp_2planes_cga_dpi, parse_pcx,
@@ -98,7 +103,7 @@ fn flatten_matches_typed_palette() {
             for (i, &index) in view.indices.iter().enumerate() {
                 let [r, g, b] = view.palette[index as usize];
                 assert_eq!(
-                    &img.data[i * 4..i * 4 + 4],
+                    &img.data()[i * 4..i * 4 + 4],
                     &[r, g, b, 0xFF],
                     "selector={selector:#x} bg={bg} pixel={i}: flatten must match typed palette"
                 );
@@ -141,7 +146,8 @@ fn same_colours_as_packed_2bpp_cga() {
     let a = parse_pcx(&planar).unwrap();
     let b = parse_pcx(&packed).unwrap();
     assert_eq!(
-        a.data, b.data,
+        a.data(),
+        b.data(),
         "plane-oriented and packed CGA must flatten to identical pixels"
     );
 }

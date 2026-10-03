@@ -44,6 +44,11 @@
 //!    [`oxideav_pcx::parse_pcx`]: a malformed file rejected by one is
 //!    rejected by the other with a matching error class.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::{
     encode_pcx_1bpp_mono, encode_pcx_24bpp, encode_pcx_2bpp_cga, encode_pcx_4bpp_packed,
     encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed, parse_pcx, parse_pcx_indexed_8bpp,
@@ -210,20 +215,20 @@ fn typed_view_agrees_with_canonical_flattener() {
     let pcx_vga = encode_pcx_8bpp_indexed(w, h, &indices, &palette).expect("encode");
     let img = parse_pcx(&pcx_vga).expect("parse_pcx");
     let view = parse_pcx_indexed_8bpp(&pcx_vga).expect("parse_pcx_indexed_8bpp");
-    assert_indices_flatten_to_rgba(&view, &img.data);
+    assert_indices_flatten_to_rgba(&view, img.data());
 
     // Grayscale-flag case.
     let pcx_gs =
         encode_pcx_8bpp_grayscale(w, h, &indices_grid(w as usize, h as usize)).expect("encode");
     let img_gs = parse_pcx(&pcx_gs).expect("parse_pcx");
     let view_gs = parse_pcx_indexed_8bpp(&pcx_gs).expect("parse_pcx_indexed_8bpp");
-    assert_indices_flatten_to_rgba(&view_gs, &img_gs.data);
+    assert_indices_flatten_to_rgba(&view_gs, img_gs.data());
 
     // Fallback case.
     let pcx_fb = build_8bpp_no_palette(w, h, &indices);
     let img_fb = parse_pcx(&pcx_fb).expect("parse_pcx");
     let view_fb = parse_pcx_indexed_8bpp(&pcx_fb).expect("parse_pcx_indexed_8bpp");
-    assert_indices_flatten_to_rgba(&view_fb, &img_fb.data);
+    assert_indices_flatten_to_rgba(&view_fb, img_fb.data());
 }
 
 fn assert_indices_flatten_to_rgba(view: &PcxIndexed8, rgba: &[u8]) {
@@ -347,5 +352,5 @@ fn parse_pcx_pixel_format_unchanged() {
     let pcx = encode_pcx_8bpp_indexed(w, h, &vec![42u8; w as usize * h as usize], &palette_768())
         .expect("encode");
     let img = parse_pcx(&pcx).expect("parse_pcx");
-    assert_eq!(img.pixel_format, PcxPixelFormat::Rgba);
+    assert_eq!(img.format, PcxPixelFormat::Rgba);
 }

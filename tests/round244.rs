@@ -40,6 +40,11 @@
 //! Together these checks pin down what the fuzz target will be
 //! exercising once it picks up the round-244 binary.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::{
     encode_pcx_1bpp_mono, encode_pcx_24bpp, encode_pcx_2bpp_cga, encode_pcx_8bpp_grayscale,
     parse_pcx, parse_pcx_indexed_4bpp, Pcx4bppPaletteSource, PcxError,
@@ -257,7 +262,7 @@ fn seeds_typed_view_matches_canonical_flatten() {
             let [r, g, b] = view.palette[i as usize];
             flat.extend_from_slice(&[r, g, b, 0xFF]);
         }
-        assert_eq!(flat, canonical.data);
+        assert_eq!(flat, canonical.data());
     }
 }
 

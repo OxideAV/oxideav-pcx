@@ -1,4 +1,7 @@
 #![no_main]
+// The pre-contract `encode_pcx_*` writers stay under fuzz as the
+// byte-identity wrappers of the IMAGE_CRATE_API geometry writers.
+#![allow(deprecated)]
 
 //! Drive every public PCX *encoder* off attacker-controlled dimensions
 //! and a fuzz-supplied pixel/index buffer, then feed the bytes each one
@@ -41,7 +44,8 @@ use oxideav_pcx::{
     encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed,
     encode_pcx_indexed_auto, encode_pcx_rgb_auto, parse_pcx, parse_pcx_indexed_1bpp_3planes,
     parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_4bpp,
-    parse_pcx_indexed_4bpp_4planes, parse_pcx_indexed_8bpp, PcxAutoMode, PcxPaletteSource,
+    parse_pcx_indexed_4bpp_4planes, parse_pcx_indexed_8bpp, EncodeOptions, Palette, PcxAutoMode,
+    PcxImage, PcxPaletteSource,
 };
 
 /// Cap each dimension so the dimension×dimension pixel count stays well
@@ -80,7 +84,7 @@ fuzz_target!(|data: &[u8]| {
     // an `Ok` decode is held to the pixel oracle.
     if let Ok(bytes) = encode_pcx_8bpp_grayscale(width, height, payload) {
         if let Ok(img) = parse_pcx(&bytes) {
-            for (i, px) in img.data.chunks_exact(4).enumerate() {
+            for (i, px) in img.data().chunks_exact(4).enumerate() {
                 let g = payload[i];
                 assert_eq!(
                     &px[..3],
@@ -98,7 +102,7 @@ fuzz_target!(|data: &[u8]| {
     // across every row-phase / padding geometry.
     if let Ok(bytes) = encode_pcx_1bpp_mono(width, height, payload) {
         let img = parse_pcx(&bytes).expect("mono writer output must decode");
-        for (i, px) in img.data.chunks_exact(4).enumerate() {
+        for (i, px) in img.data().chunks_exact(4).enumerate() {
             let want = if payload[i] != 0 { 0xFF } else { 0x00 };
             assert_eq!(
                 &px[..3],
@@ -169,7 +173,7 @@ fuzz_target!(|data: &[u8]| {
             let n = width as usize * height as usize;
             if payload.len() >= n * 3 {
                 let mut ok = true;
-                for (i, px) in img.data.chunks_exact(4).enumerate() {
+                for (i, px) in img.data().chunks_exact(4).enumerate() {
                     let src = &payload[i * 3..i * 3 + 3];
                     if &px[..3] != src {
                         ok = false;
@@ -216,7 +220,7 @@ fuzz_target!(|data: &[u8]| {
                 encode_pcx_rgb_auto(width, height, &rgb).expect("low-colour auto encode");
             match parse_pcx(&bytes) {
                 Ok(img) => {
-                    for (i, px) in img.data.chunks_exact(4).enumerate() {
+                    for (i, px) in img.data().chunks_exact(4).enumerate() {
                         assert_eq!(
                             &px[..3],
                             &rgb[i * 3..i * 3 + 3],
@@ -310,6 +314,70 @@ fuzz_target!(|data: &[u8]| {
         let _ = parse_pcx_indexed_1bpp_3planes(&bytes);
     }
 
+    // IMAGE_CRATE_API `encode`: a Pal8 image with a fuzz-chosen palette
+    // (1..=256 entries, alpha opaque) must encode in its natural
+    // geometry (or the compact ladder) and decode back to the same
+    // indices / palette prefix / pixels; Rgb24 and Gray8 images must
+    // round-trip exactly too.
+    {
+        let n = width as usize * height as usize;
+        if payload.len() >= 3 && n > 0 && n <= 1 << 14 {
+            let entries = 1 + payload[0] as usize;
+            let pal: Vec<u8> = (0..entries * 3)
+                .map(|i| payload[2 + i % (payload.len() - 2)])
+                .collect();
+            let idx: Vec<u8> = (0..n)
+                .map(|i| (payload[i % payload.len()] as usize % entries) as u8)
+                .collect();
+            let img = PcxImage::new_indexed(
+                u32::from(width),
+                u32::from(height),
+                idx,
+                Palette::from_rgb(&pal),
+            )
+            .expect("valid indexed image");
+            for opts in [
+                EncodeOptions::default(),
+                EncodeOptions::default().with_compact(true),
+            ] {
+                let bytes = oxideav_pcx::encode(&img, &opts).expect("Pal8 encode");
+                match oxideav_pcx::decode(&bytes) {
+                    Ok(back) => {
+                        assert_eq!(back.to_rgba8(), img.to_rgba8(), "Pal8 encode must round-trip")
+                    }
+                    Err(e) => assert_gray8_tail_coincidence(&bytes, &e),
+                }
+            }
+            let gray = PcxImage::from_gray8(
+                u32::from(width),
+                u32::from(height),
+                payload[..n.min(payload.len())]
+                    .iter()
+                    .copied()
+                    .chain(std::iter::repeat(0))
+                    .take(n)
+                    .collect(),
+            )
+            .unwrap();
+            let bytes = oxideav_pcx::encode(&gray, &EncodeOptions::default()).unwrap();
+            match oxideav_pcx::decode(&bytes) {
+                Ok(back) => {
+                    assert_eq!(back.format, oxideav_pcx::PixelFormat::Gray8);
+                    assert_eq!(back.data(), gray.data());
+                }
+                Err(e) => assert_gray8_tail_coincidence(&bytes, &e),
+            }
+        }
+        if payload.len() >= n * 3 && n > 0 && n <= 1 << 14 {
+            let rgb =
+                PcxImage::from_rgb8(u32::from(width), u32::from(height), payload[..n * 3].to_vec())
+                    .unwrap();
+            let bytes = oxideav_pcx::encode(&rgb, &EncodeOptions::default()).unwrap();
+            let back = oxideav_pcx::decode(&bytes).expect("Rgb24 output must decode");
+            assert_eq!(back.data(), rgb.data());
+        }
+    }
+
     // `u16`-per-pixel composite-index input for the (4, 4) mode: two
     // payload bytes per pixel, little-endian.
     let composite: Vec<u16> = payload
@@ -320,6 +388,25 @@ fuzz_target!(|data: &[u8]| {
         let _ = parse_pcx_indexed_4bpp_4planes(&bytes);
     }
 });
+
+/// The one legitimate decode failure of a file this crate wrote: a
+/// tail-less `Gray8` (8 bpp × 1 plane, `palette_info = 2`, no VGA
+/// block) whose RLE stream happens to place the `0x0C` tail-marker byte
+/// exactly 769 bytes from EOF, so the spec's tail rule mis-claims 769
+/// bytes of real pixel data (see the probe-confinement note in
+/// `decoder.rs` and the README's interop caveat). Anything else is a
+/// real defect.
+fn assert_gray8_tail_coincidence(bytes: &[u8], e: &oxideav_pcx::Error) {
+    assert_eq!(
+        (bytes[3], bytes[65], bytes[68]),
+        (8, 1, 2),
+        "only the tail-less Gray8 geometry may fail to decode, got {e}"
+    );
+    assert!(
+        bytes.len() >= 769 && bytes[bytes.len() - 769] == 0x0C,
+        "Gray8 decode failure without the coincidental tail marker: {e}"
+    );
+}
 
 /// 256-entry grayscale-ramp VGA palette (768 bytes) for the 8-bpp
 /// indexed encoder, which requires an exactly-768-byte palette argument.

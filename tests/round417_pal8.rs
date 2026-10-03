@@ -18,26 +18,32 @@
 //!   bits, and the zero-padded colormap would not collide with the
 //!   all-zero "unset" header sentinel; the 8 bpp × 1 plane + 768-byte
 //!   VGA tail (spec §"VGA 256-color palette") otherwise.
-//! * **Decode** — constructing the framework `Decoder` with
-//!   `CodecParameters.pixel_format = Some(Pal8)` returns raw palette
-//!   indices with the file's own palette attached to the side-channel,
-//!   for every paletted `(bpp, planes)` geometry the crate reads. The
-//!   default `Rgba` expansion (what the container demuxer requests) is
-//!   byte-for-byte unchanged — the Pal8 path is purely additive.
+//! * **Decode** — the framework `Decoder` returns raw palette indices
+//!   with the file's own palette attached to the side-channel for every
+//!   paletted `(bpp, planes)` geometry the crate reads. Since the
+//!   IMAGE_CRATE_API migration (round 467) this is the one and only
+//!   output — the native layout — whatever `pixel_format` the
+//!   parameters request; grayscale files are `Gray8`, 24-bit files
+//!   `Rgb24`.
 //!
 //! Round-trip contract pinned here: Pal8 + palette → PCX → Pal8 +
 //! palette is index-exact always and palette-exact up to the caller's
 //! entry count (the on-disk tables are fixed-size, so the tail beyond
 //! the caller's entries is the documented zero padding).
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_core::{CodecId, CodecParameters, Frame, PixelFormat, VideoFrame, VideoPlane};
 use oxideav_pcx::{
-    encode_pcx_1bpp_2planes_cga, encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega,
-    encode_pcx_1bpp_mono, encode_pcx_24bpp, encode_pcx_2bpp_cga, encode_pcx_4bpp_packed,
-    encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed, encode_pcx_indexed_auto, parse_header,
-    parse_pcx, parse_pcx_indexed_1bpp_2planes_cga, parse_pcx_indexed_1bpp_4planes,
-    parse_pcx_indexed_2bpp_cga_cpi, parse_pcx_indexed_4bpp, parse_pcx_indexed_8bpp, PcxAutoMode,
-    PcxPaletteSource,
+    encode, encode_pcx_1bpp_2planes_cga, encode_pcx_1bpp_3planes_ega_rgb,
+    encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono, encode_pcx_24bpp, encode_pcx_2bpp_cga,
+    encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed,
+    encode_pcx_indexed_auto, parse_header, parse_pcx, parse_pcx_indexed_1bpp_2planes_cga,
+    parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga_cpi, parse_pcx_indexed_4bpp,
+    parse_pcx_indexed_8bpp, EncodeOptions, Palette, PcxAutoMode, PcxImage, PcxPaletteSource,
 };
 
 // ---------------------------------------------------------------------------
@@ -89,7 +95,7 @@ fn encode_pal8_frame(w: u32, h: u32, stride: usize, plane: Vec<u8>, palette: Vec
         }],
     }
     .with_palette(palette);
-    let mut enc = oxideav_pcx::encoder::make_encoder(&params).unwrap();
+    let mut enc = oxideav_pcx::make_encoder(&params).unwrap();
     enc.send_frame(&Frame::Video(frame)).unwrap();
     enc.receive_packet().unwrap().data
 }
@@ -98,7 +104,7 @@ fn encode_pal8_frame(w: u32, h: u32, stride: usize, plane: Vec<u8>, palette: Vec
 /// Pal8-requested parameters; returns the produced frame.
 fn decode_pal8(bytes: &[u8], w: u32, h: u32) -> VideoFrame {
     let params = pal8_params(w, h);
-    let mut dec = oxideav_pcx::decoder::make_decoder(&params).unwrap();
+    let mut dec = oxideav_pcx::make_decoder(&params).unwrap();
     let pkt = oxideav_core::Packet::new(0, oxideav_core::TimeBase::new(1, 1), bytes.to_vec());
     dec.send_packet(&pkt).unwrap();
     match dec.receive_frame().unwrap() {
@@ -329,7 +335,7 @@ fn indexed_auto_flatten_reproduces_palette_colours() {
     let idx: Vec<u8> = (0..n).map(|i| (i % 7) as u8).collect();
     let (bytes, _mode) = encode_pcx_indexed_auto(w, h, &idx, &pal).unwrap();
     let img = parse_pcx(&bytes).unwrap();
-    for (i, px) in img.data.chunks_exact(4).enumerate() {
+    for (i, px) in img.data().chunks_exact(4).enumerate() {
         let e = idx[i] as usize * 3;
         assert_eq!(
             &px[..3],
@@ -417,16 +423,24 @@ fn pal8_frame_with_padded_stride_matches_tight_twin() {
     );
 }
 
-/// The framework Pal8 path is a thin shim over the standalone ladder:
-/// byte-identical output.
+/// The framework Pal8 path is a thin shim over the contract `encode`:
+/// byte-identical output for the same Pal8 image.
 #[test]
 fn framework_pal8_encode_matches_standalone_indexed_auto() {
     let (w, h) = (21u32, 11u32);
     let idx = indices_wide((w * h) as usize);
     let pal = palette_256();
     let framework = encode_pal8_frame(w, h, w as usize, idx.clone(), pal.clone());
-    let (standalone, _mode) = encode_pcx_indexed_auto(w as u16, h as u16, &idx, &pal).unwrap();
+    let img = PcxImage::new_indexed(w, h, idx.clone(), Palette::from_rgb(&pal)).unwrap();
+    let standalone = encode(&img, &EncodeOptions::default()).unwrap();
     assert_eq!(framework, standalone);
+    // Same geometry as the pre-contract caller-palette ladder picked
+    // (the 256-entry table takes the VGA-tail rung); only the header
+    // DPI words differ (the contract writes 0 / 0 "unset").
+    let (legacy, mode) = encode_pcx_indexed_auto(w as u16, h as u16, &idx, &pal).unwrap();
+    assert_eq!(mode, PcxAutoMode::Indexed8 { colors: 256 });
+    assert_eq!(geometry(&framework), geometry(&legacy));
+    assert_eq!(&framework[16..], &legacy[16..]);
 }
 
 /// A Pal8 frame with no side-channel palette is rejected with a clear
@@ -441,13 +455,10 @@ fn pal8_frame_without_palette_is_rejected() {
             data: vec![0u8; 16],
         }],
     };
-    let mut enc = oxideav_pcx::encoder::make_encoder(&params).unwrap();
+    let mut enc = oxideav_pcx::make_encoder(&params).unwrap();
     let err = enc.send_frame(&Frame::Video(frame)).unwrap_err();
     let msg = err.to_string();
-    assert!(
-        msg.contains("palette side-channel"),
-        "unexpected error: {msg}"
-    );
+    assert!(msg.contains("palette"), "unexpected error: {msg}");
 }
 
 /// A malformed side-channel table (length not a multiple of 3) is
@@ -463,7 +474,7 @@ fn pal8_frame_with_malformed_palette_is_rejected() {
         }],
     }
     .with_palette(vec![1, 2, 3, 4]);
-    let mut enc = oxideav_pcx::encoder::make_encoder(&params).unwrap();
+    let mut enc = oxideav_pcx::make_encoder(&params).unwrap();
     assert!(enc.send_frame(&Frame::Video(frame)).is_err());
 }
 
@@ -549,42 +560,46 @@ fn pal8_decode_ega_rgb_attaches_fixed_primaries() {
     }
 }
 
-/// Grayscale-flag files (`palette_info = 2`): the side-channel carries
-/// the synthetic 256-entry ramp and the indices are the sample bytes.
+/// Grayscale-flag files (`palette_info = 2`) are `Gray8` natively: the
+/// frame carries the sample bytes and no palette side-channel (the
+/// pre-contract Pal8 request synthesised a 256-entry ramp instead).
 #[test]
 fn pal8_decode_grayscale_flag_attaches_ramp() {
     let (w, h) = (16u32, 2u32);
     let pixels: Vec<u8> = (0..w * h).map(|i| (i * 8) as u8).collect();
     let bytes = encode_pcx_8bpp_grayscale(w as u16, h as u16, &pixels).unwrap();
+    assert_eq!(
+        oxideav_pcx::info(&bytes).unwrap().format,
+        PixelFormat::Gray8.try_into().unwrap()
+    );
     let frame = decode_pal8(&bytes, w, h);
     assert_eq!(frame.image_planes()[0].data, pixels);
-    let pal = frame.palette().unwrap();
-    assert_eq!(pal.len(), 768);
-    for i in 0..=255u8 {
-        assert_eq!(frame.palette_rgb(i), Some([i, i, i]));
-    }
+    assert_eq!(frame.image_planes()[0].stride, w as usize);
+    assert_eq!(frame.palette(), None, "Gray8 carries no palette");
 }
 
-/// The palette-free 24-bit mode cannot be represented as Pal8 and is
-/// rejected rather than silently quantised.
+/// The palette-free 24-bit mode decodes to its native `Rgb24` plane
+/// whatever `pixel_format` the parameters request; no palette is
+/// synthesised and nothing is quantised.
 #[test]
 fn pal8_decode_rejects_24bit_files() {
     let rgb: Vec<u8> = (0..4 * 4 * 3).map(|i| i as u8).collect();
     let bytes = encode_pcx_24bpp(4, 4, &rgb).unwrap();
-    let params = pal8_params(4, 4);
-    let mut dec = oxideav_pcx::decoder::make_decoder(&params).unwrap();
-    let pkt = oxideav_core::Packet::new(0, oxideav_core::TimeBase::new(1, 1), bytes);
-    let err = dec.send_packet(&pkt).unwrap_err();
-    assert!(err.to_string().contains("Pal8"), "unexpected error: {err}");
+    let frame = decode_pal8(&bytes, 4, 4);
+    assert_eq!(frame.image_planes()[0].stride, 12);
+    assert_eq!(frame.image_planes()[0].data, rgb);
+    assert_eq!(frame.palette(), None);
 }
 
 // ---------------------------------------------------------------------------
 // Compatibility: the default Rgba path is unchanged and palette-free
 // ---------------------------------------------------------------------------
 
-/// Decoding without requesting Pal8 (what the container demuxer does)
-/// still produces the historical single-plane packed-Rgba frame with no
-/// side-channel attached — the Pal8 path is purely additive.
+/// The framework decoder emits the native layout regardless of the
+/// requested `pixel_format` (IMAGE_CRATE_API: the registry adapter is
+/// never a pre-converted `Rgba`): a paletted file yields its indices
+/// plus the palette side-channel, and expanding them reproduces the
+/// pre-contract `Rgba` flatten byte for byte.
 #[test]
 fn default_rgba_decode_is_unchanged_and_carries_no_palette() {
     let (w, h) = (6u32, 6u32);
@@ -595,19 +610,21 @@ fn default_rgba_decode_is_unchanged_and_carries_no_palette() {
     params.width = Some(w);
     params.height = Some(h);
     params.pixel_format = Some(PixelFormat::Rgba);
-    let mut dec = oxideav_pcx::decoder::make_decoder(&params).unwrap();
+    let mut dec = oxideav_pcx::make_decoder(&params).unwrap();
     let pkt = oxideav_core::Packet::new(0, oxideav_core::TimeBase::new(1, 1), bytes.clone());
     dec.send_packet(&pkt).unwrap();
     let frame = match dec.receive_frame().unwrap() {
         Frame::Video(v) => v,
         other => panic!("expected video frame, got {other:?}"),
     };
-    assert_eq!(frame.planes.len(), 1, "no side-channel on the Rgba path");
-    assert_eq!(frame.palette(), None);
+    assert_eq!(frame.image_planes().len(), 1);
+    assert_eq!(frame.image_planes()[0].data, idx);
+    assert_eq!(frame.palette(), Some(&pal[..]));
     let img = parse_pcx(&bytes).unwrap();
-    assert_eq!(frame.planes[0].data, img.data, "Rgba expansion unchanged");
-    // And the expansion resolves the caller palette per pixel.
-    for (i, px) in frame.planes[0].data.chunks_exact(4).enumerate() {
+    params.pixel_format = Some(PixelFormat::Pal8);
+    let native = PcxImage::from_video_frame(&frame, &params).unwrap();
+    assert_eq!(native.to_rgba8(), img.data(), "Rgba expansion unchanged");
+    for (i, px) in img.data().chunks_exact(4).enumerate() {
         let e = idx[i] as usize * 3;
         assert_eq!(&px[..3], &pal[e..e + 3]);
     }

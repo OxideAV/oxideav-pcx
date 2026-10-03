@@ -4,226 +4,85 @@
 //! Technical Reference Manual**, Revision 5 (1991), the sole source
 //! of truth for bitstream behaviour in this crate.
 //!
+//! The crate follows the OxideAV image-crate contract
+//! (`IMAGE_CRATE_API`): the same small root vocabulary every
+//! `oxideav-<format>` picture crate exposes, usable with
+//! `default-features = false` and no `oxideav-core`.
+//!
+//! ```no_run
+//! let bytes = std::fs::read("in.pcx")?;
+//! if oxideav_pcx::probe(&bytes) {
+//!     let info = oxideav_pcx::info(&bytes)?;        // header only
+//!     let img = oxideav_pcx::decode(&bytes)?;       // PcxImage, native layout
+//!     let rgba: Vec<u8> = img.to_rgba8();           // packed RGBA, 4 * width bytes per row
+//!     let (w, h) = (img.width(), img.height());
+//!     let _ = info;
+//!
+//!     let opts = oxideav_pcx::EncodeOptions::default().with_dpi((300, 300));
+//!     let out = oxideav_pcx::encode_rgba8(w, h, &rgba, &opts)?;
+//!     std::fs::write("out.pcx", out)?;
+//! }
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
 //! ## Read coverage
 //!
-//! | bits/pixel | n_planes | Source meaning              | Output |
-//! | ---------- | -------- | --------------------------- | ------ |
-//! | 1          | 1        | Monochrome (1-bit)          | `Rgba` |
-//! | 1          | 2        | 4-colour CGA (planar)       | `Rgba` |
-//! | 1          | 3        | 8-colour EGA RGB            | `Rgba` |
-//! | 1          | 4        | 16-colour EGA               | `Rgba` |
-//! | 2          | 1        | 4-colour CGA (packed)       | `Rgba` |
-//! | 4          | 1        | 16-colour packed-bits       | `Rgba` |
-//! | 8          | 1        | 256-colour palette (VGA tail) | `Rgba` |
-//! | 8          | 3        | 24-bit RGB (planar)         | `Rgba` |
+//! | bits/pixel | n_planes | Source meaning                | Native layout |
+//! | ---------- | -------- | ----------------------------- | ------------- |
+//! | 1          | 1        | Monochrome (1-bit)            | `Pal8` + 2-entry palette |
+//! | 1          | 2        | 4-colour CGA (planar)         | `Pal8` + 4-entry palette |
+//! | 1          | 3        | 8-colour EGA RGB              | `Pal8` + 8 primaries |
+//! | 1          | 4        | 16-colour EGA                 | `Pal8` + 16-entry palette |
+//! | 2          | 1        | 4-colour CGA (packed)         | `Pal8` + 4-entry palette |
+//! | 4          | 1        | 16-colour packed-bits         | `Pal8` + 16-entry palette |
+//! | 8          | 1        | 256-colour palette (VGA tail) | `Pal8` + 256-entry palette |
+//! | 8          | 1        | grayscale (`palette_info = 2`, or no tail) | `Gray8` |
+//! | 8          | 3        | 24-bit RGB (planar)           | `Rgb24` |
 //!
-//! Per-row layout is planar (each scanline is `n_planes ×
+//! Per-row layout on disk is planar (each scanline is `n_planes ×
 //! bytes_per_line` bytes; planes are laid out one after the other
 //! within the row, NOT interleaved per pixel). The decoder re-packs
-//! planes into packed RGBA at decode time.
-//!
-//! The optional 256-colour VGA palette block (PCX 3.0+, marker `0x0C`
-//! at byte `len - 769`) is honoured for 8 bpp × 1 plane images.
+//! planes into the native layout at decode time; [`PcxImage::to_rgba8`]
+//! expands the palette.
 //!
 //! ## Write coverage
 //!
-//! * [`encode_pcx_8bpp_indexed`] — 8 bpp × 1 plane plus a 256-entry
-//!   VGA tail palette.
-//! * [`encode_pcx_24bpp`] — 8 bpp × 3 planes, planar RGB. No tail
-//!   palette.
-//! * [`encode_pcx_1bpp_mono`] — 1 bpp × 1 plane monochrome.
-//! * [`encode_pcx_1bpp_3planes_ega_rgb`] — 8-colour EGA RGB at 1 bpp ×
-//!   3 planes (each input channel thresholded at 0x80 into one
-//!   bit-plane).
-//! * [`encode_pcx_1bpp_4planes_ega`] — 16-colour EGA at 1 bpp × 4
-//!   planes.
-//! * [`encode_pcx_4bpp_packed`] — 16-colour packed-bits at 4 bpp ×
-//!   1 plane.
-//! * [`encode_pcx_2bpp_cga`] — 4-colour CGA packed-bits at 2 bpp ×
-//!   1 plane.
-//! * [`encode_pcx_1bpp_2planes_cga`] — 4-colour CGA in the plane-
-//!   oriented 1 bpp × 2 planes layout (EGFF canonical CGA mode).
-//! * [`encode_pcx_8bpp_grayscale`] — 8 bpp × 1 plane grayscale with
-//!   spec §3 `palette_info = 2` flag set, no tail palette appended.
-//! * [`encode_pcx_24bpp_window`] — like [`encode_pcx_24bpp`] but lets
-//!   the caller set a non-zero `(x_min, y_min)` window origin for the
-//!   PCX 3.0+ pixel-region edge case.
-//! * [`encode_pcx_indexed_auto`] — caller-palette compact writer:
-//!   stores a caller-supplied packed-RGB palette **verbatim** (never
-//!   re-derived or re-ordered) in the smallest applicable geometry —
-//!   the two 16-entry header-colormap rungs at ≤ 16 entries, the
-//!   VGA-tail rung otherwise. Backs the framework `Pal8` encode path.
-//! * [`encode_pcx_rgb_auto`] / [`encode_pcx_image_auto`] — the
-//!   compact-mode **candidate ladder**: every spec mode whose
-//!   losslessness precondition holds for the input (mono, both CGA
-//!   layouts via a 96-palette exact match search, EGA-RGB, both
-//!   16-colour header-palette layouts, grayscale, indexed, planar) is
-//!   encoded and the fewest-byte file wins, returned with the chosen
-//!   [`PcxAutoMode`]. Exact by construction on every rung.
-//!
-//! All writers emit PCX 5.0 with `bytes_per_line` rounded up to even
-//! per spec §1; RLE escapes any literal byte ≥ `0xC0` even when its
-//! run length is 1.
-//!
-//! ## Authoring DPI
-//!
-//! The header's `h_dpi` / `v_dpi` words (offsets 12 / 14) record what
-//! spec §3 calls "the resolutions at which the image was created
-//! (printer or scanner); e.g. a scan might store 300, 300". The
-//! decoder surfaces these on [`PcxImage::dpi`] as `Option<(u16,
-//! u16)>` (`Some` iff both fields are non-zero — a 0 means "unset"
-//! per the spec §3 sentinel). The plain `encode_pcx_*` writers stamp
-//! the historical 72×72 PC Paintbrush convention; the matching
-//! [`encode_pcx_24bpp_dpi`] / [`encode_pcx_8bpp_indexed_dpi`] /
-//! [`encode_pcx_8bpp_grayscale_dpi`] / [`encode_pcx_1bpp_mono_dpi`]
-//! variants take a `(h, v)` tuple instead so a scanner DPI round-
-//! trips through decode + re-encode without loss. The convenience
-//! wrapper [`encode_pcx_24bpp_image`] automatically threads
-//! `PcxImage::dpi` through when set.
-//!
-//! ## Window origin
-//!
-//! The header's `x_min` / `y_min` words (offsets 4 / 6) record the
-//! source crop region the pixel buffer came from. Spec §3 derives the
-//! visible width / height as `x_max - x_min + 1` / `y_max - y_min +
-//! 1`; PCX 3.0+ supports a non-zero origin so an editor can preserve
-//! the position of a cropped sub-image inside its parent canvas. The
-//! decoder surfaces this on [`PcxImage::window_origin`] as
-//! `Option<(u16, u16)>` (`Some` whenever either header word is
-//! non-zero, `None` for the conventional zero-origin screen-author
-//! case). [`encode_pcx_24bpp_window_dpi`] combines the existing
-//! window-only and DPI-only writers into one call so the wrapper can
-//! round-trip both metadata fields at once; [`encode_pcx_24bpp_image`]
-//! dispatches across the eight `(window_origin, dpi, screen_size)`
-//! combinations automatically.
-//!
-//! ## Authoring screen size
-//!
-//! The header's `h_screen_size` / `v_screen_size` words (offsets 70 /
-//! 72) record what spec §3 describes as "Horizontal / Vertical screen
-//! size in pixels (new field found only in PB IV / IV Plus)" — an
-//! authoring-time annotation distinct from the printer / scanner DPI.
-//! The decoder surfaces this on [`PcxImage::screen_size`] as
-//! `Option<(u16, u16)>` (`Some` iff both header words are non-zero;
-//! `None` otherwise per the spec §3 sentinel — a 0 in either component
-//! means "unset", which pre-PB-IV writers leave the field at). The
-//! [`encode_pcx_24bpp_screen`] writer (screen-only) and
-//! [`encode_pcx_24bpp_window_dpi_screen`] writer (maximally-tagged)
-//! stamp a non-zero pair into the header; the convenience wrapper
-//! [`encode_pcx_24bpp_image`] threads `PcxImage::screen_size` through
-//! when set.
-//!
-//! ## Typed paletted views (8 bpp × 1 plane, 4 bpp × 1 plane, 1 bpp × 4 planes)
-//!
-//! [`parse_pcx`] always flattens to packed `Rgba` — convenient for
-//! display pipelines but discards the on-disk palette indices.
-//! [`parse_pcx_indexed_8bpp`] is the typed accessor for the 8 bpp × 1
-//! plane (256-colour) case: it returns a [`PcxIndexed8`] carrying the
-//! raw `width × height` index buffer (one byte per pixel, top-down,
-//! padding bytes stripped) plus the resolved 256-entry RGB palette and
-//! a [`PcxPaletteSource`] tag recording which spec §3 branch produced
-//! it (`palette_info = 2` grayscale flag, optional VGA tail block,
-//! grayscale-ramp fallback). Useful for round-tripping a paletted PCX
-//! through [`encode_pcx_8bpp_indexed`] without re-quantising.
-//!
-//! [`parse_pcx_indexed_4bpp`] is the symmetric typed accessor for the
-//! 4 bpp × 1 plane (16-colour packed-bits) case listed in EGFF table
-//! entry "4 bpp / 1 plane / 16 colours / EGA and VGA". It returns a
-//! [`PcxIndexed4`] carrying the unpacked `width × height` nibble
-//! indices (one byte per pixel, low nibble = palette index `0..=15`)
-//! plus the resolved 16-entry palette and a [`Pcx4bppPaletteSource`]
-//! tag recording whether the header `ega_palette` field carried
-//! non-zero bytes or the spec table §3.1 hardware default was
-//! substituted. Useful for round-tripping a 16-colour PCX through
-//! [`encode_pcx_4bpp_packed`] without re-quantising.
-//!
-//! [`parse_pcx_indexed_1bpp_4planes`] is the third 16-colour typed
-//! accessor — covering the alternate spec §4.1 on-disk layout where the
-//! per-pixel index is split across four 1-bit planes laid out one after
-//! another within each scanline (plane 0, plane 1, plane 2, plane 3 —
-//! the same plane order [`encode_pcx_1bpp_4planes_ega`] writes). It
-//! returns a [`PcxIndexed1x4`] carrying the resolved `width × height`
-//! 4-bit indices alongside the same 16-entry RGB palette + a
-//! [`Pcx1bpp4PlanesPaletteSource`] tag. Useful for round-tripping a
-//! 16-colour EGA PCX through [`encode_pcx_1bpp_4planes_ega`] without
-//! re-quantising.
-//!
-//! [`parse_pcx_indexed_2bpp_cga`] is the typed accessor for the
-//! 4-colour CGA mode (2 bpp × 1 plane, 4 pixels/byte). It returns a
-//! [`PcxIndexed2x1Cga`] carrying the unpacked `width × height` 2-bit
-//! indices (low two bits = palette index `0..=3`) alongside the
-//! resolved 4-entry RGB palette, the resolved `background_index`
-//! (`0..=15`) read from header byte 16's high nibble (the colormap's
-//! first byte, per the manual's "CGA Color Map"), and a
-//! [`Pcx2bppCgaPaletteSource`] tag recording which CGA palette family
-//! (palette 0 / 1 × dim / bright, or a monochrome ramp) the decoder
-//! landed on. The
-//! [`Pcx2bppCgaPaletteSource::palette_selector`] helper reconstructs the
-//! byte 19 selector pattern so a round-trip caller can hand it
-//! straight back to [`encode_pcx_2bpp_cga`] without re-deriving the
-//! bit positions.
-//!
-//! [`parse_pcx_indexed_1bpp_3planes`] is the fifth (and final) paletted
-//! typed view — covering the 8-colour EGA RGB mode described in spec §4
-//! where each scanline carries three 1-bit planes (plane order R, G, B,
-//! the same order [`encode_pcx_1bpp_3planes_ega_rgb`] writes). The three
-//! bits at the same x-position stack into a 3-bit colour index
-//! (`r | g << 1 | b << 2`). It returns a [`PcxIndexed1x3`] carrying one
-//! byte per pixel (low three bits = colour index `0..=7`, top-down,
-//! padding stripped) alongside the fixed 8-entry on/off-primary RGB
-//! palette + a [`Pcx1bpp3PlanesPaletteSource`] tag. Unlike the other
-//! paletted modes this carries no on-disk palette — the eight colours
-//! are intrinsic to the plane bits — so the source tag has a single
-//! [`Pcx1bpp3PlanesPaletteSource::FixedPrimaries`] arm.
-//!
-//! [`parse_pcx_cga_cpi`] is the spec-faithful *flatten*-to-`Rgba` sibling
-//! of [`parse_pcx_indexed_2bpp_cga_cpi`]: it resolves the 4-colour CGA
-//! palette through the full C / P / I decomposition of header byte 19
-//! (incl. the color-burst monochrome composite-grey ramp, the mode the
-//! legacy [`parse_pcx`] flatten path cannot express), across both the
-//! `2 bpp × 1 plane` packed and `1 bpp × 2 planes` planar CGA layouts.
+//! [`encode`] writes a [`PcxImage`] in one on-disk geometry
+//! ([`PcxLayout`]) — the one it was decoded from, or the natural one
+//! for its layout and palette — with [`EncodeOptions`] fields for the
+//! geometry, the compact ladder, authoring DPI, window origin, PB IV
+//! screen size and the version byte. All writers emit `bytes_per_line`
+//! rounded up to even per spec §1; RLE escapes any literal byte ≥
+//! `0xC0` even when its run length is 1.
 //!
 //! ## DCX multi-page bundles
 //!
-//! [`parse_dcx`] / [`encode_dcx`] handle the Microsoft FAX multi-page
+//! [`decode_all`] / [`encode_dcx`] handle the Microsoft FAX multi-page
 //! wrapper: 4-byte LE magic [`DCX_MAGIC`] (`0x3ADE_68B1`) + up to 1023
 //! u32 LE page offsets terminated by a zero sentinel + concatenated
-//! stand-alone PCX 5.0 streams.
+//! stand-alone PCX 5.0 streams. [`probe`] / [`info`] / [`decode`]
+//! accept a bundle too (`decode` = the first page).
 //!
-//! ## Framework `Encoder` accepted pixel formats
+//! ## Typed paletted views
 //!
-//! The default-on `registry` feature's `make_encoder` accepts eight
-//! `oxideav_core::PixelFormat` variants. `Rgba` / `Rgb24` / `Bgr24` /
-//! `Bgra` route to [`encode_pcx_24bpp`] (with per-pixel byte swap for
-//! the `Bgr*` variants, and alpha dropped from `Rgba` / `Bgra`).
-//! `Gray8` routes to [`encode_pcx_8bpp_grayscale`]. `MonoBlack` and
-//! `MonoWhite` unpack the MSB-first 1-bit stride into one byte per
-//! pixel and route to [`encode_pcx_1bpp_mono`]; `MonoWhite` is
-//! bit-inverted on the way in so the on-disk PCX always carries the
-//! spec §4.1 bit-1 = white polarity. `Pal8` reads the caller's colour
-//! table off the `VideoFrame` palette side-channel (trailing stride-0
-//! plane, packed 3-byte RGB entries) and routes to
-//! [`encode_pcx_indexed_auto`], which stores the table **verbatim** in
-//! the smallest applicable spec geometry: the 16-entry header colormap
-//! rungs (4 bpp × 1 plane / 1 bpp × 4 planes, whichever RLEs smaller)
-//! when the table has ≤ 16 entries, every index is ≤ 15 and the
-//! colormap would not collide with the all-zero "unset" sentinel, and
-//! the 8 bpp × 1 plane + 768-byte VGA tail rung otherwise. The
-//! symmetric decode side: constructing the framework `Decoder` with
-//! `CodecParameters.pixel_format = Some(Pal8)` returns index frames
-//! with the file's palette attached to the same side-channel instead
-//! of the default packed-`Rgba` expansion.
+//! The `parse_pcx_indexed_*` accessors are the depth layer below the
+//! contract: each returns the raw indices of one geometry plus a
+//! palette-source tag recording which spec §3 branch produced the
+//! palette ([`PcxIndexed8`], [`PcxIndexed4`], [`PcxIndexed1x4`],
+//! [`PcxIndexed2x1Cga`], [`PcxIndexed2x1CgaCpi`], [`PcxIndexed1x2Cga`],
+//! [`PcxIndexed1x3`], and the palette-less `4 bpp × 4 planes`
+//! composite [`PcxIndexed4x4`] that [`decode`] rejects).
 //!
 //! ## Standalone vs registry-integrated
 //!
 //! The crate's default `registry` Cargo feature pulls in `oxideav-core`
 //! and exposes the framework `Decoder` / `Encoder` trait surface plus
-//! a [`registry::register`] entry point. Disable the feature
-//! (`default-features = false`) for an `oxideav-core`-free build that
-//! still exposes the standalone [`parse_pcx`] / [`encode_pcx_8bpp_indexed`]
-//! / [`encode_pcx_24bpp`] API plus crate-local [`PcxImage`] /
-//! [`PcxPixelFormat`] / [`PcxError`] types.
+//! the [`register`] entry point and the [`make_decoder`] /
+//! [`make_encoder`] factories. Disable the feature (`default-features =
+//! false`) for an `oxideav-core`-free build that still exposes the
+//! whole standalone API.
 
+pub mod api;
 #[cfg(feature = "registry")]
 pub mod container;
 pub mod dcx;
@@ -233,6 +92,7 @@ pub mod decoder;
 pub mod encoder;
 pub mod error;
 pub mod image;
+pub mod options;
 #[cfg(feature = "registry")]
 pub mod registry;
 pub mod rle;
@@ -241,41 +101,68 @@ pub mod types;
 /// Codec id for PCX image frames.
 pub const CODEC_ID_STR: &str = "pcx";
 
-pub use dcx::{encode_dcx, parse_dcx, DcxImage, DCX_MAGIC, DCX_MAX_PAGES};
+// ---- The image-crate contract (IMAGE_CRATE_API) ----
+pub use api::{
+    decode, decode_all, decode_all_with, decode_from, decode_rgb8, decode_rgba8, decode_with,
+    encode, encode_rgb8, encode_rgba8, encode_to, header, info, probe,
+};
+pub use error::{Error, PcxError, Result};
+pub use image::{
+    ColorInfo, ColorRange, Frame, ImageInfo, Metadata, Palette, PcxImage, PcxLayout,
+    PcxPixelFormat, PixelFormat, Plane, RgbImage, RgbaImage,
+};
+pub use options::{DecodeOptions, EncodeOptions};
+
+// ---- PCX depth: typed paletted views, header, DCX, EGA quantisation ----
+pub use dcx::{encode_dcx, parse_offset_table, DCX_MAGIC, DCX_MAX_PAGES};
 #[doc(hidden)]
 pub use decoder::__bench_decode_planar_len;
 pub use decoder::{
-    ega_quantize_component, ega_quantize_level, ega_quantize_palette, parse_pcx, parse_pcx_cga_cpi,
+    ega_quantize_component, ega_quantize_level, ega_quantize_palette,
     parse_pcx_indexed_1bpp_2planes_cga, parse_pcx_indexed_1bpp_3planes,
     parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_2bpp_cga_cpi,
     parse_pcx_indexed_4bpp, parse_pcx_indexed_4bpp_4planes, parse_pcx_indexed_4bpp_ega_hw,
     parse_pcx_indexed_8bpp,
 };
+pub use encoder::encode_pcx_4bpp_4planes;
+pub use image::{
+    Pcx1bpp3PlanesPaletteSource, Pcx1bpp4PlanesPaletteSource, Pcx2bppCgaCpi,
+    Pcx2bppCgaPaletteSource, Pcx4bppPaletteSource, PcxIndexed1x2Cga, PcxIndexed1x3, PcxIndexed1x4,
+    PcxIndexed2x1Cga, PcxIndexed2x1CgaCpi, PcxIndexed4, PcxIndexed4x4, PcxIndexed8,
+    PcxPaletteSource,
+};
+pub use types::{
+    find_vga_palette, PcxHeader, PCX_ENCODING_RLE, PCX_HEADER_SIZE, PCX_MANUFACTURER,
+    PCX_VGA_PALETTE_BLOCK_BYTES, PCX_VGA_PALETTE_BYTES, PCX_VGA_PALETTE_MARKER,
+};
+
+// ---- Pre-contract names, kept for one release ----
+#[allow(deprecated)]
+pub use dcx::{parse_dcx, DcxImage};
+#[allow(deprecated)]
+pub use decoder::{parse_pcx, parse_pcx_cga_cpi};
+#[allow(deprecated)]
 pub use encoder::{
     encode_pcx_1bpp_2planes_cga, encode_pcx_1bpp_2planes_cga_dpi, encode_pcx_1bpp_3planes_ega_rgb,
     encode_pcx_1bpp_3planes_ega_rgb_dpi, encode_pcx_1bpp_4planes_ega,
     encode_pcx_1bpp_4planes_ega_dpi, encode_pcx_1bpp_mono, encode_pcx_1bpp_mono_dpi,
     encode_pcx_24bpp, encode_pcx_24bpp_dpi, encode_pcx_24bpp_image, encode_pcx_24bpp_screen,
     encode_pcx_24bpp_window, encode_pcx_24bpp_window_dpi, encode_pcx_24bpp_window_dpi_screen,
-    encode_pcx_2bpp_cga, encode_pcx_2bpp_cga_cpi, encode_pcx_2bpp_cga_dpi, encode_pcx_4bpp_4planes,
-    encode_pcx_4bpp_packed, encode_pcx_4bpp_packed_dpi, encode_pcx_8bpp_grayscale,
-    encode_pcx_8bpp_grayscale_dpi, encode_pcx_8bpp_indexed, encode_pcx_8bpp_indexed_dpi,
-    encode_pcx_image_auto, encode_pcx_indexed_auto, encode_pcx_rgb_auto, PcxAutoMode,
+    encode_pcx_2bpp_cga, encode_pcx_2bpp_cga_cpi, encode_pcx_2bpp_cga_dpi, encode_pcx_4bpp_packed,
+    encode_pcx_4bpp_packed_dpi, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_grayscale_dpi,
+    encode_pcx_8bpp_indexed, encode_pcx_8bpp_indexed_dpi, encode_pcx_image_auto,
+    encode_pcx_indexed_auto, encode_pcx_rgb_auto, PcxAutoMode,
 };
-pub use error::{PcxError, Result};
-pub use image::{
-    Pcx1bpp3PlanesPaletteSource, Pcx1bpp4PlanesPaletteSource, Pcx2bppCgaCpi,
-    Pcx2bppCgaPaletteSource, Pcx4bppPaletteSource, PcxImage, PcxIndexed1x2Cga, PcxIndexed1x3,
-    PcxIndexed1x4, PcxIndexed2x1Cga, PcxIndexed2x1CgaCpi, PcxIndexed4, PcxIndexed4x4, PcxIndexed8,
-    PcxPaletteSource, PcxPixelFormat,
-};
-pub use types::{
-    find_vga_palette, parse_header, PcxHeader, PCX_ENCODING_RLE, PCX_HEADER_SIZE, PCX_MANUFACTURER,
-    PCX_VGA_PALETTE_BLOCK_BYTES, PCX_VGA_PALETTE_BYTES, PCX_VGA_PALETTE_MARKER,
-};
+#[allow(deprecated)]
+pub use types::parse_header;
 
 #[cfg(feature = "registry")]
 #[doc(hidden)]
 pub use registry::__oxideav_entry;
 #[cfg(feature = "registry")]
-pub use registry::{register, register_codecs, register_containers, register_runtime};
+#[allow(deprecated)]
+pub use registry::register_runtime;
+#[cfg(feature = "registry")]
+pub use registry::{
+    make_decoder, make_encoder, register, register_codecs, register_containers, register_registries,
+};

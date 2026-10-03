@@ -8,6 +8,11 @@
 //! * Encode an image with `magick convert` to PCX, then re-decode with
 //!   our reader (read-their-write).
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
@@ -334,7 +339,7 @@ fn we_decode_magick_authored_pcx() {
     assert_eq!(img.width, 8);
     assert_eq!(img.height, 8);
     // First pixel should be pure red (alpha may be 0xFF).
-    assert_eq!(&img.data[0..3], &[255, 0, 0]);
+    assert_eq!(&img.data()[0..3], &[255, 0, 0]);
     let _ = std::fs::remove_file(&path);
 }
 
@@ -586,5 +591,105 @@ fn magick_re_decodes_caller_palette_header_rung_exactly() {
             "pixel {i} (index {}) differs from the caller entry",
             idx[i]
         );
+    }
+}
+
+/// The contract `encode` (IMAGE_CRATE_API) writes the header DPI words
+/// as `0 / 0` ("unset", spec §3) when the image carries none, and the
+/// natural geometry per layout. Every such file must still open in the
+/// black-box reader with the right geometry: 24-bit, grey, 16-colour
+/// (header colormap), 256-colour (VGA tail) and monochrome, plus a
+/// pixel-exact convert → re-decode check on the 24-bit one.
+#[test]
+fn magick_accepts_contract_encode_output_with_unset_dpi() {
+    if !have_magick() {
+        eprintln!("skipping: ImageMagick not on PATH");
+        return;
+    }
+    use oxideav_pcx::{decode, encode, EncodeOptions, Palette, PcxImage};
+    let rgb = checker_rgb(16, 16);
+    let sixteen: Vec<[u8; 3]> = (0..16u8)
+        .map(|i| [i * 17, 255 - i * 17, i.wrapping_mul(31)])
+        .collect();
+    let many: Vec<[u8; 3]> = (0..200u8).map(|i| [i, !i, i ^ 0x55]).collect();
+    let imgs: Vec<(&str, PcxImage)> = vec![
+        ("rgb24", PcxImage::from_rgb8(16, 16, rgb.clone()).unwrap()),
+        (
+            "gray8",
+            PcxImage::from_gray8(16, 16, (0..256).map(|i| i as u8).collect()).unwrap(),
+        ),
+        (
+            "pal16",
+            PcxImage::new_indexed(
+                16,
+                16,
+                (0..256).map(|i| (i % 16) as u8).collect(),
+                Palette::from_rgb_triples(&sixteen),
+            )
+            .unwrap(),
+        ),
+        (
+            "pal200",
+            PcxImage::new_indexed(
+                16,
+                16,
+                (0..256).map(|i| (i % 200) as u8).collect(),
+                Palette::from_rgb_triples(&many),
+            )
+            .unwrap(),
+        ),
+        (
+            "mono",
+            PcxImage::new_indexed(
+                16,
+                16,
+                (0..256).map(|i| ((i / 16 + i) & 1) as u8).collect(),
+                Palette::from_rgb_triples(&[[0, 0, 0], [0xFF, 0xFF, 0xFF]]),
+            )
+            .unwrap(),
+        ),
+    ];
+    for (name, img) in imgs {
+        let bytes = encode(&img, &EncodeOptions::default()).unwrap();
+        assert_eq!(&bytes[12..16], &[0, 0, 0, 0], "{name}: DPI unset");
+        let path = tmp(&format!("contract-{name}.pcx"));
+        std::fs::write(&path, &bytes).unwrap();
+        let out = Command::new("magick")
+            .arg("identify")
+            .arg(&path)
+            .output()
+            .expect("magick identify");
+        assert!(
+            out.status.success(),
+            "{name}: magick identify failed: stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let s = String::from_utf8_lossy(&out.stdout);
+        assert!(s.contains("PCX") && s.contains("16x16"), "{name}: {s}");
+        // Pixel-exact through the black-box reader: convert to a raw
+        // RGB dump and compare with our own expansion.
+        let raw = tmp(&format!("contract-{name}.rgb"));
+        let out = Command::new("magick")
+            .arg(&path)
+            .arg("-depth")
+            .arg("8")
+            .arg(format!("rgb:{}", raw.display()))
+            .output()
+            .expect("magick convert");
+        assert!(out.status.success(), "{name}: magick convert failed");
+        let got = std::fs::read(&raw).unwrap();
+        let ours = decode(&bytes).unwrap().to_rgb8();
+        if name == "mono" {
+            // The deployed-world polarity divergence recorded in
+            // docs/image/pcx/README.md (#246): ImageMagick hard-codes
+            // bit 1 = black and ignores the mono colormap, so its
+            // pixels are exactly the inverse of the spec reading.
+            let inverted: Vec<u8> = ours.iter().map(|v| !v).collect();
+            assert_eq!(got, inverted, "{name}: pixels (inverted canary)");
+        } else {
+            assert_eq!(got, ours, "{name}: pixels");
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&raw);
     }
 }

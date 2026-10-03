@@ -33,6 +33,11 @@
 //! Payloads come from an in-file xorshift so the test is deterministic
 //! and dependency-free (clean-room: no external crate).
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::rle;
 
 struct Lcg(u64);

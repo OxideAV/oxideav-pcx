@@ -7,6 +7,11 @@
 //! field-by-field per spec §3, then a tiny RLE-encoded scanline) so a
 //! bug in our encoder can't mask the same bug in our decoder.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::rle;
 use oxideav_pcx::types::{PCX_HEADER_SIZE, PCX_VGA_PALETTE_BLOCK_BYTES, PCX_VGA_PALETTE_MARKER};
 use oxideav_pcx::{encode_pcx_24bpp, encode_pcx_8bpp_indexed, parse_pcx, PcxError, PcxPixelFormat};
@@ -65,8 +70,8 @@ fn roundtrip_24bpp_3planes() {
     let img = parse_pcx(&bytes).unwrap();
     assert_eq!(img.width, 8);
     assert_eq!(img.height, 6);
-    assert_eq!(img.pixel_format, PcxPixelFormat::Rgba);
-    assert_eq!(img.data, rgba_from_rgb(&rgb));
+    assert_eq!(img.format, PcxPixelFormat::Rgba);
+    assert_eq!(img.data(), rgba_from_rgb(&rgb));
 }
 
 #[test]
@@ -79,7 +84,7 @@ fn roundtrip_24bpp_solid_compresses_well() {
     }
     let bytes = encode_pcx_24bpp(100, 100, &rgb).unwrap();
     let img = parse_pcx(&bytes).unwrap();
-    assert_eq!(img.data, rgba_from_rgb(&rgb));
+    assert_eq!(img.data(), rgba_from_rgb(&rgb));
     // way smaller than 100*100*3 + header
     assert!(
         bytes.len() < 100 * 100 * 3 / 4,
@@ -102,7 +107,7 @@ fn roundtrip_24bpp_uncompressible() {
     }
     let bytes = encode_pcx_24bpp(w, h, &rgb).unwrap();
     let img = parse_pcx(&bytes).unwrap();
-    assert_eq!(img.data, rgba_from_rgb(&rgb));
+    assert_eq!(img.data(), rgba_from_rgb(&rgb));
 }
 
 #[test]
@@ -117,7 +122,7 @@ fn roundtrip_24bpp_odd_width_pads_scanline() {
     let bpl = u16::from_le_bytes([bytes[66], bytes[67]]);
     assert_eq!(bpl, 8, "expected bytes_per_line padded to even");
     let img = parse_pcx(&bytes).unwrap();
-    assert_eq!(img.data, rgba_from_rgb(&rgb));
+    assert_eq!(img.data(), rgba_from_rgb(&rgb));
 }
 
 // ---------------------------------------------------------------------------
@@ -152,11 +157,11 @@ fn roundtrip_8bpp_indexed_with_vga_palette() {
     let img = parse_pcx(&bytes).unwrap();
     assert_eq!(img.width, 16);
     assert_eq!(img.height, 8);
-    assert_eq!(img.pixel_format, PcxPixelFormat::Rgba);
+    assert_eq!(img.format, PcxPixelFormat::Rgba);
     // Spot-check: pixel (3, 0) → index 39 → palette[39] = (39, 216, 39^0xAA).
     let idx39 = 3u8 * 13;
     assert_eq!(
-        img.data[3 * 4..][..4],
+        img.data()[3 * 4..][..4],
         [idx39, 255 - idx39, idx39 ^ 0xAA, 0xFF]
     );
 }
@@ -174,7 +179,7 @@ fn roundtrip_8bpp_solid_compresses_hard() {
     assert_eq!(img.height, 100);
     // Every pixel decoded to palette[42].
     let want = [42u8, 255 - 42, 42 ^ 0xAA, 0xFF];
-    for px in img.data.chunks_exact(4) {
+    for px in img.data().chunks_exact(4) {
         assert_eq!(px, &want);
     }
     // RLE compression check — solid-colour data should be small.
@@ -207,7 +212,7 @@ fn roundtrip_8bpp_indexes_above_192_get_rle_escaped() {
     for &i in &indices {
         expected.extend_from_slice(&p(i));
     }
-    assert_eq!(img.data, expected);
+    assert_eq!(img.data(), expected);
 }
 
 // ---------------------------------------------------------------------------
@@ -263,14 +268,14 @@ fn parse_1bpp_monochrome_8x2() {
         } else {
             0x00
         };
-        assert_eq!(img.data[x * 4], exp);
+        assert_eq!(img.data()[x * 4], exp);
     }
     // Row 1: 4 white then 4 black.
     for x in 0..4usize {
-        assert_eq!(img.data[(8 + x) * 4], 0xFF);
+        assert_eq!(img.data()[(8 + x) * 4], 0xFF);
     }
     for x in 4..8usize {
-        assert_eq!(img.data[(8 + x) * 4], 0x00);
+        assert_eq!(img.data()[(8 + x) * 4], 0x00);
     }
 }
 
@@ -297,7 +302,7 @@ fn parse_1bpp_4planes_ega_palette_in_header() {
     let img = parse_pcx(&bytes).unwrap();
     assert_eq!(img.width, 8);
     for x in 0..8usize {
-        assert_eq!(img.data[x * 4..x * 4 + 4], [0xCC, 0x33, 0x77, 0xFF]);
+        assert_eq!(img.data()[x * 4..x * 4 + 4], [0xCC, 0x33, 0x77, 0xFF]);
     }
 }
 
@@ -317,7 +322,7 @@ fn parse_8bpp_no_vga_palette_uses_grayscale_ramp() {
     let img = parse_pcx(&bytes).unwrap();
     for (x, &i) in indices.iter().enumerate() {
         assert_eq!(
-            &img.data[x * 4..x * 4 + 4],
+            &img.data()[x * 4..x * 4 + 4],
             &[i, i, i, 0xFF],
             "x={x} idx={i} should map to grayscale ramp"
         );
@@ -412,7 +417,7 @@ fn roundtrip_all_writer_combos() {
         let rgb = checker_rgb(w, h);
         let bytes = encode_pcx_24bpp(w, h, &rgb).unwrap();
         let img = parse_pcx(&bytes).unwrap();
-        assert_eq!(img.data, rgba_from_rgb(&rgb), "24-bit roundtrip {w}×{h}");
+        assert_eq!(img.data(), rgba_from_rgb(&rgb), "24-bit roundtrip {w}×{h}");
         // 8-bit indexed
         let mut indices = Vec::with_capacity(w as usize * h as usize);
         for y in 0..h {
@@ -429,6 +434,6 @@ fn roundtrip_all_writer_combos() {
             let off = i as usize * 3;
             expected.extend_from_slice(&[palette[off], palette[off + 1], palette[off + 2], 0xFF]);
         }
-        assert_eq!(img.data, expected, "8-bit indexed roundtrip {w}×{h}");
+        assert_eq!(img.data(), expected, "8-bit indexed roundtrip {w}×{h}");
     }
 }

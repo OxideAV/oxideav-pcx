@@ -16,10 +16,9 @@ categories = ["multimedia::encoding", "multimedia::images"]
 # `oxideav-core` is gated behind the default-on `registry` feature so
 # image-library consumers can depend on `oxideav-pcx` with
 # `default-features = false` and avoid the framework dependency tree
-# entirely. Without `registry` the crate exposes the standalone
-# `parse_pcx` / `encode_pcx_8bpp_indexed` / `encode_pcx_24bpp` API plus
-# crate-local `PcxImage` / `PcxError` types and never references
-# `oxideav-core`.
+# entirely. Without `registry` the crate exposes the whole standalone
+# IMAGE_CRATE_API surface (`probe` / `info` / `decode*` / `encode*`,
+# `PcxImage`, `PcxError`, …) and never references `oxideav-core`.
 oxideav-core = { version = "0.1", optional = true }
 
 [features]
@@ -28,9 +27,27 @@ default = ["registry"]
 # Wires up the codec / encoder / decoder / container demuxer + muxer
 # trait implementations against `oxideav-core` so the crate can plug
 # into the `oxideav` framework registry. Default-on; turn off for
-# image-library use-cases that just want the standalone `parse_pcx`
-# API.
+# image-library use-cases that just want the standalone API.
 registry = ["dep:oxideav-core"]
+
+# Integration tests that drive the framework `Decoder` / `Encoder` need
+# `oxideav-core`; the standalone CI job (`--no-default-features`) skips
+# them and runs every other test.
+[[test]]
+name = "round185"
+required-features = ["registry"]
+
+[[test]]
+name = "round88"
+required-features = ["registry"]
+
+[[test]]
+name = "round405_mono_polarity"
+required-features = ["registry"]
+
+[[test]]
+name = "round417_pal8"
+required-features = ["registry"]
 
 [dev-dependencies]
 # Round 197 (depth-mode benchmarks): Criterion drives the three bench

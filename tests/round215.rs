@@ -9,6 +9,11 @@
 //! to R / G / B and each channel is binary (0x00 or 0xFF), giving the
 //! eight on/off primaries.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::rle;
 use oxideav_pcx::types::PCX_HEADER_SIZE;
 use oxideav_pcx::{encode_pcx_1bpp_3planes_ega_rgb, parse_pcx, PcxError, PcxPixelFormat};
@@ -62,8 +67,8 @@ fn roundtrip_1bpp_3planes_all_eight_primaries() {
     let img = parse_pcx(&bytes).unwrap();
     assert_eq!(img.width, w as u32);
     assert_eq!(img.height, h as u32);
-    assert_eq!(img.pixel_format, PcxPixelFormat::Rgba);
-    assert_eq!(img.data, rgba_from_rgb(&rgb));
+    assert_eq!(img.format, PcxPixelFormat::Rgba);
+    assert_eq!(img.data(), rgba_from_rgb(&rgb));
 }
 
 /// 32×16 horizontal-stripe checker: every column gets a different
@@ -95,7 +100,7 @@ fn roundtrip_1bpp_3planes_stripe_pattern() {
     let img = parse_pcx(&bytes).unwrap();
     assert_eq!(img.width, w as u32);
     assert_eq!(img.height, h as u32);
-    assert_eq!(img.data, rgba_from_rgb(&rgb));
+    assert_eq!(img.data(), rgba_from_rgb(&rgb));
 }
 
 /// Odd width forces `bytes_per_line` to round up to even per spec §1.
@@ -126,7 +131,7 @@ fn roundtrip_1bpp_3planes_odd_width_pads_scanline() {
     let bpl = u16::from_le_bytes([bytes[66], bytes[67]]);
     assert_eq!(bpl, 2, "expected bytes_per_line padded to even");
     let img = parse_pcx(&bytes).unwrap();
-    assert_eq!(img.data, rgba_from_rgb(&rgb));
+    assert_eq!(img.data(), rgba_from_rgb(&rgb));
 }
 
 /// Encoder threshold rule: input bytes ≥ 0x80 set the plane bit,
@@ -146,7 +151,7 @@ fn encode_thresholds_at_0x80() {
     let img = parse_pcx(&bytes).unwrap();
     // 4 pixels × 4 bytes RGBA each.
     assert_eq!(
-        img.data,
+        img.data(),
         vec![
             0x00, 0x00, 0x00, 0xFF, // pixel 0 → black
             0xFF, 0x00, 0x00, 0xFF, // pixel 1 → red
@@ -217,7 +222,7 @@ fn parse_handcrafted_1bpp_3planes() {
     }
     assert_eq!(img.width, 8);
     assert_eq!(img.height, 1);
-    assert_eq!(img.data, want);
+    assert_eq!(img.data(), want);
 }
 
 // ---------------------------------------------------------------------------

@@ -37,6 +37,11 @@
 //! 5. The pixels round-trip through the matching typed paletted accessor
 //!    unchanged.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::types::PCX_HEADER_SIZE;
 use oxideav_pcx::{
     encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_3planes_ega_rgb_dpi,

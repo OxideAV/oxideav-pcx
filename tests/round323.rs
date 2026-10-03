@@ -42,6 +42,11 @@
 //!    and `parse_pcx` rejects `(4, 4)` (no spec-defined RGB mapping).
 //! 6. Odd widths (where the last byte's low nibble is padding) round-trip.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::{
     encode_pcx_4bpp_4planes, encode_pcx_8bpp_indexed, parse_header, parse_pcx,
     parse_pcx_indexed_4bpp_4planes, parse_pcx_indexed_8bpp, PCX_HEADER_SIZE,

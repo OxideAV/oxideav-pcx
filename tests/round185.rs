@@ -8,13 +8,17 @@
 //! 1-bit stride into one byte per pixel (and inverting for the
 //! `MonoWhite` polarity per the `oxideav-core` convention).
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
 #![cfg(feature = "registry")]
 
 use oxideav_core::{
     CodecId, CodecParameters, Frame, MediaType, PixelFormat, VideoFrame, VideoPlane,
 };
 
-use oxideav_pcx::encoder::make_encoder;
+use oxideav_pcx::make_encoder;
 use oxideav_pcx::{parse_pcx, PcxPixelFormat};
 
 fn params_for(width: u32, height: u32, format: PixelFormat) -> CodecParameters {
@@ -64,7 +68,7 @@ fn framework_encoder_accepts_bgr24_frame_with_byte_swap() {
     let img = parse_pcx(&pkt.data).unwrap();
     assert_eq!(img.width, 6);
     assert_eq!(img.height, 3);
-    assert_eq!(img.pixel_format, PcxPixelFormat::Rgba);
+    assert_eq!(img.format, PcxPixelFormat::Rgba);
     for y in 0..3usize {
         for x in 0..6usize {
             let off = (y * 6 + x) * 4;
@@ -74,7 +78,7 @@ fn framework_encoder_accepts_bgr24_frame_with_byte_swap() {
             // After BGR -> RGB byte-swap inside the encoder, the
             // decoded image must surface the original (r, g, b).
             assert_eq!(
-                &img.data[off..off + 4],
+                &img.data()[off..off + 4],
                 &[r, g, b, 0xFF],
                 "Bgr24 ({x},{y}) expected ({r},{g},{b}) after swap"
             );
@@ -106,7 +110,7 @@ fn framework_encoder_accepts_bgra_frame_drops_alpha_and_swaps() {
             let g = (20 + y as u32 * 50) as u8;
             let b = (30 + (x as u32 ^ y as u32) * 50) as u8;
             assert_eq!(
-                &img.data[off..off + 4],
+                &img.data()[off..off + 4],
                 &[r, g, b, 0xFF],
                 "Bgra ({x},{y}) expected ({r},{g},{b}) after swap+drop"
             );
@@ -149,7 +153,7 @@ fn framework_encoder_accepts_monoblack_frame() {
             let off = (y * width as usize + x) * 4;
             let expected = if bit == 1 { 0xFF } else { 0x00 };
             assert_eq!(
-                &img.data[off..off + 4],
+                &img.data()[off..off + 4],
                 &[expected, expected, expected, 0xFF],
                 "MonoBlack ({x},{y}) bit={bit} expected {expected:02X}"
             );
@@ -180,7 +184,7 @@ fn framework_encoder_accepts_monowhite_frame_inverts_polarity() {
     for (x, &v) in expected_per_pixel.iter().enumerate() {
         let off = x * 4;
         assert_eq!(
-            &img.data[off..off + 4],
+            &img.data()[off..off + 4],
             &[v, v, v, 0xFF],
             "MonoWhite x={x} expected {v:02X}"
         );
@@ -216,7 +220,7 @@ fn framework_encoder_mono_handles_non_tight_stride_and_padding() {
             let off = (y * 5 + x) * 4;
             let v = if bit == 1 { 0xFF } else { 0x00 };
             assert_eq!(
-                &img.data[off..off + 4],
+                &img.data()[off..off + 4],
                 &[v, v, v, 0xFF],
                 "stride-padded MonoBlack ({x},{y}) expected {v:02X}"
             );

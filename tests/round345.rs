@@ -24,6 +24,11 @@
 //! deterministic and dependency-free (clean-room: no external crate, no
 //! fixture files).
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::{
     encode_pcx_1bpp_2planes_cga, encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega,
     encode_pcx_1bpp_mono, encode_pcx_24bpp, encode_pcx_2bpp_cga, encode_pcx_4bpp_4planes,
@@ -110,7 +115,7 @@ fn sweep_8bpp_indexed_roundtrip_bit_exact() {
             let img = parse_pcx(&bytes).unwrap();
             assert_eq!(img.width, w as u32);
             assert_eq!(img.height, h as u32);
-            assert_eq!(img.data.len(), n * 4);
+            assert_eq!(img.data().len(), n * 4);
 
             // Typed indexed accessor must recover the exact indices.
             let idx = parse_pcx_indexed_8bpp(&bytes).unwrap();
@@ -136,7 +141,7 @@ fn sweep_8bpp_grayscale_roundtrip_bit_exact() {
             assert_eq!(img.width, w as u32);
             assert_eq!(img.height, h as u32);
             // Grayscale: each sample becomes (g, g, g, 0xFF).
-            for (i, px) in img.data.chunks_exact(4).enumerate() {
+            for (i, px) in img.data().chunks_exact(4).enumerate() {
                 let g = pixels[i];
                 assert_eq!(px, [g, g, g, 0xFF], "gray w={w} h={h} i={i}");
             }
@@ -279,7 +284,7 @@ fn sweep_24bpp_roundtrip_bit_exact() {
             assert_eq!(img.height, h as u32, "w={w} h={h}");
             // RGBA out: each pixel (r, g, b, 0xFF).
             for i in 0..n {
-                let px = &img.data[i * 4..i * 4 + 4];
+                let px = &img.data()[i * 4..i * 4 + 4];
                 assert_eq!(
                     px,
                     [rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2], 0xFF],
@@ -328,7 +333,7 @@ fn sweep_1bpp_mono_roundtrip_bit_exact() {
             // bit 1 = white (0xFF), bit 0 = black (0x00).
             for (i, &p) in pixels.iter().enumerate() {
                 let want = if p & 1 == 1 { 0xFF } else { 0x00 };
-                let px = &img.data[i * 4..i * 4 + 4];
+                let px = &img.data()[i * 4..i * 4 + 4];
                 assert_eq!(px, [want, want, want, 0xFF], "mono w={w} h={h} i={i}");
             }
         }

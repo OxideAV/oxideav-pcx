@@ -31,6 +31,11 @@
 //! 5. The authoring-metadata fields (dpi / window / screen) are surfaced
 //!    identically to `parse_pcx`.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::{
     encode_pcx_1bpp_2planes_cga, encode_pcx_24bpp, encode_pcx_24bpp_window_dpi_screen,
     encode_pcx_2bpp_cga_cpi, parse_pcx, parse_pcx_cga_cpi, parse_pcx_indexed_2bpp_cga_cpi,
@@ -78,12 +83,12 @@ fn flatten_agrees_with_typed_accessor_all_cpi() {
             let flat = parse_pcx_cga_cpi(&pcx).expect("flatten");
             assert_eq!(flat.width, w as u32);
             assert_eq!(flat.height, h as u32);
-            assert_eq!(flat.data.len(), w as usize * h as usize * 4);
+            assert_eq!(flat.data().len(), w as usize * h as usize * 4);
             for (i, &idx) in typed.indices.iter().enumerate() {
                 let p = typed.palette[idx as usize];
                 let want = [p[0], p[1], p[2], 0xFF];
                 assert_eq!(
-                    flat.data[i * 4..i * 4 + 4],
+                    flat.data()[i * 4..i * 4 + 4],
                     want,
                     "pixel {i} mismatch cpi={cpi:?} bg={bg}"
                 );
@@ -108,7 +113,7 @@ fn monochrome_flatten_is_grey() {
         // bg index 0 → entry 0 black, so the whole image is grey.
         let pcx = encode_pcx_2bpp_cga_cpi(w, h, &indices, cpi, 0).expect("encode");
         let flat = parse_pcx_cga_cpi(&pcx).expect("flatten");
-        for px in flat.data.chunks_exact(4) {
+        for px in flat.data().chunks_exact(4) {
             assert_eq!(px[0], px[1], "R != G (bright={bright})");
             assert_eq!(px[1], px[2], "G != B (bright={bright})");
             assert_eq!(px[3], 0xFF, "alpha not opaque");
@@ -141,13 +146,14 @@ fn spec_faithful_path_differs_from_legacy_on_monochrome() {
     let faithful = parse_pcx_cga_cpi(&pcx).expect("faithful flatten");
 
     // The spec-faithful path is a pure grey ramp.
-    for px in faithful.data.chunks_exact(4) {
+    for px in faithful.data().chunks_exact(4) {
         assert_eq!(px[0], px[1]);
         assert_eq!(px[1], px[2]);
     }
     // And the canonical path now produces the identical grey pixels.
     assert_eq!(
-        canonical.data, faithful.data,
+        canonical.data(),
+        faithful.data(),
         "parse_pcx must resolve the monochrome ramp identically to parse_pcx_cga_cpi"
     );
 }
@@ -176,7 +182,7 @@ fn packed_and_planar_layouts_agree() {
     let fl = parse_pcx_cga_cpi(&planar).expect("flatten planar");
     assert_eq!(fp.width, fl.width);
     assert_eq!(fp.height, fl.height);
-    assert_eq!(fp.data, fl.data, "packed and planar CGA flatten differ");
+    assert_eq!(fp.data(), fl.data(), "packed and planar CGA flatten differ");
 }
 
 /// Non-CGA (depth, planes) combinations are rejected with

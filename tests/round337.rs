@@ -33,6 +33,11 @@
 //! test is reproducible; this is not a fuzz target (that lives in
 //! `fuzz/fuzz_targets/encode_pcx.rs`) but a fixed property sweep.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::{
     encode_pcx_1bpp_4planes_ega, encode_pcx_24bpp, encode_pcx_2bpp_cga, encode_pcx_4bpp_4planes,
     encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed, parse_pcx,
@@ -113,7 +118,7 @@ fn sweep_8bpp_grayscale_roundtrip() {
         let bytes = encode_pcx_8bpp_grayscale(w, h, &samples).expect("encode gray");
         // Grayscale flattens to Rgba with R==G==B==sample.
         let img = parse_pcx(&bytes).expect("parse gray");
-        let rgba = &img.data;
+        let rgba = &img.data();
         for (i, s) in samples.iter().enumerate() {
             let px = &rgba[i * 4..i * 4 + 4];
             assert_eq!((px[0], px[1], px[2]), (*s, *s, *s), "gray {w}x{h} px {i}");
@@ -179,7 +184,7 @@ fn sweep_24bpp_roundtrip() {
         let rgb = indices_u8(n * 3, 0xFF, 0x4242 + n as u64);
         let bytes = encode_pcx_24bpp(w, h, &rgb).expect("encode 24bpp");
         let img = parse_pcx(&bytes).expect("parse 24bpp");
-        let rgba = &img.data;
+        let rgba = &img.data();
         for i in 0..n {
             let src = &rgb[i * 3..i * 3 + 3];
             let px = &rgba[i * 4..i * 4 + 4];

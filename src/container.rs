@@ -1,5 +1,6 @@
 //! PCX container: one single-image file becomes one [`Packet`] on
-//! stream `0`. Matches how other single-image codecs in the workspace
+//! stream `0`, declared in the file's native layout (`Pal8` / `Gray8`
+//! / `Rgb24`). Matches how other single-image codecs in the workspace
 //! (`oxideav-bmp`, `oxideav-tga`, static `oxideav-webp`) plug into the
 //! container pipeline.
 
@@ -13,7 +14,7 @@ use oxideav_core::{
     ContainerRegistry, Demuxer, Muxer, ProbeData, ProbeScore, ReadSeek, WriteSeek, MAX_PROBE_SCORE,
 };
 
-use crate::types::{parse_header, PCX_ENCODING_RLE, PCX_MANUFACTURER};
+use crate::types::{read_header, PCX_ENCODING_RLE, PCX_MANUFACTURER};
 
 pub fn register(reg: &mut ContainerRegistry) {
     reg.register_demuxer("pcx", open_demuxer);
@@ -24,7 +25,7 @@ pub fn register(reg: &mut ContainerRegistry) {
 }
 
 fn probe(data: &ProbeData) -> ProbeScore {
-    if let Some(h) = parse_header(data.buf) {
+    if let Some(h) = read_header(data.buf) {
         // Manufacturer + RLE encoding + a known version is the
         // strongest signal PCX has — the format's first byte is fixed
         // and the version byte takes a known small set.
@@ -56,11 +57,14 @@ pub fn open_demuxer(
     input.seek(SeekFrom::Start(0))?;
     let mut buf = Vec::new();
     input.read_to_end(&mut buf)?;
-    let header = parse_header(&buf).ok_or_else(|| Error::invalid("PCX: header truncated"))?;
+    // The stream declares the native layout the decoder will emit
+    // (`Pal8` + palette side-channel, `Gray8` or `Rgb24`), resolved
+    // from the header exactly as `oxideav_pcx::info` does.
+    let info = crate::info(&buf)?;
     let mut params = CodecParameters::video(CodecId::new(crate::CODEC_ID_STR));
-    params.width = Some(header.width());
-    params.height = Some(header.height());
-    params.pixel_format = Some(PixelFormat::Rgba);
+    params.width = Some(info.width);
+    params.height = Some(info.height);
+    params.pixel_format = Some(PixelFormat::from(info.format));
     let stream = StreamInfo {
         index: 0,
         params,

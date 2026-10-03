@@ -4,10 +4,15 @@
 //!
 //! r225 surfaces the origin on [`oxideav_pcx::PcxImage::window_origin`] (the decoder reports `Some((x, y))` whenever at least one of the two header words is non-zero, and `None` for the conventional zero-origin screen-author case), and adds the combined [`oxideav_pcx::encode_pcx_24bpp_window_dpi`] writer plus matching plumbing in `encode_pcx_24bpp_image` so a windowed-and-DPI-tagged source round-trips both metadata fields end-to-end through that one wrapper call.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::types::PCX_HEADER_SIZE;
 use oxideav_pcx::{
     encode_pcx_24bpp, encode_pcx_24bpp_dpi, encode_pcx_24bpp_image, encode_pcx_24bpp_window,
-    encode_pcx_24bpp_window_dpi, parse_pcx, PcxError, PcxImage, PcxPixelFormat,
+    encode_pcx_24bpp_window_dpi, parse_pcx, PcxError, PcxImage,
 };
 
 // ---------------------------------------------------------------------------
@@ -60,7 +65,7 @@ fn non_zero_origin_decodes_as_window_origin_some() {
     // length.
     assert_eq!(img.width, 4);
     assert_eq!(img.height, 4);
-    assert_eq!(img.data.len(), 4 * 4 * 4);
+    assert_eq!(img.data().len(), 4 * 4 * 4);
 }
 
 /// Asymmetric origins (only one axis non-zero) still surface as `Some`
@@ -138,16 +143,11 @@ fn window_dpi_writer_rejects_origin_overflow() {
 #[test]
 fn wrapper_neither_uses_plain_writer() {
     let rgb = dummy_rgb(4, 2);
-    let img = PcxImage {
-        width: 4,
-        height: 2,
-        pixel_format: PcxPixelFormat::Rgb24,
-        data: rgb,
-        pts: None,
-        dpi: None,
-        window_origin: None,
-        screen_size: None,
-    };
+    let img = PcxImage::from_rgb8(4, 2, rgb)
+        .unwrap()
+        .with_dpi(None)
+        .with_window_origin(None)
+        .with_screen_size(None);
     let bytes = encode_pcx_24bpp_image(&img).unwrap();
     assert_eq!(read_u16_le(&bytes, 4), 0);
     assert_eq!(read_u16_le(&bytes, 6), 0);
@@ -159,16 +159,11 @@ fn wrapper_neither_uses_plain_writer() {
 #[test]
 fn wrapper_dpi_only_uses_dpi_writer() {
     let rgb = dummy_rgb(4, 2);
-    let img = PcxImage {
-        width: 4,
-        height: 2,
-        pixel_format: PcxPixelFormat::Rgb24,
-        data: rgb.clone(),
-        pts: None,
-        dpi: Some((300, 300)),
-        window_origin: None,
-        screen_size: None,
-    };
+    let img = PcxImage::from_rgb8(4, 2, rgb.clone())
+        .unwrap()
+        .with_dpi(Some((300, 300)))
+        .with_window_origin(None)
+        .with_screen_size(None);
     let bytes = encode_pcx_24bpp_image(&img).unwrap();
     assert_eq!(read_u16_le(&bytes, 4), 0);
     assert_eq!(read_u16_le(&bytes, 6), 0);
@@ -183,16 +178,11 @@ fn wrapper_dpi_only_uses_dpi_writer() {
 #[test]
 fn wrapper_window_only_uses_window_writer() {
     let rgb = dummy_rgb(4, 2);
-    let img = PcxImage {
-        width: 4,
-        height: 2,
-        pixel_format: PcxPixelFormat::Rgb24,
-        data: rgb.clone(),
-        pts: None,
-        dpi: None,
-        window_origin: Some((50, 100)),
-        screen_size: None,
-    };
+    let img = PcxImage::from_rgb8(4, 2, rgb.clone())
+        .unwrap()
+        .with_dpi(None)
+        .with_window_origin(Some((50, 100)))
+        .with_screen_size(None);
     let bytes = encode_pcx_24bpp_image(&img).unwrap();
     assert_eq!(read_u16_le(&bytes, 4), 50);
     assert_eq!(read_u16_le(&bytes, 6), 100);
@@ -207,16 +197,11 @@ fn wrapper_window_only_uses_window_writer() {
 #[test]
 fn wrapper_both_uses_window_dpi_writer() {
     let rgb = dummy_rgb(4, 2);
-    let img = PcxImage {
-        width: 4,
-        height: 2,
-        pixel_format: PcxPixelFormat::Rgb24,
-        data: rgb.clone(),
-        pts: None,
-        dpi: Some((300, 300)),
-        window_origin: Some((50, 100)),
-        screen_size: None,
-    };
+    let img = PcxImage::from_rgb8(4, 2, rgb.clone())
+        .unwrap()
+        .with_dpi(Some((300, 300)))
+        .with_window_origin(Some((50, 100)))
+        .with_screen_size(None);
     let bytes = encode_pcx_24bpp_image(&img).unwrap();
     assert_eq!(read_u16_le(&bytes, 4), 50);
     assert_eq!(read_u16_le(&bytes, 6), 100);
@@ -244,7 +229,7 @@ fn end_to_end_windowed_dpi_roundtrip_preserves_metadata() {
     let re_decoded = parse_pcx(&bytes_out).unwrap();
     assert_eq!(re_decoded.window_origin, Some((75, 50)));
     assert_eq!(re_decoded.dpi, Some((300, 300)));
-    assert_eq!(re_decoded.data, decoded.data);
+    assert_eq!(re_decoded.data(), decoded.data());
 }
 
 /// A plain zero-origin PCX (default 72×72 DPI) makes the round-trip
@@ -265,5 +250,5 @@ fn end_to_end_zero_origin_roundtrip_stays_zero() {
     let re_decoded = parse_pcx(&bytes_out).unwrap();
     assert_eq!(re_decoded.window_origin, None);
     assert_eq!(re_decoded.dpi, Some((72, 72)));
-    assert_eq!(re_decoded.data, decoded.data);
+    assert_eq!(re_decoded.data(), decoded.data());
 }

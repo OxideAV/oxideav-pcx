@@ -47,6 +47,11 @@
 //!    on the ramp.
 //! 6. The accessor rejects every non-`(4, 1)` (depth, planes) combination.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::{
     ega_quantize_component, ega_quantize_level, ega_quantize_palette, encode_pcx_24bpp,
     encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, parse_pcx_indexed_4bpp,

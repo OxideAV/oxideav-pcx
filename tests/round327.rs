@@ -38,6 +38,11 @@
 //!    unchanged: a normal encode → decode round-trip is byte-for-byte
 //!    identical to before.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::{encode_pcx_24bpp, encode_pcx_8bpp_grayscale, parse_pcx, PCX_HEADER_SIZE};
 
 /// Build a minimal 128-byte PCX header for an 8 bpp × `n_planes` image
@@ -137,12 +142,13 @@ fn run_straddling_row_boundary_decodes_like_row_broken() {
     assert_eq!(img_broken.width, w as u32);
     assert_eq!(img_broken.height, h as u32);
     assert_eq!(
-        img_straddle.data, img_broken.data,
+        img_straddle.data(),
+        img_broken.data(),
         "straddling-run decode must match the row-broken decode"
     );
     // Every pixel is (0x42, 0x42, 0x42, 0xFF) under the default colour
     // flatten (header palette index 0x42 → entry 0x42).
-    assert_eq!(img_straddle.data.len(), w as usize * h as usize * 4);
+    assert_eq!(img_straddle.data().len(), w as usize * h as usize * 4);
 }
 
 // ---------------------------------------------------------------------------
@@ -176,11 +182,12 @@ fn run_straddling_padding_then_next_row() {
     assert_eq!(img_straddle.width, w as u32);
     assert_eq!(img_straddle.height, h as u32);
     assert_eq!(
-        img_straddle.data, img_broken.data,
+        img_straddle.data(),
+        img_broken.data(),
         "padding-straddling run must decode identically to the row-broken form"
     );
     // Visible pixels are the padding-stripped 7×5 region.
-    assert_eq!(img_straddle.data.len(), w as usize * h as usize * 4);
+    assert_eq!(img_straddle.data().len(), w as usize * h as usize * 4);
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +222,8 @@ fn run_straddling_plane_boundary_within_scanline() {
 
     let img_continuous = parse_pcx(&hdr).expect("plane-straddle decodes");
     assert_eq!(
-        img_continuous.data, img_canonical.data,
+        img_continuous.data(),
+        img_canonical.data(),
         "continuous 24-bit decode must equal the canonical writer's output"
     );
 }
@@ -265,7 +273,7 @@ fn canonical_writer_roundtrip_unchanged() {
     assert_eq!(img.width, w as u32);
     assert_eq!(img.height, h as u32);
     // Grayscale flatten: each pixel is (g, g, g, 0xFF).
-    for (i, px) in img.data.chunks_exact(4).enumerate() {
+    for (i, px) in img.data().chunks_exact(4).enumerate() {
         let g = pixels[i];
         assert_eq!(px, &[g, g, g, 0xFF], "pixel {i} mismatch");
     }

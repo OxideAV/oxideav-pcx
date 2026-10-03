@@ -23,11 +23,16 @@
 //! eight `(window_origin, dpi, screen_size)` `Option` combinations and
 //! round-trip every metadata field together.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::types::PCX_HEADER_SIZE;
 use oxideav_pcx::{
     encode_pcx_24bpp, encode_pcx_24bpp_dpi, encode_pcx_24bpp_image, encode_pcx_24bpp_screen,
     encode_pcx_24bpp_window, encode_pcx_24bpp_window_dpi, encode_pcx_24bpp_window_dpi_screen,
-    parse_pcx, PcxError, PcxImage, PcxPixelFormat,
+    parse_pcx, PcxError, PcxImage,
 };
 
 // ---------------------------------------------------------------------------
@@ -79,7 +84,7 @@ fn non_zero_screen_size_decodes_as_some() {
     // Pixel buffer length is unaffected.
     assert_eq!(img.width, 4);
     assert_eq!(img.height, 4);
-    assert_eq!(img.data.len(), 4 * 4 * 4);
+    assert_eq!(img.data().len(), 4 * 4 * 4);
 }
 
 /// Asymmetric fields (only one axis non-zero) collapse to `None` per
@@ -141,10 +146,10 @@ fn screen_writer_self_roundtrips_through_decoder() {
         for x in 0..8 {
             let src = (y * 8 + x) * 3;
             let dst = (y * 8 + x) * 4;
-            assert_eq!(img.data[dst], rgb[src]);
-            assert_eq!(img.data[dst + 1], rgb[src + 1]);
-            assert_eq!(img.data[dst + 2], rgb[src + 2]);
-            assert_eq!(img.data[dst + 3], 0xFF);
+            assert_eq!(img.data()[dst], rgb[src]);
+            assert_eq!(img.data()[dst + 1], rgb[src + 1]);
+            assert_eq!(img.data()[dst + 2], rgb[src + 2]);
+            assert_eq!(img.data()[dst + 3], 0xFF);
         }
     }
 }
@@ -281,16 +286,11 @@ fn window_dpi_screen_writer_rejects_origin_overflow() {
 #[test]
 fn wrapper_no_metadata_matches_plain_writer() {
     let rgb = dummy_rgb(4, 2);
-    let img = PcxImage {
-        width: 4,
-        height: 2,
-        pixel_format: PcxPixelFormat::Rgb24,
-        data: rgb.clone(),
-        pts: None,
-        dpi: None,
-        window_origin: None,
-        screen_size: None,
-    };
+    let img = PcxImage::from_rgb8(4, 2, rgb.clone())
+        .unwrap()
+        .with_dpi(None)
+        .with_window_origin(None)
+        .with_screen_size(None);
     let wrapped = encode_pcx_24bpp_image(&img).unwrap();
     let direct = encode_pcx_24bpp(4, 2, &rgb).unwrap();
     assert_eq!(wrapped, direct);
@@ -301,16 +301,11 @@ fn wrapper_no_metadata_matches_plain_writer() {
 #[test]
 fn wrapper_screen_only_uses_screen_writer() {
     let rgb = dummy_rgb(4, 2);
-    let img = PcxImage {
-        width: 4,
-        height: 2,
-        pixel_format: PcxPixelFormat::Rgb24,
-        data: rgb.clone(),
-        pts: None,
-        dpi: None,
-        window_origin: None,
-        screen_size: Some((1024, 768)),
-    };
+    let img = PcxImage::from_rgb8(4, 2, rgb.clone())
+        .unwrap()
+        .with_dpi(None)
+        .with_window_origin(None)
+        .with_screen_size(Some((1024, 768)));
     let wrapped = encode_pcx_24bpp_image(&img).unwrap();
     let direct = encode_pcx_24bpp_screen(4, 2, &rgb, (1024, 768)).unwrap();
     assert_eq!(wrapped, direct);
@@ -323,16 +318,11 @@ fn wrapper_screen_only_uses_screen_writer() {
 #[test]
 fn wrapper_all_three_metadata_uses_combined_writer() {
     let rgb = dummy_rgb(4, 2);
-    let img = PcxImage {
-        width: 4,
-        height: 2,
-        pixel_format: PcxPixelFormat::Rgb24,
-        data: rgb.clone(),
-        pts: None,
-        dpi: Some((300, 300)),
-        window_origin: Some((50, 100)),
-        screen_size: Some((640, 480)),
-    };
+    let img = PcxImage::from_rgb8(4, 2, rgb.clone())
+        .unwrap()
+        .with_dpi(Some((300, 300)))
+        .with_window_origin(Some((50, 100)))
+        .with_screen_size(Some((640, 480)));
     let wrapped = encode_pcx_24bpp_image(&img).unwrap();
     let direct =
         encode_pcx_24bpp_window_dpi_screen(50, 100, 4, 2, &rgb, (300, 300), (640, 480)).unwrap();
@@ -345,44 +335,32 @@ fn wrapper_all_three_metadata_uses_combined_writer() {
 fn wrapper_pre_r231_cases_remain_bit_identical() {
     let rgb = dummy_rgb(4, 2);
     // (None, None, None)
-    let img_a = PcxImage {
-        width: 4,
-        height: 2,
-        pixel_format: PcxPixelFormat::Rgb24,
-        data: rgb.clone(),
-        pts: None,
-        dpi: None,
-        window_origin: None,
-        screen_size: None,
-    };
+    let img_a = PcxImage::from_rgb8(4, 2, rgb.clone())
+        .unwrap()
+        .with_dpi(None)
+        .with_window_origin(None)
+        .with_screen_size(None);
     assert_eq!(
         encode_pcx_24bpp_image(&img_a).unwrap(),
         encode_pcx_24bpp(4, 2, &rgb).unwrap()
     );
     // (Some, None, None)
-    let img_b = PcxImage {
-        window_origin: Some((50, 100)),
-        ..img_a.clone()
-    };
+    let img_b = img_a.clone().with_window_origin(Some((50, 100)));
     assert_eq!(
         encode_pcx_24bpp_image(&img_b).unwrap(),
         encode_pcx_24bpp_window(50, 100, 4, 2, &rgb).unwrap()
     );
     // (None, Some, None)
-    let img_c = PcxImage {
-        dpi: Some((300, 300)),
-        ..img_a.clone()
-    };
+    let img_c = img_a.clone().with_dpi(Some((300, 300)));
     assert_eq!(
         encode_pcx_24bpp_image(&img_c).unwrap(),
         encode_pcx_24bpp_dpi(4, 2, &rgb, (300, 300)).unwrap()
     );
     // (Some, Some, None)
-    let img_d = PcxImage {
-        window_origin: Some((50, 100)),
-        dpi: Some((300, 300)),
-        ..img_a
-    };
+    let img_d = img_a
+        .clone()
+        .with_window_origin(Some((50, 100)))
+        .with_dpi(Some((300, 300)));
     assert_eq!(
         encode_pcx_24bpp_image(&img_d).unwrap(),
         encode_pcx_24bpp_window_dpi(50, 100, 4, 2, &rgb, (300, 300)).unwrap()

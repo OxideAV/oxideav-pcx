@@ -23,6 +23,11 @@
 //!   bit-complemented `MonoWhite` twin must land on byte-identical
 //!   spec-polarity files.
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::{encode_pcx_1bpp_mono, encode_pcx_rgb_auto, parse_pcx, PcxAutoMode};
 
 const HDR: usize = 128;
@@ -65,8 +70,8 @@ fn mono_decoder_uses_bit_as_colormap_index() {
     // Case 1 — writer's own colormap (black, white): bit 1 → white.
     let mut bytes = encode_pcx_1bpp_mono(8, 1, &LEFT_WHITE_PIXELS).unwrap();
     let img = parse_pcx(&bytes).unwrap();
-    assert_eq!(&img.data[0..4], &WHITE, "bit 1 → colormap[1] = white");
-    assert_eq!(&img.data[16..20], &BLACK, "bit 0 → colormap[0] = black");
+    assert_eq!(&img.data()[0..4], &WHITE, "bit 1 → colormap[1] = white");
+    assert_eq!(&img.data()[16..20], &BLACK, "bit 0 → colormap[0] = black");
 
     // Case 2 — inverted colormap (white, black), the exact polarity
     // question: the reader must keep resolving bit → index, so the
@@ -75,8 +80,8 @@ fn mono_decoder_uses_bit_as_colormap_index() {
     bytes[16..19].copy_from_slice(&[0xFF, 0xFF, 0xFF]); // entry 0 = white
     bytes[19..22].copy_from_slice(&[0x00, 0x00, 0x00]); // entry 1 = black
     let img = parse_pcx(&bytes).unwrap();
-    assert_eq!(&img.data[0..4], &BLACK, "bit 1 → colormap[1] = black");
-    assert_eq!(&img.data[16..20], &WHITE, "bit 0 → colormap[0] = white");
+    assert_eq!(&img.data()[0..4], &BLACK, "bit 1 → colormap[1] = black");
+    assert_eq!(&img.data()[16..20], &WHITE, "bit 0 → colormap[0] = white");
 
     // Case 3 — zero-filled colormap (common PCX 3.0+ form): falls back
     // to the classic convention, which is the same polarity the errata
@@ -85,8 +90,8 @@ fn mono_decoder_uses_bit_as_colormap_index() {
         *b = 0;
     }
     let img = parse_pcx(&bytes).unwrap();
-    assert_eq!(&img.data[0..4], &WHITE, "zero colormap: bit 1 = white");
-    assert_eq!(&img.data[16..20], &BLACK, "zero colormap: bit 0 = black");
+    assert_eq!(&img.data()[0..4], &WHITE, "zero colormap: bit 1 = white");
+    assert_eq!(&img.data()[16..20], &BLACK, "zero colormap: bit 0 = black");
 }
 
 #[test]
@@ -106,13 +111,13 @@ fn mono_roundtrip_is_bit_exact_across_row_phases() {
     assert_eq!((img.width, img.height), (w as u32, h as u32));
     for (i, &p) in pixels.iter().enumerate() {
         let expect = if p == 1 { WHITE } else { BLACK };
-        assert_eq!(&img.data[i * 4..i * 4 + 4], &expect, "pixel {i}");
+        assert_eq!(&img.data()[i * 4..i * 4 + 4], &expect, "pixel {i}");
     }
     // Re-encoding the decoded RGBA through the auto ladder must take
     // the Mono1 rung and land on the byte-identical file: same bits,
     // same colormap, no polarity drift anywhere in the loop.
     let rgb: Vec<u8> = img
-        .data
+        .data()
         .chunks_exact(4)
         .flat_map(|c| c[..3].to_vec())
         .collect();
@@ -153,8 +158,8 @@ fn auto_ladder_mono1_polarity_ignores_first_seen_palette_order() {
     // Row = [0xF0, 0x00]: the white left half is the four high bits.
     assert_eq!(&bytes[HDR..], &LEFT_WHITE_RLE);
     let img = parse_pcx(&bytes).unwrap();
-    assert_eq!(&img.data[0..4], &WHITE);
-    assert_eq!(&img.data[16..20], &BLACK);
+    assert_eq!(&img.data()[0..4], &WHITE);
+    assert_eq!(&img.data()[16..20], &BLACK);
 }
 
 #[test]
@@ -179,15 +184,15 @@ fn bilevel_non_black_dark_colour_skips_mono1_and_stays_exact() {
         "blue is not black: Mono1 must not fire"
     );
     let img = parse_pcx(&bytes).unwrap();
-    assert_eq!(&img.data[0..4], &WHITE);
-    assert_eq!(&img.data[16..20], &[0x00, 0x00, 0xAA, 0xFF]);
+    assert_eq!(&img.data()[0..4], &WHITE);
+    assert_eq!(&img.data()[16..20], &[0x00, 0x00, 0xAA, 0xFF]);
 }
 
 #[cfg(feature = "registry")]
 mod registry {
     use super::{HDR, LEFT_WHITE_RLE};
     use oxideav_core::{CodecId, CodecParameters, Frame, PixelFormat, VideoFrame, VideoPlane};
-    use oxideav_pcx::encoder::make_encoder;
+    use oxideav_pcx::make_encoder;
 
     fn encode_mono_frame(format: PixelFormat, row: u8) -> Vec<u8> {
         let mut params = CodecParameters::video(CodecId::new("pcx"));

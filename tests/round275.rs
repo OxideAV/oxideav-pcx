@@ -35,6 +35,11 @@
 //! 5. The accessor rejects every non-(2, 1) (depth, planes) combination.
 //! 6. Per-row padding is stripped (widths off the 4-pixel byte boundary).
 
+// The pre-contract `parse_pcx` / `encode_pcx_*` names are exercised on
+// purpose here: they are the byte-identity regression gate for the
+// IMAGE_CRATE_API migration (round 467).
+#![allow(deprecated)]
+
 use oxideav_pcx::{
     encode_pcx_24bpp, encode_pcx_2bpp_cga_cpi, parse_pcx, parse_pcx_indexed_2bpp_cga_cpi,
     Pcx2bppCgaCpi, PcxError, PcxIndexed2x1CgaCpi,
