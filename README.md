@@ -37,6 +37,7 @@ if oxideav_pcx::probe(&bytes) {
     let out: Vec<u8> = oxideav_pcx::encode_rgba8(w, h, &rgba, &opts)?;   // alpha dropped (PCX has none)
     std::fs::write("out.pcx", out)?;
 }
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 | Item | Signature |
@@ -82,11 +83,17 @@ are probed and routed by extension *and* magic through the generic
 demux → decode flow:
 
 ```rust
+# let img = oxideav_pcx::decode(&std::fs::read("in.pcx")?)?;
+# let mut params = oxideav_core::CodecParameters::video(oxideav_core::CodecId::new("pcx"));
+# params.width = Some(img.width());
+# params.height = Some(img.height());
+# params.pixel_format = Some(img.format().into());
 let mut ctx = oxideav_core::RuntimeContext::new();
 oxideav_pcx::register(&mut ctx);                       // codec "pcx" + the PCX and DCX containers
 let dec = oxideav_pcx::make_decoder(&params)?;         // / make_encoder
 let frame: oxideav_core::VideoFrame = img.into();      // From<PcxImage>: plane + palette side-channel
 let back = oxideav_pcx::PcxImage::from_video_frame(&frame, &params)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 The trait-side `Decoder` / `Encoder` are thin adapters over the
