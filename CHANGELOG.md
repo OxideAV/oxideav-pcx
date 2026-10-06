@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/OxideAV/oxideav-pcx/compare/v0.1.1...v0.1.2) - 2026-10-04
+
+### Other
+
+- README examples use the current registry API
+- Fleet sweep: encode_all for DCX bundles, crates.io exclude
+- README in the contract's section order; CHANGELOG Changed / Fixed / Deprecated for the contract
+- ci-standalone builds, tests and lints without the registry feature
+- Image-crate contract: probe/info/decode/encode root API, native layouts, options, registry bridge
+- hide internal pub surface from rustdoc/semver (fleet rule 2026-09-01)
+
 ### Added
 
 - `encode_all(&[Frame], &EncodeOptions) -> Result<Vec<u8>, Error>`: the
