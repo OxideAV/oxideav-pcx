@@ -56,7 +56,7 @@ pub fn from_core_pixel_format(pf: PixelFormat) -> oxideav_core::Result<PcxPixelF
         other => {
             return Err(oxideav_core::Error::unsupported(format!(
                 "PCX: pixel format {other:?} not supported"
-            )))
+            )));
         }
     })
 }
@@ -362,7 +362,7 @@ impl Encoder for PcxEncoder {
             _ => {
                 return Err(oxideav_core::Error::invalid(
                     "PCX encoder: expected video frame",
-                ))
+                ));
             }
         };
         let image = frame_to_image(vf, &self.out_params)?;

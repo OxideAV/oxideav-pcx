@@ -18,8 +18,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use oxideav_pcx::{
-    encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono, encode_pcx_24bpp, encode_pcx_2bpp_cga,
-    encode_pcx_4bpp_packed, encode_pcx_8bpp_indexed, parse_pcx,
+    encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono, encode_pcx_2bpp_cga, encode_pcx_4bpp_packed,
+    encode_pcx_8bpp_indexed, encode_pcx_24bpp, parse_pcx,
 };
 
 fn have_magick() -> bool {
@@ -405,7 +405,7 @@ fn magick_re_decodes_every_unambiguous_ladder_geometry_exactly() {
         eprintln!("skipping: ImageMagick not on PATH");
         return;
     }
-    use oxideav_pcx::{encode_pcx_rgb_auto, PcxAutoMode};
+    use oxideav_pcx::{PcxAutoMode, encode_pcx_rgb_auto};
     let (w, h) = (64u16, 10u16);
     let n = w as usize * h as usize;
 
@@ -497,7 +497,9 @@ fn magick_confirms_mono_bit_geometry_modulo_polarity() {
     let raw = magick_to_raw_rgb("mono-geometry", &bytes, w, h);
     // Classify magick's readback as bilevel 0/1 per pixel.
     let theirs: Vec<u8> = raw
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| match c {
             [0xFF, 0xFF, 0xFF] => 1u8,
             [0x00, 0x00, 0x00] => 0u8,
@@ -534,7 +536,7 @@ fn magick_re_decodes_caller_palette_vga_tail_exactly() {
         eprintln!("skipping: ImageMagick not on PATH");
         return;
     }
-    use oxideav_pcx::{encode_pcx_indexed_auto, PcxAutoMode};
+    use oxideav_pcx::{PcxAutoMode, encode_pcx_indexed_auto};
     let (w, h) = (23u16, 6u16);
     let n = w as usize * h as usize;
     // 20 entries (> 16 forces the VGA tail), values chosen with no
@@ -547,7 +549,7 @@ fn magick_re_decodes_caller_palette_vga_tail_exactly() {
     let (bytes, mode) = encode_pcx_indexed_auto(w, h, &idx, &pal).unwrap();
     assert_eq!(mode, PcxAutoMode::Indexed8 { colors: 20 });
     let raw = magick_to_raw_rgb("r417-tail", &bytes, w, h);
-    for (i, px) in raw.chunks_exact(3).enumerate() {
+    for (i, px) in raw.as_chunks::<3>().0.iter().enumerate() {
         let e = idx[i] as usize * 3;
         assert_eq!(
             px,
@@ -567,7 +569,7 @@ fn magick_re_decodes_caller_palette_header_rung_exactly() {
         eprintln!("skipping: ImageMagick not on PATH");
         return;
     }
-    use oxideav_pcx::{encode_pcx_indexed_auto, PcxAutoMode};
+    use oxideav_pcx::{PcxAutoMode, encode_pcx_indexed_auto};
     let (w, h) = (17u16, 9u16);
     let n = w as usize * h as usize;
     let pal: Vec<u8> = (0..11u8)
@@ -583,7 +585,7 @@ fn magick_re_decodes_caller_palette_header_rung_exactly() {
         "11-entry table must ride a header rung, got {mode:?}"
     );
     let raw = magick_to_raw_rgb("r417-header", &bytes, w, h);
-    for (i, px) in raw.chunks_exact(3).enumerate() {
+    for (i, px) in raw.as_chunks::<3>().0.iter().enumerate() {
         let e = idx[i] as usize * 3;
         assert_eq!(
             px,
@@ -606,7 +608,7 @@ fn magick_accepts_contract_encode_output_with_unset_dpi() {
         eprintln!("skipping: ImageMagick not on PATH");
         return;
     }
-    use oxideav_pcx::{decode, encode, EncodeOptions, Palette, PcxImage};
+    use oxideav_pcx::{EncodeOptions, Palette, PcxImage, decode, encode};
     let rgb = checker_rgb(16, 16);
     let sixteen: Vec<[u8; 3]> = (0..16u8)
         .map(|i| [i * 17, 255 - i * 17, i.wrapping_mul(31)])

@@ -44,10 +44,9 @@
 #![allow(deprecated)]
 
 use oxideav_pcx::{
-    encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono,
-    encode_pcx_24bpp, encode_pcx_2bpp_cga, encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale,
-    parse_pcx, parse_pcx_indexed_1bpp_3planes, Pcx1bpp3PlanesPaletteSource, PcxError,
-    PcxIndexed1x3,
+    Pcx1bpp3PlanesPaletteSource, PcxError, PcxIndexed1x3, encode_pcx_1bpp_3planes_ega_rgb,
+    encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono, encode_pcx_2bpp_cga, encode_pcx_4bpp_packed,
+    encode_pcx_8bpp_grayscale, encode_pcx_24bpp, parse_pcx, parse_pcx_indexed_1bpp_3planes,
 };
 
 // ---------------------------------------------------------------------------

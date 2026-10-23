@@ -38,12 +38,12 @@
 
 use oxideav_core::{CodecId, CodecParameters, Frame, PixelFormat, VideoFrame, VideoPlane};
 use oxideav_pcx::{
-    encode, encode_pcx_1bpp_2planes_cga, encode_pcx_1bpp_3planes_ega_rgb,
-    encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono, encode_pcx_24bpp, encode_pcx_2bpp_cga,
-    encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed,
-    encode_pcx_indexed_auto, parse_header, parse_pcx, parse_pcx_indexed_1bpp_2planes_cga,
-    parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga_cpi, parse_pcx_indexed_4bpp,
-    parse_pcx_indexed_8bpp, EncodeOptions, Palette, PcxAutoMode, PcxImage, PcxPaletteSource,
+    EncodeOptions, Palette, PcxAutoMode, PcxImage, PcxPaletteSource, encode,
+    encode_pcx_1bpp_2planes_cga, encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega,
+    encode_pcx_1bpp_mono, encode_pcx_2bpp_cga, encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale,
+    encode_pcx_8bpp_indexed, encode_pcx_24bpp, encode_pcx_indexed_auto, parse_header, parse_pcx,
+    parse_pcx_indexed_1bpp_2planes_cga, parse_pcx_indexed_1bpp_4planes,
+    parse_pcx_indexed_2bpp_cga_cpi, parse_pcx_indexed_4bpp, parse_pcx_indexed_8bpp,
 };
 
 // ---------------------------------------------------------------------------
@@ -335,7 +335,7 @@ fn indexed_auto_flatten_reproduces_palette_colours() {
     let idx: Vec<u8> = (0..n).map(|i| (i % 7) as u8).collect();
     let (bytes, _mode) = encode_pcx_indexed_auto(w, h, &idx, &pal).unwrap();
     let img = parse_pcx(&bytes).unwrap();
-    for (i, px) in img.data().chunks_exact(4).enumerate() {
+    for (i, px) in img.data().as_chunks::<4>().0.iter().enumerate() {
         let e = idx[i] as usize * 3;
         assert_eq!(
             &px[..3],
@@ -624,7 +624,7 @@ fn default_rgba_decode_is_unchanged_and_carries_no_palette() {
     params.pixel_format = Some(PixelFormat::Pal8);
     let native = PcxImage::from_video_frame(&frame, &params).unwrap();
     assert_eq!(native.to_rgba8(), img.data(), "Rgba expansion unchanged");
-    for (i, px) in img.data().chunks_exact(4).enumerate() {
+    for (i, px) in img.data().as_chunks::<4>().0.iter().enumerate() {
         let e = idx[i] as usize * 3;
         assert_eq!(&px[..3], &pal[e..e + 3]);
     }
@@ -639,7 +639,9 @@ fn registry_advertises_pal8() {
     oxideav_pcx::register_codecs(&mut reg);
     let impls = reg.implementations(&CodecId::new("pcx"));
     assert!(!impls.is_empty());
-    assert!(impls
-        .iter()
-        .any(|i| i.caps.accepted_pixel_formats.contains(&PixelFormat::Pal8)));
+    assert!(
+        impls
+            .iter()
+            .any(|i| i.caps.accepted_pixel_formats.contains(&PixelFormat::Pal8))
+    );
 }

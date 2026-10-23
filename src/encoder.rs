@@ -131,11 +131,7 @@ fn write_header(
 
 #[inline]
 fn round_up_to_even(v: u16) -> u16 {
-    if v % 2 == 0 {
-        v
-    } else {
-        v + 1
-    }
+    if v.is_multiple_of(2) { v } else { v + 1 }
 }
 
 fn check_dims(width: u16, height: u16) -> Result<()> {
@@ -602,13 +598,13 @@ pub(crate) fn first_seen_indexed(rgb: &[u8]) -> Option<(Vec<u8>, Vec<[u8; 3]>)> 
     let mut seen: HashMap<u32, u8> = HashMap::with_capacity(257);
     let mut indices: Vec<u8> = Vec::with_capacity(n_pixels);
     let mut last: Option<(u32, u8)> = None;
-    for p in rgb[..n_pixels * 3].chunks_exact(3) {
+    for p in rgb[..n_pixels * 3].as_chunks::<3>().0 {
         let key = u32::from(p[0]) << 16 | u32::from(p[1]) << 8 | u32::from(p[2]);
-        if let Some((lk, li)) = last {
-            if lk == key {
-                indices.push(li);
-                continue;
-            }
+        if let Some((lk, li)) = last
+            && lk == key
+        {
+            indices.push(li);
+            continue;
         }
         let idx = match seen.get(&key) {
             Some(&i) => i,
@@ -762,7 +758,9 @@ fn source<'a>(image: &'a PcxImage, opts: &EncodeOptions) -> Result<Source<'a>> {
                 ));
             }
             let rgb: Vec<u8> = data
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .flat_map(|c| [c[0], c[1], c[2]])
                 .collect();
             Source::Rgb(Cow::Owned(rgb))
@@ -807,7 +805,7 @@ fn encode_layout(
             _ => {
                 let rgb = src.rgb();
                 let mut gray = Vec::with_capacity(rgb.len() / 3);
-                for p in rgb.chunks_exact(3) {
+                for p in rgb.as_chunks::<3>().0 {
                     if p[0] != p[1] || p[1] != p[2] {
                         return Err(unfit("a pixel is not a pure grey"));
                     }
@@ -820,7 +818,7 @@ fn encode_layout(
             if let Source::Gray(g) = src {
                 // The grey level is its own index into the 0..=255 ramp.
                 let mut pal = vec![0u8; PCX_VGA_PALETTE_BYTES];
-                for (i, e) in pal.chunks_exact_mut(3).enumerate() {
+                for (i, e) in pal.as_chunks_mut::<3>().0.iter_mut().enumerate() {
                     e.fill(i as u8);
                 }
                 return write_indexed8(meta, width, height, g, &pal);
@@ -829,7 +827,7 @@ fn encode_layout(
                 .indexed()
                 .ok_or_else(|| unfit("more than 256 colours"))?;
             let mut pal768 = vec![0u8; PCX_VGA_PALETTE_BYTES];
-            for (dst, e) in pal768.chunks_exact_mut(3).zip(pal.iter()) {
+            for (dst, e) in pal768.as_chunks_mut::<3>().0.iter_mut().zip(pal.iter()) {
                 dst.copy_from_slice(e);
             }
             write_indexed8(meta, width, height, &idx, &pal768)
@@ -854,7 +852,7 @@ fn encode_layout(
                 ));
             }
             let mut cm = [0u8; 48];
-            for (dst, e) in cm.chunks_exact_mut(3).zip(pal.iter()) {
+            for (dst, e) in cm.as_chunks_mut::<3>().0.iter_mut().zip(pal.iter()) {
                 dst.copy_from_slice(e);
             }
             if layout == PcxLayout::Indexed4 {
@@ -888,7 +886,7 @@ fn encode_layout(
                 return write_mono(meta, width, height, &bits, &MONO_COLORMAP);
             }
             let mut cm = [0u8; 48];
-            for (dst, e) in cm.chunks_exact_mut(3).zip(pal.iter()) {
+            for (dst, e) in cm.as_chunks_mut::<3>().0.iter_mut().zip(pal.iter()) {
                 dst.copy_from_slice(e);
             }
             if cm.iter().all(|&b| b == 0) && idx.iter().any(|&i| i != 0) {
@@ -1195,7 +1193,10 @@ pub fn encode_pcx_indexed_auto(
     check_dims(width, height)?;
     let n_pixels = width as usize * height as usize;
     check_len(indices.len(), width, height, 1, "indexed")?;
-    if palette.is_empty() || palette.len() % 3 != 0 || palette.len() > PCX_VGA_PALETTE_BYTES {
+    if palette.is_empty()
+        || !palette.len().is_multiple_of(3)
+        || palette.len() > PCX_VGA_PALETTE_BYTES
+    {
         return Err(Error::invalid(format!(
             "PCX encoder: caller palette must be packed RGB triplets — non-empty, a multiple \
              of 3 bytes, at most {PCX_VGA_PALETTE_BYTES} (got {})",
@@ -1251,7 +1252,9 @@ fn ega_rgb_threshold(meta: &HeaderMeta, width: u16, height: u16, rgb: &[u8]) -> 
     check_dims(width, height)?;
     check_len(rgb.len(), width, height, 3, "rgb")?;
     let bits3: Vec<u8> = rgb[..width as usize * height as usize * 3]
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|p| {
             u8::from(p[0] >= 0x80) | (u8::from(p[1] >= 0x80) << 1) | (u8::from(p[2] >= 0x80) << 2)
         })
@@ -1486,7 +1489,9 @@ fn legacy_image_rgb(image: &PcxImage) -> Result<Cow<'_, [u8]>> {
         PcxPixelFormat::Rgb24 => Ok(tight(image)),
         PcxPixelFormat::Rgba => Ok(Cow::Owned(
             tight(image)
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .flat_map(|c| [c[0], c[1], c[2]])
                 .collect(),
         )),

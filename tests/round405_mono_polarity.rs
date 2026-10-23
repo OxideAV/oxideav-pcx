@@ -28,7 +28,7 @@
 // IMAGE_CRATE_API migration (round 467).
 #![allow(deprecated)]
 
-use oxideav_pcx::{encode_pcx_1bpp_mono, encode_pcx_rgb_auto, parse_pcx, PcxAutoMode};
+use oxideav_pcx::{PcxAutoMode, encode_pcx_1bpp_mono, encode_pcx_rgb_auto, parse_pcx};
 
 const HDR: usize = 128;
 const WHITE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
@@ -118,7 +118,9 @@ fn mono_roundtrip_is_bit_exact_across_row_phases() {
     // same colormap, no polarity drift anywhere in the loop.
     let rgb: Vec<u8> = img
         .data()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .flat_map(|c| c[..3].to_vec())
         .collect();
     let (auto_bytes, mode) = encode_pcx_rgb_auto(w, h, &rgb).unwrap();

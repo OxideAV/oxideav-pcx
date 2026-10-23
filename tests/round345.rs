@@ -31,8 +31,8 @@
 
 use oxideav_pcx::{
     encode_pcx_1bpp_2planes_cga, encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega,
-    encode_pcx_1bpp_mono, encode_pcx_24bpp, encode_pcx_2bpp_cga, encode_pcx_4bpp_4planes,
-    encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed, parse_pcx,
+    encode_pcx_1bpp_mono, encode_pcx_2bpp_cga, encode_pcx_4bpp_4planes, encode_pcx_4bpp_packed,
+    encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed, encode_pcx_24bpp, parse_pcx,
     parse_pcx_indexed_1bpp_2planes_cga, parse_pcx_indexed_1bpp_3planes,
     parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_4bpp,
     parse_pcx_indexed_4bpp_4planes, parse_pcx_indexed_8bpp,
@@ -77,7 +77,7 @@ const HEIGHTS: &[u16] = &[1, 2, 3, 5, 8, 17];
 
 fn gray_ramp_768() -> Vec<u8> {
     let mut p = vec![0u8; 768];
-    for (i, c) in p.chunks_exact_mut(3).enumerate() {
+    for (i, c) in p.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let v = i as u8;
         c[0] = v;
         c[1] = v;
@@ -90,7 +90,7 @@ fn ega_palette_48() -> Vec<u8> {
     // 16 distinct triples so the palette round-trips observably; values
     // are arbitrary for a no-loss index round-trip.
     let mut p = vec![0u8; 48];
-    for (i, c) in p.chunks_exact_mut(3).enumerate() {
+    for (i, c) in p.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         c[0] = (i as u8).wrapping_mul(17);
         c[1] = (i as u8).wrapping_mul(5).wrapping_add(3);
         c[2] = (i as u8).wrapping_mul(11).wrapping_add(7);
@@ -141,9 +141,9 @@ fn sweep_8bpp_grayscale_roundtrip_bit_exact() {
             assert_eq!(img.width, w as u32);
             assert_eq!(img.height, h as u32);
             // Grayscale: each sample becomes (g, g, g, 0xFF).
-            for (i, px) in img.data().chunks_exact(4).enumerate() {
+            for (i, px) in img.data().as_chunks::<4>().0.iter().enumerate() {
                 let g = pixels[i];
-                assert_eq!(px, [g, g, g, 0xFF], "gray w={w} h={h} i={i}");
+                assert_eq!(*px, [g, g, g, 0xFF], "gray w={w} h={h} i={i}");
             }
         }
     }
@@ -166,7 +166,7 @@ fn sweep_4bpp_packed_roundtrip_bit_exact() {
             assert_eq!(idx.height, h as u32, "w={w} h={h}");
             assert_eq!(idx.indices, indices, "4bpp packed mismatch w={w} h={h}");
             // Palette must survive verbatim.
-            for (i, c) in pal.chunks_exact(3).enumerate() {
+            for (i, c) in pal.as_chunks::<3>().0.iter().enumerate() {
                 assert_eq!(idx.palette[i], [c[0], c[1], c[2]], "pal[{i}] w={w} h={h}");
             }
         }
@@ -334,7 +334,7 @@ fn sweep_1bpp_mono_roundtrip_bit_exact() {
             for (i, &p) in pixels.iter().enumerate() {
                 let want = if p & 1 == 1 { 0xFF } else { 0x00 };
                 let px = &img.data()[i * 4..i * 4 + 4];
-                assert_eq!(px, [want, want, want, 0xFF], "mono w={w} h={h} i={i}");
+                assert_eq!(*px, [want, want, want, 0xFF], "mono w={w} h={h} i={i}");
             }
         }
     }

@@ -27,10 +27,10 @@ use oxideav_core::{
     StreamInfo, TimeBase,
 };
 use oxideav_core::{
-    ContainerRegistry, Demuxer, Muxer, ProbeData, ProbeScore, ReadSeek, WriteSeek, MAX_PROBE_SCORE,
+    ContainerRegistry, Demuxer, MAX_PROBE_SCORE, Muxer, ProbeData, ProbeScore, ReadSeek, WriteSeek,
 };
 
-use crate::dcx::{parse_offset_table, DCX_MAGIC, DCX_MAX_PAGES};
+use crate::dcx::{DCX_MAGIC, DCX_MAX_PAGES, parse_offset_table};
 use crate::types::read_header;
 
 /// Register the DCX container demuxer + muxer + extension + probe.

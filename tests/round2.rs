@@ -8,8 +8,8 @@
 #![allow(deprecated)]
 
 use oxideav_pcx::{
-    encode_dcx, encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono, encode_pcx_24bpp,
-    encode_pcx_2bpp_cga, encode_pcx_4bpp_packed, parse_dcx, parse_pcx, DCX_MAGIC, DCX_MAX_PAGES,
+    DCX_MAGIC, DCX_MAX_PAGES, encode_dcx, encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono,
+    encode_pcx_2bpp_cga, encode_pcx_4bpp_packed, encode_pcx_24bpp, parse_dcx, parse_pcx,
 };
 
 // ---------------------------------------------------------------------------
@@ -116,7 +116,7 @@ fn roundtrip_4bpp_packed_solid_compresses() {
     );
     let img = parse_pcx(&bytes).unwrap();
     let want = [palette[7 * 3], palette[7 * 3 + 1], palette[7 * 3 + 2], 0xFF];
-    for px in img.data().chunks_exact(4) {
+    for px in img.data().as_chunks::<4>().0 {
         assert_eq!(px, &want);
     }
 }

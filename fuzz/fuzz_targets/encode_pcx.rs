@@ -39,13 +39,13 @@
 
 use libfuzzer_sys::fuzz_target;
 use oxideav_pcx::{
-    encode_pcx_1bpp_2planes_cga, encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega,
-    encode_pcx_1bpp_mono, encode_pcx_24bpp, encode_pcx_2bpp_cga, encode_pcx_4bpp_4planes,
-    encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed,
-    encode_pcx_indexed_auto, encode_pcx_rgb_auto, parse_pcx, parse_pcx_indexed_1bpp_3planes,
-    parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_4bpp,
-    parse_pcx_indexed_4bpp_4planes, parse_pcx_indexed_8bpp, EncodeOptions, Palette, PcxAutoMode,
-    PcxImage, PcxPaletteSource,
+    EncodeOptions, Palette, PcxAutoMode, PcxImage, PcxPaletteSource, encode_pcx_1bpp_2planes_cga,
+    encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono,
+    encode_pcx_2bpp_cga, encode_pcx_4bpp_4planes, encode_pcx_4bpp_packed,
+    encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed, encode_pcx_24bpp, encode_pcx_indexed_auto,
+    encode_pcx_rgb_auto, parse_pcx, parse_pcx_indexed_1bpp_3planes, parse_pcx_indexed_1bpp_4planes,
+    parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_4bpp, parse_pcx_indexed_4bpp_4planes,
+    parse_pcx_indexed_8bpp,
 };
 
 /// Cap each dimension so the dimension×dimension pixel count stays well
@@ -343,7 +343,11 @@ fuzz_target!(|data: &[u8]| {
                 let bytes = oxideav_pcx::encode(&img, &opts).expect("Pal8 encode");
                 match oxideav_pcx::decode(&bytes) {
                     Ok(back) => {
-                        assert_eq!(back.to_rgba8(), img.to_rgba8(), "Pal8 encode must round-trip")
+                        assert_eq!(
+                            back.to_rgba8(),
+                            img.to_rgba8(),
+                            "Pal8 encode must round-trip"
+                        )
                     }
                     Err(e) => assert_gray8_tail_coincidence(&bytes, &e),
                 }
@@ -369,9 +373,12 @@ fuzz_target!(|data: &[u8]| {
             }
         }
         if payload.len() >= n * 3 && n > 0 && n <= 1 << 14 {
-            let rgb =
-                PcxImage::from_rgb8(u32::from(width), u32::from(height), payload[..n * 3].to_vec())
-                    .unwrap();
+            let rgb = PcxImage::from_rgb8(
+                u32::from(width),
+                u32::from(height),
+                payload[..n * 3].to_vec(),
+            )
+            .unwrap();
             let bytes = oxideav_pcx::encode(&rgb, &EncodeOptions::default()).unwrap();
             let back = oxideav_pcx::decode(&bytes).expect("Rgb24 output must decode");
             assert_eq!(back.data(), rgb.data());

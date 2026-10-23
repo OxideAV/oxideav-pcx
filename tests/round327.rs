@@ -43,7 +43,7 @@
 // IMAGE_CRATE_API migration (round 467).
 #![allow(deprecated)]
 
-use oxideav_pcx::{encode_pcx_24bpp, encode_pcx_8bpp_grayscale, parse_pcx, PCX_HEADER_SIZE};
+use oxideav_pcx::{PCX_HEADER_SIZE, encode_pcx_8bpp_grayscale, encode_pcx_24bpp, parse_pcx};
 
 /// Build a minimal 128-byte PCX header for an 8 bpp × `n_planes` image
 /// of the given pixel dimensions and `bytes_per_line` (per-plane row
@@ -273,7 +273,7 @@ fn canonical_writer_roundtrip_unchanged() {
     assert_eq!(img.width, w as u32);
     assert_eq!(img.height, h as u32);
     // Grayscale flatten: each pixel is (g, g, g, 0xFF).
-    for (i, px) in img.data().chunks_exact(4).enumerate() {
+    for (i, px) in img.data().as_chunks::<4>().0.iter().enumerate() {
         let g = pixels[i];
         assert_eq!(px, &[g, g, g, 0xFF], "pixel {i} mismatch");
     }

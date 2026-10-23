@@ -88,11 +88,11 @@
 
 use libfuzzer_sys::fuzz_target;
 use oxideav_pcx::{
-    decode, decode_all, decode_rgb8, decode_rgba8, decode_with, header, info,
-    parse_pcx_indexed_1bpp_2planes_cga, parse_pcx_indexed_1bpp_3planes,
+    DecodeOptions, EncodeOptions, decode, decode_all, decode_rgb8, decode_rgba8, decode_with,
+    header, info, parse_pcx_indexed_1bpp_2planes_cga, parse_pcx_indexed_1bpp_3planes,
     parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_2bpp_cga_cpi,
     parse_pcx_indexed_4bpp, parse_pcx_indexed_4bpp_4planes, parse_pcx_indexed_4bpp_ega_hw,
-    parse_pcx_indexed_8bpp, probe, DecodeOptions, EncodeOptions,
+    parse_pcx_indexed_8bpp, probe,
 };
 
 fuzz_target!(|data: &[u8]| {
@@ -111,7 +111,11 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(decode_rgb8(data).unwrap().data, img.to_rgb8());
         if let Ok(bytes) = oxideav_pcx::encode(&img, &EncodeOptions::default()) {
             let back = decode(&bytes).expect("encode output must decode");
-            assert_eq!(back.to_rgba8(), rgba, "encode(decode(x)) must be pixel-exact");
+            assert_eq!(
+                back.to_rgba8(),
+                rgba,
+                "encode(decode(x)) must be pixel-exact"
+            );
             assert_eq!(back.format, img.format);
         }
     }

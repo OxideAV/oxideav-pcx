@@ -127,7 +127,7 @@ pub(crate) fn validate_header(input: &[u8], strict: bool) -> Result<Validated<'_
         bpp => {
             return Err(Error::unsupported(format!(
                 "PCX: bits_per_pixel={bpp} not in the {{1,2,4,8}} set the spec defines"
-            )))
+            )));
         }
     };
     if (header.bytes_per_line as u32) < min_bpl {
@@ -670,7 +670,7 @@ fn rgb_8bpp_3planes(header: &PcxHeader, planar: &[u8]) -> Vec<u8> {
         for (((&r, &g), &b), dst) in r_iter
             .zip(g_iter)
             .zip(b_iter)
-            .zip(dst_row.chunks_exact_mut(3))
+            .zip(dst_row.as_chunks_mut::<3>().0)
         {
             dst[0] = r;
             dst[1] = g;

@@ -25,10 +25,10 @@
 
 use oxideav_pcx::types::PCX_HEADER_SIZE;
 use oxideav_pcx::{
-    encode_pcx_1bpp_mono, encode_pcx_1bpp_mono_dpi, encode_pcx_24bpp, encode_pcx_24bpp_dpi,
-    encode_pcx_24bpp_image, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_grayscale_dpi,
-    encode_pcx_8bpp_indexed, encode_pcx_8bpp_indexed_dpi, parse_pcx, PcxError, PcxImage,
-    PcxPixelFormat,
+    PcxError, PcxImage, PcxPixelFormat, encode_pcx_1bpp_mono, encode_pcx_1bpp_mono_dpi,
+    encode_pcx_8bpp_grayscale, encode_pcx_8bpp_grayscale_dpi, encode_pcx_8bpp_indexed,
+    encode_pcx_8bpp_indexed_dpi, encode_pcx_24bpp, encode_pcx_24bpp_dpi, encode_pcx_24bpp_image,
+    parse_pcx,
 };
 
 // ---------------------------------------------------------------------------
@@ -226,7 +226,7 @@ fn dpi_writer_round_trip_preserves_decoded_pixels() {
     assert_eq!(img.width, 8);
     assert_eq!(img.height, 4);
     assert_eq!(img.format, PcxPixelFormat::Rgba);
-    for (i, chunk) in img.data().chunks_exact(4).enumerate() {
+    for (i, chunk) in img.data().as_chunks::<4>().0.iter().enumerate() {
         let expected = pixels[i];
         assert_eq!(chunk[0], expected);
         assert_eq!(chunk[1], expected);

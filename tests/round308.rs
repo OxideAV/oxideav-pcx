@@ -40,7 +40,7 @@ fn header(w: u16, h: u16, bpp: u8, planes: u8, bytes_per_line: u16) -> Vec<u8> {
     hdr[1] = 5; // version 5 (PCX 5.0)
     hdr[2] = 1; // RLE encoding
     hdr[3] = bpp; // bits per pixel per plane
-                  // window: x_min, y_min = 0; x_max = w-1; y_max = h-1
+    // window: x_min, y_min = 0; x_max = w-1; y_max = h-1
     hdr[8..10].copy_from_slice(&(w - 1).to_le_bytes());
     hdr[10..12].copy_from_slice(&(h - 1).to_le_bytes());
     hdr[65] = planes; // n_planes
@@ -145,7 +145,7 @@ fn genuine_24bit_roundtrip_unaffected() {
     let img = parse_pcx(&pcx).unwrap();
     assert_eq!(img.width, w as u32);
     assert_eq!(img.height, h as u32);
-    for (i, chunk) in rgb.chunks_exact(3).enumerate() {
+    for (i, chunk) in rgb.as_chunks::<3>().0.iter().enumerate() {
         assert_eq!(
             &img.data()[i * 4..i * 4 + 4],
             &[chunk[0], chunk[1], chunk[2], 0xFF],
@@ -164,7 +164,7 @@ fn eight_bpp_one_plane_tail_palette_still_honoured() {
         .collect();
     let mut palette = vec![0u8; 768];
     // Distinctive palette so the lookup is observable.
-    for (i, entry) in palette.chunks_exact_mut(3).enumerate() {
+    for (i, entry) in palette.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         entry[0] = i as u8;
         entry[1] = (255 - i) as u8;
         entry[2] = (i * 3) as u8;

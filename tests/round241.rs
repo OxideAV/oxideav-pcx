@@ -47,9 +47,9 @@
 #![allow(deprecated)]
 
 use oxideav_pcx::{
-    encode_pcx_1bpp_mono, encode_pcx_24bpp, encode_pcx_2bpp_cga, encode_pcx_4bpp_packed,
-    encode_pcx_8bpp_grayscale, parse_pcx, parse_pcx_indexed_4bpp, Pcx4bppPaletteSource, PcxError,
-    PcxIndexed4,
+    Pcx4bppPaletteSource, PcxError, PcxIndexed4, encode_pcx_1bpp_mono, encode_pcx_2bpp_cga,
+    encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_24bpp, parse_pcx,
+    parse_pcx_indexed_4bpp,
 };
 
 // ---------------------------------------------------------------------------

@@ -41,8 +41,8 @@
 
 use oxideav_pcx::types::PCX_HEADER_SIZE;
 use oxideav_pcx::{
-    encode_pcx_1bpp_2planes_cga, encode_pcx_1bpp_2planes_cga_dpi, parse_pcx,
-    parse_pcx_indexed_1bpp_2planes_cga, Pcx2bppCgaPaletteSource,
+    Pcx2bppCgaPaletteSource, encode_pcx_1bpp_2planes_cga, encode_pcx_1bpp_2planes_cga_dpi,
+    parse_pcx, parse_pcx_indexed_1bpp_2planes_cga,
 };
 
 /// A small deterministic 2-bit-index pattern (`0,1,2,3` cycling) of the

@@ -15,7 +15,7 @@ use oxideav_core::{
 
 use oxideav_pcx::make_encoder;
 use oxideav_pcx::types::PCX_HEADER_SIZE;
-use oxideav_pcx::{parse_pcx, PcxPixelFormat};
+use oxideav_pcx::{PcxPixelFormat, parse_pcx};
 
 fn make_gray8_frame(width: u32, height: u32, fill: impl Fn(u32, u32) -> u8) -> VideoFrame {
     let stride = width as usize;

@@ -14,7 +14,7 @@
 
 use oxideav_pcx::rle;
 use oxideav_pcx::types::{PCX_HEADER_SIZE, PCX_VGA_PALETTE_BLOCK_BYTES, PCX_VGA_PALETTE_MARKER};
-use oxideav_pcx::{encode_pcx_24bpp, encode_pcx_8bpp_indexed, parse_pcx, PcxError, PcxPixelFormat};
+use oxideav_pcx::{PcxError, PcxPixelFormat, encode_pcx_8bpp_indexed, encode_pcx_24bpp, parse_pcx};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -35,7 +35,7 @@ fn checker_rgb(w: u16, h: u16) -> Vec<u8> {
 
 fn rgba_from_rgb(rgb: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgb.len() / 3 * 4);
-    for c in rgb.chunks_exact(3) {
+    for c in rgb.as_chunks::<3>().0 {
         out.extend_from_slice(&[c[0], c[1], c[2], 0xFF]);
     }
     out
@@ -79,7 +79,7 @@ fn roundtrip_24bpp_solid_compresses_well() {
     // 100×100 solid colour → RLE should crush it to a small handful of
     // packets per scanline (max-63 runs).
     let mut rgb = vec![0u8; 100 * 100 * 3];
-    for px in rgb.chunks_exact_mut(3) {
+    for px in rgb.as_chunks_mut::<3>().0 {
         px.copy_from_slice(&[123, 45, 67]);
     }
     let bytes = encode_pcx_24bpp(100, 100, &rgb).unwrap();
@@ -145,7 +145,7 @@ fn roundtrip_8bpp_indexed_with_vga_palette() {
     // Header sanity.
     assert_eq!(bytes[3], 8); // bits per pixel
     assert_eq!(bytes[65], 1); // planes
-                              // VGA palette block sits at the tail.
+    // VGA palette block sits at the tail.
     assert!(
         bytes.len() >= PCX_HEADER_SIZE + PCX_VGA_PALETTE_BLOCK_BYTES,
         "encoded file too short to hold a VGA palette"
@@ -179,7 +179,7 @@ fn roundtrip_8bpp_solid_compresses_hard() {
     assert_eq!(img.height, 100);
     // Every pixel decoded to palette[42].
     let want = [42u8, 255 - 42, 42 ^ 0xAA, 0xFF];
-    for px in img.data().chunks_exact(4) {
+    for px in img.data().as_chunks::<4>().0 {
         assert_eq!(px, &want);
     }
     // RLE compression check — solid-colour data should be small.

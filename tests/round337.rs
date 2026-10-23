@@ -39,9 +39,9 @@
 #![allow(deprecated)]
 
 use oxideav_pcx::{
-    encode_pcx_1bpp_4planes_ega, encode_pcx_24bpp, encode_pcx_2bpp_cga, encode_pcx_4bpp_4planes,
-    encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed, parse_pcx,
-    parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_4bpp,
+    encode_pcx_1bpp_4planes_ega, encode_pcx_2bpp_cga, encode_pcx_4bpp_4planes,
+    encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed, encode_pcx_24bpp,
+    parse_pcx, parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_4bpp,
     parse_pcx_indexed_4bpp_4planes, parse_pcx_indexed_8bpp,
 };
 

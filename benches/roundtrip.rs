@@ -39,12 +39,12 @@
 // IMAGE_CRATE_API migration (round 467).
 #![allow(deprecated)]
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 use oxideav_pcx::{
-    encode_dcx, encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono, encode_pcx_24bpp,
-    encode_pcx_2bpp_cga, encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale,
-    encode_pcx_8bpp_indexed, parse_dcx, parse_pcx,
+    encode_dcx, encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_mono, encode_pcx_2bpp_cga,
+    encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed, encode_pcx_24bpp,
+    parse_dcx, parse_pcx,
 };
 
 fn xorshift_byte(state: &mut u32) -> u8 {

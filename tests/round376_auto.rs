@@ -15,7 +15,7 @@
 #![allow(deprecated)]
 
 use oxideav_pcx::{
-    encode_pcx_24bpp, encode_pcx_image_auto, encode_pcx_rgb_auto, parse_pcx, PcxAutoMode, PcxImage,
+    PcxAutoMode, PcxImage, encode_pcx_24bpp, encode_pcx_image_auto, encode_pcx_rgb_auto, parse_pcx,
 };
 
 /// Deterministic generator so every run exercises the same pixels.
@@ -33,7 +33,7 @@ fn xorshift32(state: &mut u32) -> u32 {
 fn decode_to_rgb(bytes: &[u8]) -> (u16, u16, Vec<u8>) {
     let img = parse_pcx(bytes).expect("decode");
     let mut rgb = Vec::with_capacity(img.width as usize * img.height as usize * 3);
-    for px in img.data().chunks_exact(4) {
+    for px in img.data().as_chunks::<4>().0 {
         rgb.extend_from_slice(&px[..3]);
     }
     (img.width as u16, img.height as u16, rgb)
@@ -267,7 +267,7 @@ fn rgba_image(
     screen_size: Option<(u16, u16)>,
 ) -> PcxImage {
     let mut data = Vec::with_capacity(w as usize * h as usize * 4);
-    for c in rgb.chunks_exact(3) {
+    for c in rgb.as_chunks::<3>().0 {
         data.extend_from_slice(&[c[0], c[1], c[2], 0xFF]);
     }
     PcxImage::from_rgba8(w, h, data)

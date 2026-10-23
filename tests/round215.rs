@@ -16,11 +16,11 @@
 
 use oxideav_pcx::rle;
 use oxideav_pcx::types::PCX_HEADER_SIZE;
-use oxideav_pcx::{encode_pcx_1bpp_3planes_ega_rgb, parse_pcx, PcxError, PcxPixelFormat};
+use oxideav_pcx::{PcxError, PcxPixelFormat, encode_pcx_1bpp_3planes_ega_rgb, parse_pcx};
 
 fn rgba_from_rgb(rgb: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgb.len() / 3 * 4);
-    for c in rgb.chunks_exact(3) {
+    for c in rgb.as_chunks::<3>().0 {
         out.extend_from_slice(&[c[0], c[1], c[2], 0xFF]);
     }
     out

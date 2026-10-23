@@ -46,8 +46,8 @@
 #![allow(deprecated)]
 
 use oxideav_pcx::{
-    encode_pcx_1bpp_mono, encode_pcx_24bpp, encode_pcx_2bpp_cga, encode_pcx_8bpp_grayscale,
-    parse_pcx, parse_pcx_indexed_4bpp, Pcx4bppPaletteSource, PcxError,
+    Pcx4bppPaletteSource, PcxError, encode_pcx_1bpp_mono, encode_pcx_2bpp_cga,
+    encode_pcx_8bpp_grayscale, encode_pcx_24bpp, parse_pcx, parse_pcx_indexed_4bpp,
 };
 
 // ---------------------------------------------------------------------------
@@ -158,11 +158,7 @@ fn seed_packed4_default_palette_header_geometry() {
     // an even number.
     let expected_bpl = {
         let raw = width.div_ceil(2);
-        if raw % 2 == 0 {
-            raw
-        } else {
-            raw + 1
-        }
+        if raw.is_multiple_of(2) { raw } else { raw + 1 }
     };
     assert_eq!(bpl, expected_bpl);
     // The ega_palette must be all-zero so the decoder lands on the

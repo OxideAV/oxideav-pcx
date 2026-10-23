@@ -48,8 +48,8 @@
 #![allow(deprecated)]
 
 use oxideav_pcx::{
-    encode_pcx_4bpp_4planes, encode_pcx_8bpp_indexed, parse_header, parse_pcx,
-    parse_pcx_indexed_4bpp_4planes, parse_pcx_indexed_8bpp, PCX_HEADER_SIZE,
+    PCX_HEADER_SIZE, encode_pcx_4bpp_4planes, encode_pcx_8bpp_indexed, parse_header, parse_pcx,
+    parse_pcx_indexed_4bpp_4planes, parse_pcx_indexed_8bpp,
 };
 
 /// Deterministic composite-index fill that exercises all four nibble

@@ -8,8 +8,8 @@
 
 use oxideav_pcx::types::PCX_HEADER_SIZE;
 use oxideav_pcx::{
-    encode_pcx_24bpp, encode_pcx_24bpp_window, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed,
-    parse_pcx, PcxError, PcxPixelFormat,
+    PcxError, PcxPixelFormat, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed, encode_pcx_24bpp,
+    encode_pcx_24bpp_window, parse_pcx,
 };
 
 // ---------------------------------------------------------------------------
@@ -168,15 +168,15 @@ fn rejects_bytes_per_line_too_small() {
     bytes[1] = 5;
     bytes[2] = 1; // RLE
     bytes[3] = 8; // bpp
-                  // x_min/y_min already zero. x_max = 7, y_max = 0.
+    // x_min/y_min already zero. x_max = 7, y_max = 0.
     bytes[8] = 7;
     bytes[10] = 0;
     bytes[65] = 1; // n_planes
-                   // bytes_per_line = 2 (too small for width 8 at 8 bpp).
+    // bytes_per_line = 2 (too small for width 8 at 8 bpp).
     bytes[66] = 2;
     bytes[67] = 0;
     bytes[68] = 1; // palette_info
-                   // Tail: a few RLE bytes (won't be reached).
+    // Tail: a few RLE bytes (won't be reached).
     bytes.push(0xC1);
     bytes.push(0x00);
     let err = parse_pcx(&bytes).unwrap_err();

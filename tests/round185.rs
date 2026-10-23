@@ -19,7 +19,7 @@ use oxideav_core::{
 };
 
 use oxideav_pcx::make_encoder;
-use oxideav_pcx::{parse_pcx, PcxPixelFormat};
+use oxideav_pcx::{PcxPixelFormat, parse_pcx};
 
 fn params_for(width: u32, height: u32, format: PixelFormat) -> CodecParameters {
     let mut params = CodecParameters::video(CodecId::new("pcx"));

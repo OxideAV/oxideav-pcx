@@ -44,10 +44,10 @@
 #![allow(deprecated)]
 
 use oxideav_pcx::{
-    parse_pcx, parse_pcx_indexed_1bpp_2planes_cga, parse_pcx_indexed_1bpp_3planes,
+    PCX_HEADER_SIZE, PCX_MANUFACTURER, PCX_VGA_PALETTE_MARKER, parse_pcx,
+    parse_pcx_indexed_1bpp_2planes_cga, parse_pcx_indexed_1bpp_3planes,
     parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga, parse_pcx_indexed_4bpp,
-    parse_pcx_indexed_4bpp_4planes, parse_pcx_indexed_8bpp, PCX_HEADER_SIZE, PCX_MANUFACTURER,
-    PCX_VGA_PALETTE_MARKER,
+    parse_pcx_indexed_4bpp_4planes, parse_pcx_indexed_8bpp,
 };
 
 /// Deterministic, dependency-free pseudo-random byte source (a 64-bit
@@ -190,7 +190,7 @@ fn build_pcx(
 
 fn ega_palette_48() -> [u8; 48] {
     let mut p = [0u8; 48];
-    for (i, c) in p.chunks_exact_mut(3).enumerate() {
+    for (i, c) in p.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         c[0] = (i as u8).wrapping_mul(17);
         c[1] = (i as u8).wrapping_mul(5).wrapping_add(3);
         c[2] = (i as u8).wrapping_mul(11).wrapping_add(7);
@@ -200,7 +200,7 @@ fn ega_palette_48() -> [u8; 48] {
 
 fn vga_palette_768() -> [u8; 768] {
     let mut p = [0u8; 768];
-    for (i, c) in p.chunks_exact_mut(3).enumerate() {
+    for (i, c) in p.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         c[0] = i as u8;
         c[1] = (255 - i) as u8;
         c[2] = (i as u8).wrapping_mul(3);
@@ -260,14 +260,14 @@ fn overpadded_8bpp_indexed_strips_padding() {
             assert_eq!(view.height, h as u32);
             assert_eq!(view.indices, idx, "8bpp w={w} h={h} surplus={surplus}");
             // Palette must come from the tail, not be corrupted by padding.
-            for (i, c) in pal.chunks_exact(3).enumerate() {
+            for (i, c) in pal.as_chunks::<3>().0.iter().enumerate() {
                 assert_eq!(view.palette[i], [c[0], c[1], c[2]]);
             }
             // parse_pcx packed RGBA must match the palette-mapped indices.
             let img = parse_pcx(&pcx).expect("packed decode");
             assert_eq!(img.width, w as u32);
             assert_eq!(img.height, h as u32);
-            for (p, &i) in img.data().chunks_exact(4).zip(idx.iter()) {
+            for (p, &i) in img.data().as_chunks::<4>().0.iter().zip(idx.iter()) {
                 let c = &pal[i as usize * 3..i as usize * 3 + 3];
                 assert_eq!([p[0], p[1], p[2], p[3]], [c[0], c[1], c[2], 0xFF]);
             }
@@ -302,7 +302,7 @@ fn overpadded_24bpp_strips_padding() {
             let img = parse_pcx(&pcx).expect("24bpp decode");
             assert_eq!(img.width, w as u32);
             assert_eq!(img.height, h as u32);
-            for (p, px) in img.data().chunks_exact(4).zip(rgb.iter()) {
+            for (p, px) in img.data().as_chunks::<4>().0.iter().zip(rgb.iter()) {
                 assert_eq!(
                     [p[0], p[1], p[2], p[3]],
                     [px[0], px[1], px[2], 0xFF],
@@ -418,7 +418,7 @@ fn overpadded_1bpp_mono_strips_padding() {
             let pcx = build_pcx(5, 1, w, h, 1, bpl, 1, &[0u8; 48], &rows, None);
             let img = parse_pcx(&pcx).expect("mono decode");
             assert_eq!((img.width, img.height), (w as u32, h as u32));
-            for (p, &b) in img.data().chunks_exact(4).zip(bit.iter()) {
+            for (p, &b) in img.data().as_chunks::<4>().0.iter().zip(bit.iter()) {
                 let v = if b != 0 { 0xFF } else { 0x00 };
                 assert_eq!(
                     [p[0], p[1], p[2], p[3]],

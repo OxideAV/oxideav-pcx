@@ -53,9 +53,9 @@
 #![allow(deprecated)]
 
 use oxideav_pcx::{
-    ega_quantize_component, ega_quantize_level, ega_quantize_palette, encode_pcx_24bpp,
-    encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, parse_pcx_indexed_4bpp,
-    parse_pcx_indexed_4bpp_ega_hw, Pcx4bppPaletteSource, PcxError,
+    Pcx4bppPaletteSource, PcxError, ega_quantize_component, ega_quantize_level,
+    ega_quantize_palette, encode_pcx_4bpp_packed, encode_pcx_8bpp_grayscale, encode_pcx_24bpp,
+    parse_pcx_indexed_4bpp, parse_pcx_indexed_4bpp_ega_hw,
 };
 
 // ---------------------------------------------------------------------------

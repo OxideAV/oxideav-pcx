@@ -41,8 +41,8 @@
 #![allow(deprecated)]
 
 use oxideav_pcx::{
-    encode_pcx_24bpp, encode_pcx_2bpp_cga_cpi, parse_pcx, parse_pcx_indexed_2bpp_cga_cpi,
-    Pcx2bppCgaCpi, PcxError, PcxIndexed2x1CgaCpi,
+    Pcx2bppCgaCpi, PcxError, PcxIndexed2x1CgaCpi, encode_pcx_2bpp_cga_cpi, encode_pcx_24bpp,
+    parse_pcx, parse_pcx_indexed_2bpp_cga_cpi,
 };
 
 // ---------------------------------------------------------------------------

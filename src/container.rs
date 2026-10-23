@@ -11,10 +11,10 @@ use oxideav_core::{
     StreamInfo, TimeBase,
 };
 use oxideav_core::{
-    ContainerRegistry, Demuxer, Muxer, ProbeData, ProbeScore, ReadSeek, WriteSeek, MAX_PROBE_SCORE,
+    ContainerRegistry, Demuxer, MAX_PROBE_SCORE, Muxer, ProbeData, ProbeScore, ReadSeek, WriteSeek,
 };
 
-use crate::types::{read_header, PCX_ENCODING_RLE, PCX_MANUFACTURER};
+use crate::types::{PCX_ENCODING_RLE, PCX_MANUFACTURER, read_header};
 
 pub fn register(reg: &mut ContainerRegistry) {
     reg.register_demuxer("pcx", open_demuxer);

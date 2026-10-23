@@ -44,11 +44,11 @@
 
 use oxideav_pcx::types::PCX_HEADER_SIZE;
 use oxideav_pcx::{
-    encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_3planes_ega_rgb_dpi,
+    PcxError, encode_pcx_1bpp_3planes_ega_rgb, encode_pcx_1bpp_3planes_ega_rgb_dpi,
     encode_pcx_1bpp_4planes_ega, encode_pcx_1bpp_4planes_ega_dpi, encode_pcx_2bpp_cga,
     encode_pcx_2bpp_cga_dpi, encode_pcx_4bpp_packed, encode_pcx_4bpp_packed_dpi, parse_pcx,
     parse_pcx_indexed_1bpp_3planes, parse_pcx_indexed_1bpp_4planes, parse_pcx_indexed_2bpp_cga,
-    parse_pcx_indexed_4bpp, PcxError,
+    parse_pcx_indexed_4bpp,
 };
 
 // ---------------------------------------------------------------------------

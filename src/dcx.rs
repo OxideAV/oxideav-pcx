@@ -156,12 +156,12 @@ pub fn parse_offset_table(input: &[u8]) -> Result<Vec<usize>> {
         // Offsets MUST be monotonically increasing per the spec — pages
         // appear in file order, and the reader needs increasing offsets
         // to compute per-page byte ranges.
-        if let Some(&prev) = offsets.last() {
-            if off <= prev {
-                return Err(Error::invalid(format!(
-                    "DCX: non-monotonic offsets ({prev} then {off})"
-                )));
-            }
+        if let Some(&prev) = offsets.last()
+            && off <= prev
+        {
+            return Err(Error::invalid(format!(
+                "DCX: non-monotonic offsets ({prev} then {off})"
+            )));
         }
         offsets.push(off);
     }

@@ -5,10 +5,10 @@
 //! Framework-free: this file runs under `--no-default-features` too.
 
 use oxideav_pcx::{
-    decode, decode_all, decode_from, decode_rgb8, decode_rgba8, decode_with, encode, encode_all,
-    encode_dcx, encode_rgb8, encode_rgba8, encode_to, header, info, probe, ColorInfo, ColorRange,
-    DecodeOptions, EncodeOptions, Error, Frame, Metadata, Palette, PcxError, PcxImage, PcxLayout,
-    PcxPixelFormat, PixelFormat, Plane,
+    ColorInfo, ColorRange, DecodeOptions, EncodeOptions, Error, Frame, Metadata, Palette, PcxError,
+    PcxImage, PcxLayout, PcxPixelFormat, PixelFormat, Plane, decode, decode_all, decode_from,
+    decode_rgb8, decode_rgba8, decode_with, encode, encode_all, encode_dcx, encode_rgb8,
+    encode_rgba8, encode_to, header, info, probe,
 };
 
 fn seeded(len: usize, mut seed: u32) -> Vec<u8> {
@@ -64,14 +64,18 @@ fn cga() -> Vec<[u8; 3]> {
 
 fn sixteen() -> Vec<[u8; 3]> {
     seeded(48, 3)
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| [c[0], c[1], c[2]])
         .collect()
 }
 
 fn two_hundred() -> Vec<[u8; 3]> {
     seeded(600, 4)
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| [c[0], c[1], c[2]])
         .collect()
 }
@@ -223,7 +227,9 @@ fn decode_returns_native_layouts_with_palettes() {
     assert_eq!(d.to_rgb8(), r.data());
     let want: Vec<u8> = r
         .data()
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .flat_map(|c| [c[0], c[1], c[2], 255])
         .collect();
     assert_eq!(d.to_rgba8(), want);
@@ -254,9 +260,11 @@ fn palette_expansion_matches_each_geometry() {
             &want.entries[..],
             "{layout:?} entries"
         );
-        assert!(pal.entries[entries.len()..]
-            .iter()
-            .all(|e| *e == [0, 0, 0, 255]));
+        assert!(
+            pal.entries[entries.len()..]
+                .iter()
+                .all(|e| *e == [0, 0, 0, 255])
+        );
         assert_eq!(d.to_rgba8(), img.to_rgba8(), "{layout:?} expansion");
     }
 }
@@ -338,7 +346,7 @@ fn strict_mode_enforces_the_should_rules() {
     // Re-encode the rows at the odd width so the stream stays
     // consistent: one literal byte per pixel (values < 0xC0), no runs.
     let mut body = vec![0u8; 0];
-    for row in img.data().chunks_exact(W as usize) {
+    for row in img.data().as_chunks::<{ W as usize }>().0 {
         for &v in row {
             if v >= 0xC0 {
                 body.extend_from_slice(&[0xC1, v]);

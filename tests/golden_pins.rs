@@ -100,11 +100,15 @@ fn cases() -> Vec<(&'static str, Vec<u8>)> {
         [0xFF, 0xFF, 0xFF],
     ];
     let sixteen: Vec<[u8; 3]> = seeded(48, 31)
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| [c[0], c[1], c[2]])
         .collect();
     let two_hundred: Vec<[u8; 3]> = seeded(600, 32)
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| [c[0], c[1], c[2]])
         .collect();
 
@@ -156,7 +160,9 @@ fn cases() -> Vec<(&'static str, Vec<u8>)> {
         encode_pcx_1bpp_2planes_cga(W, H, &indices(3, 6), 0x20, 2).unwrap(),
     ));
     let composite: Vec<u16> = seeded(N * 2, 8)
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .collect();
     v.push((

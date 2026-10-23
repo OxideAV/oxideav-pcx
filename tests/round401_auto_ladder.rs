@@ -16,8 +16,8 @@
 #![allow(deprecated)]
 
 use oxideav_pcx::{
-    encode_pcx_24bpp, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed, encode_pcx_image_auto,
-    encode_pcx_rgb_auto, parse_pcx, PcxAutoMode, PcxImage,
+    PcxAutoMode, PcxImage, encode_pcx_8bpp_grayscale, encode_pcx_8bpp_indexed, encode_pcx_24bpp,
+    encode_pcx_image_auto, encode_pcx_rgb_auto, parse_pcx,
 };
 
 /// Deterministic generator so every run exercises the same pixels.
@@ -35,7 +35,7 @@ fn xorshift32(state: &mut u32) -> u32 {
 fn decode_to_rgb(bytes: &[u8]) -> (u16, u16, Vec<u8>) {
     let img = parse_pcx(bytes).expect("decode");
     let mut rgb = Vec::with_capacity(img.width as usize * img.height as usize * 3);
-    for px in img.data().chunks_exact(4) {
+    for px in img.data().as_chunks::<4>().0 {
         rgb.extend_from_slice(&px[..3]);
     }
     (img.width as u16, img.height as u16, rgb)
@@ -71,7 +71,7 @@ fn grayscale_image_picks_gray8_and_drops_tail() {
     assert_eq!(mode, PcxAutoMode::Gray8);
     assert_lossless(&bytes, w, h, &rgb);
     // Explicit size dominance over the two r376 candidates.
-    let gray: Vec<u8> = rgb.chunks_exact(3).map(|p| p[0]).collect();
+    let gray: Vec<u8> = rgb.as_chunks::<3>().0.iter().map(|p| p[0]).collect();
     let direct = encode_pcx_8bpp_grayscale(w, h, &gray).unwrap();
     assert_eq!(bytes, direct, "auto Gray8 must equal the direct writer");
     let planar = encode_pcx_24bpp(w, h, &rgb).unwrap();
@@ -98,7 +98,7 @@ fn escape_heavy_grey_correctly_falls_back_to_indexed8() {
     assert_eq!(mode, PcxAutoMode::Indexed8 { colors: 64 });
     assert_lossless(&bytes, w, h, &rgb);
     // The Gray8 candidate must genuinely be larger here.
-    let gray: Vec<u8> = rgb.chunks_exact(3).map(|p| p[0]).collect();
+    let gray: Vec<u8> = rgb.as_chunks::<3>().0.iter().map(|p| p[0]).collect();
     let gray_file = encode_pcx_8bpp_grayscale(w, h, &gray).unwrap();
     assert!(
         bytes.len() < gray_file.len(),
@@ -128,7 +128,7 @@ fn gray8_beats_indexed8_when_escapes_do_not_dominate() {
     let mut palette = vec![0u8; 768];
     let mut seen: Vec<u8> = Vec::new();
     let mut indices = Vec::new();
-    for p in rgb.chunks_exact(3) {
+    for p in rgb.as_chunks::<3>().0 {
         let idx = match seen.iter().position(|&s| s == p[0]) {
             Some(i) => i,
             None => {
@@ -208,7 +208,7 @@ fn black_and_white_image_picks_mono1() {
     assert_eq!(bytes[3], 1, "1 bpp");
     assert_eq!(bytes[65], 1, "1 plane");
     // Must beat the Gray8 candidate (same content is also all-grey).
-    let gray: Vec<u8> = rgb.chunks_exact(3).map(|p| p[0]).collect();
+    let gray: Vec<u8> = rgb.as_chunks::<3>().0.iter().map(|p| p[0]).collect();
     let gray_file = encode_pcx_8bpp_grayscale(w, h, &gray).unwrap();
     assert!(bytes.len() < gray_file.len());
 }
@@ -771,13 +771,13 @@ fn foreign_cga_header_bytes_16_and_19_are_honoured() {
     file[2] = 1; // RLE
     file[3] = 2; // bits per pixel
     file[8] = 3; // x_max = 3 → width 4
-                 // y_max = 0 → height 1
+    // y_max = 0 → height 1
     file[16] = 0x40; // header byte 16: background = EGA index 4 (red)
     file[19] = 0x60; // header byte 19: C=0, P=1 (white), I=1 (bright)
     file[65] = 1; // n_planes
     file[66] = 2; // bytes_per_line (even)
     file[68] = 1; // palette_info
-                  // Pixel payload: 0b00_01_10_11 = 0x1B, then pad byte.
+    // Pixel payload: 0b00_01_10_11 = 0x1B, then pad byte.
     file.push(0x1B);
     file.push(0x00);
     let img = parse_pcx(&file).unwrap();
@@ -890,7 +890,7 @@ fn ladder_output_is_minimal_across_dimensions_and_flavors() {
                     let px: [u8; 3] = match flavor {
                         // bilevel checker
                         0 => {
-                            if (i + i / w as usize) % 2 == 0 {
+                            if (i + i / w as usize).is_multiple_of(2) {
                                 [0x00, 0x00, 0x00]
                             } else {
                                 [0xFF, 0xFF, 0xFF]
@@ -924,7 +924,7 @@ fn ladder_output_is_minimal_across_dimensions_and_flavors() {
                 // Rebuild first-seen indices + palette the way the scan does.
                 let mut pal_seen: Vec<[u8; 3]> = Vec::new();
                 let mut indices: Vec<u8> = Vec::new();
-                for p in rgb.chunks_exact(3) {
+                for p in rgb.as_chunks::<3>().0 {
                     let key = [p[0], p[1], p[2]];
                     let idx = match pal_seen.iter().position(|c| *c == key) {
                         Some(i) => i,
@@ -997,7 +997,7 @@ fn ladder_output_is_minimal_across_dimensions_and_flavors() {
                 }
                 // Grayscale.
                 if pal_seen.iter().all(|c| c[0] == c[1] && c[1] == c[2]) {
-                    let gray: Vec<u8> = rgb.chunks_exact(3).map(|p| p[0]).collect();
+                    let gray: Vec<u8> = rgb.as_chunks::<3>().0.iter().map(|p| p[0]).collect();
                     competitors.push((
                         "gray8",
                         encode_pcx_8bpp_grayscale(w, h, &gray).unwrap().len(),

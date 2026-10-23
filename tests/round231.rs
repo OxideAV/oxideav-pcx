@@ -30,9 +30,9 @@
 
 use oxideav_pcx::types::PCX_HEADER_SIZE;
 use oxideav_pcx::{
-    encode_pcx_24bpp, encode_pcx_24bpp_dpi, encode_pcx_24bpp_image, encode_pcx_24bpp_screen,
-    encode_pcx_24bpp_window, encode_pcx_24bpp_window_dpi, encode_pcx_24bpp_window_dpi_screen,
-    parse_pcx, PcxError, PcxImage,
+    PcxError, PcxImage, encode_pcx_24bpp, encode_pcx_24bpp_dpi, encode_pcx_24bpp_image,
+    encode_pcx_24bpp_screen, encode_pcx_24bpp_window, encode_pcx_24bpp_window_dpi,
+    encode_pcx_24bpp_window_dpi_screen, parse_pcx,
 };
 
 // ---------------------------------------------------------------------------

@@ -37,9 +37,9 @@
 #![allow(deprecated)]
 
 use oxideav_pcx::{
-    encode_pcx_1bpp_2planes_cga, encode_pcx_24bpp, encode_pcx_24bpp_window_dpi_screen,
-    encode_pcx_2bpp_cga_cpi, parse_pcx, parse_pcx_cga_cpi, parse_pcx_indexed_2bpp_cga_cpi,
-    Pcx2bppCgaCpi, PcxError,
+    Pcx2bppCgaCpi, PcxError, encode_pcx_1bpp_2planes_cga, encode_pcx_2bpp_cga_cpi,
+    encode_pcx_24bpp, encode_pcx_24bpp_window_dpi_screen, parse_pcx, parse_pcx_cga_cpi,
+    parse_pcx_indexed_2bpp_cga_cpi,
 };
 
 fn indices_grid(w: usize, h: usize) -> Vec<u8> {
@@ -113,7 +113,7 @@ fn monochrome_flatten_is_grey() {
         // bg index 0 → entry 0 black, so the whole image is grey.
         let pcx = encode_pcx_2bpp_cga_cpi(w, h, &indices, cpi, 0).expect("encode");
         let flat = parse_pcx_cga_cpi(&pcx).expect("flatten");
-        for px in flat.data().chunks_exact(4) {
+        for px in flat.data().as_chunks::<4>().0 {
             assert_eq!(px[0], px[1], "R != G (bright={bright})");
             assert_eq!(px[1], px[2], "G != B (bright={bright})");
             assert_eq!(px[3], 0xFF, "alpha not opaque");
@@ -146,7 +146,7 @@ fn spec_faithful_path_differs_from_legacy_on_monochrome() {
     let faithful = parse_pcx_cga_cpi(&pcx).expect("faithful flatten");
 
     // The spec-faithful path is a pure grey ramp.
-    for px in faithful.data().chunks_exact(4) {
+    for px in faithful.data().as_chunks::<4>().0 {
         assert_eq!(px[0], px[1]);
         assert_eq!(px[1], px[2]);
     }
