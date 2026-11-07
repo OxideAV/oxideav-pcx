@@ -58,6 +58,7 @@ pub const PCX_VGA_PALETTE_BLOCK_BYTES: usize = 1 + PCX_VGA_PALETTE_BYTES;
 /// `width` and `height` are computed from the window for caller
 /// convenience.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct PcxHeader {
     pub manufacturer: u8,
     pub version: u8,

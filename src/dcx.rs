@@ -85,6 +85,7 @@ pub(crate) fn decode_all_with(input: &[u8], opts: &DecodeOptions) -> Result<Vec<
 /// returns `Vec<Frame>` instead.
 #[deprecated(note = "use oxideav_pcx::decode_all (IMAGE_CRATE_API)")]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DcxImage {
     /// One [`PcxImage`] per page in the bundle (packed `Rgba`, the
     /// pre-contract flatten). `pages.len() ≤ DCX_MAX_PAGES`.

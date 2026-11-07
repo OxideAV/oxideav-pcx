@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `#[non_exhaustive]` on `PcxAutoMode` and the palette-source enums
+  (`PcxPaletteSource`, `Pcx4bppPaletteSource`, `Pcx1bpp4PlanesPaletteSource`,
+  `Pcx2bppCgaPaletteSource`, `Pcx1bpp3PlanesPaletteSource`), and on the
+  records `PcxHeader`, `DcxImage`, `PcxIndexed8`, `PcxIndexed4`,
+  `PcxIndexed1x4`, `PcxIndexed2x1Cga`, `PcxIndexed1x2Cga`,
+  `PcxIndexed2x1CgaCpi`, `PcxIndexed1x3` and `PcxIndexed4x4`
+  (`Pcx2bppCgaCpi` stays exhaustive: callers build it).
+- `#[doc(hidden)]` on the internal `rle` module.
+
+### Changed
+
 - edition 2024, MSRV 1.95
 
 ## [0.1.2](https://github.com/OxideAV/oxideav-pcx/compare/v0.1.1...v0.1.2) - 2026-10-04

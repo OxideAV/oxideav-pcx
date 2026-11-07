@@ -95,6 +95,7 @@ pub mod image;
 pub mod options;
 #[cfg(feature = "registry")]
 pub mod registry;
+#[doc(hidden)]
 pub mod rle;
 pub mod types;
 

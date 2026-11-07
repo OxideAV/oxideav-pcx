@@ -1175,6 +1175,7 @@ impl Frame {
 /// [`crate::encode_pcx_8bpp_grayscale`] (`palette_info = 2`) can pick
 /// the matching writer rather than guessing from the bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PcxPaletteSource {
     /// Header `palette_info` field carried the value `2` (spec §3
     /// grayscale flag). The palette is the synthetic `0..=255`
@@ -1204,6 +1205,7 @@ pub enum PcxPaletteSource {
 /// and a [`PcxPaletteSource`] tag so the caller knows which spec §3
 /// branch produced the palette.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PcxIndexed8 {
     /// Picture width in pixels (derived from spec §3 `x_max - x_min +
     /// 1`, matching [`PcxImage::width`]).
@@ -1245,6 +1247,7 @@ impl PcxIndexed8 {
 /// whether to round-trip the header palette unchanged or rewrite it
 /// against the canonical hardware palette.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Pcx4bppPaletteSource {
     /// The 48-byte header `ega_palette` field carried at least one
     /// non-zero byte. The 16-entry palette surfaced on
@@ -1275,6 +1278,7 @@ pub enum Pcx4bppPaletteSource {
 /// [`crate::encode_pcx_4bpp_packed`] without re-quantising, or for
 /// applying palette-swap operations on the indices directly.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PcxIndexed4 {
     /// Picture width in pixels (derived from spec §3 `x_max - x_min +
     /// 1`, matching [`PcxImage::width`]).
@@ -1319,6 +1323,7 @@ impl PcxIndexed4 {
 /// the decoder substitutes the standard 16-entry EGA hardware palette
 /// from spec table §3.1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Pcx1bpp4PlanesPaletteSource {
     /// The 48-byte header `ega_palette` field carried at least one
     /// non-zero byte. The 16-entry palette surfaced on
@@ -1357,6 +1362,7 @@ pub enum Pcx1bpp4PlanesPaletteSource {
 /// hand either typed view to a 16-colour pipeline without branching on
 /// the on-disk depth.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PcxIndexed1x4 {
     /// Picture width in pixels (derived from spec §3 `x_max - x_min +
     /// 1`, matching [`PcxImage::width`]).
@@ -1412,6 +1418,7 @@ impl PcxIndexed1x4 {
 /// "high/low intensity" in the variant names corresponds to the
 /// manual's bright/dim `I` bit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Pcx2bppCgaPaletteSource {
     /// Palette 1 ("white" family), bright: cyan / magenta / white.
     /// `C = 0, P = 1, I = 1` (byte 19 upper bits `0x60`). This is the
@@ -1476,6 +1483,7 @@ impl Pcx2bppCgaPaletteSource {
 /// Useful for round-tripping a 4-colour CGA PCX through
 /// [`crate::encode_pcx_2bpp_cga`] without re-quantising the indices.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PcxIndexed2x1Cga {
     /// Picture width in pixels (derived from spec §3 `x_max - x_min +
     /// 1`, matching [`PcxImage::width`]).
@@ -1532,6 +1540,7 @@ impl PcxIndexed2x1Cga {
 /// indices, or for applying palette-swap operations on the indices
 /// directly.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PcxIndexed1x2Cga {
     /// Picture width in pixels (spec §3 `x_max - x_min + 1`).
     pub width: u32,
@@ -1636,6 +1645,7 @@ impl Pcx2bppCgaCpi {
 /// including the four-level composite-grey ramp the monochrome mode
 /// produces.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PcxIndexed2x1CgaCpi {
     /// Picture width in pixels.
     pub width: u32,
@@ -1680,6 +1690,7 @@ impl PcxIndexed2x1CgaCpi {
 /// which carries a `*PaletteSource` tag) and to document the
 /// no-header-palette property explicitly rather than leaving it implicit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Pcx1bpp3PlanesPaletteSource {
     /// The 8-entry palette is the fixed set of on/off RGB primaries
     /// (`bit 0 = R`, `bit 1 = G`, `bit 2 = B`, each channel either
@@ -1715,6 +1726,7 @@ pub enum Pcx1bpp3PlanesPaletteSource {
 /// [`PcxIndexed1x4`] (1 bpp × 4 planes), and [`PcxIndexed2x1Cga`]
 /// (2 bpp CGA).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PcxIndexed1x3 {
     /// Picture width in pixels (derived from spec §3 `x_max - x_min +
     /// 1`, matching [`PcxImage::width`]).
@@ -1789,6 +1801,7 @@ impl PcxIndexed1x3 {
 /// Useful for round-tripping a `4 bpp × 4 planes` PCX through
 /// [`crate::encode_pcx_4bpp_4planes`] without re-quantising the indices.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PcxIndexed4x4 {
     /// Picture width in pixels (derived from spec §3 `x_max - x_min +
     /// 1`, matching [`PcxImage::width`]).

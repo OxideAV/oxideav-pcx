@@ -1062,6 +1062,7 @@ pub fn encode_pcx_24bpp(width: u16, height: u16, rgb: &[u8]) -> Result<Vec<u8>> 
 /// alongside the encoded bytes.
 #[deprecated(note = "use oxideav_pcx::PcxLayout (IMAGE_CRATE_API)")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PcxAutoMode {
     /// `≤ 256` distinct colours: 8 bpp × 1 plane indexed image plus a
     /// 256-entry VGA tail palette. The `usize` is the number of
