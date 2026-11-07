@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/OxideAV/oxideav-pcx/compare/v0.1.2...v0.2.0) - 2026-11-07
+
+### Other
+
+- API hygiene: non_exhaustive header/indexed-output records and palette-source enums, hide rle
+- edition 2024, MSRV 1.95
+
 ### Changed
 
 - `#[non_exhaustive]` on `PcxAutoMode` and the palette-source enums
